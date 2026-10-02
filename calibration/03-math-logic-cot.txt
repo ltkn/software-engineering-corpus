@@ -1,0 +1,390 @@
+Q: Prove S(n): 1 + 2 + ... + n = n(n+1)/2 for all natural n.
+Step 1. Base: n=1 gives 1 = 1(2)/2. Holds.
+Step 2. Assume S(k). Then 1+...+k+(k+1) = k(k+1)/2 + (k+1) = (k+1)(k+2)/2. That is S(k+1).
+Step 3. By induction S(n) holds for all n. The step must derive S(k+1) from S(k) alone; assuming the conclusion for k+1 would be circular.
+Answer: Proved by induction with explicit base and step.
+
+---
+
+Q: State the converse, inverse, and contrapositive of "if the build is green then all tests passed", and which are logically equivalent to the original.
+Step 1. Original P -> Q. Converse Q -> P: if all tests passed then the build is green. Not equivalent.
+Step 2. Inverse not-P -> not-Q: if the build is not green then some test failed. Not equivalent.
+Step 3. Contrapositive not-Q -> not-P: if some test failed then the build is not green. Equivalent to the original.
+Answer: Only the contrapositive is equivalent; proving the converse proves nothing about the original.
+
+---
+
+Q: Over the naturals, compare A: for every x there exists y with x < y, against B: there exists y such that for every x, x < y.
+Step 1. A is true: given any x, y = x+1 witnesses it. The witness may depend on x.
+Step 2. B is false: no single y exceeds every natural. Swapping quantifiers strengthens the claim.
+Step 3. Lesson: forall-exists lets the witness vary; exists-forall demands one uniform witness.
+Answer: A true, B false; quantifier order changes meaning.
+
+---
+
+Q: A test has 99% sensitivity and 99% specificity for a defect present in 1% of checkouts. A checkout tests positive. Probability it is truly defective?
+Step 1. P(pos|defect)=0.99, P(pos|ok)=0.01, P(defect)=0.01.
+Step 2. P(pos) = 0.99(0.01) + 0.01(0.99) = 0.0198.
+Step 3. P(defect|pos) = 0.99(0.01)/0.0198 = 0.5.
+Answer: 50%. Ignoring the base rate turns a good test into a false alarm machine.
+
+---
+
+Q: n=200 checkout samples, mean 820ms, s=150ms. Test H0: population mean = 900ms, two-sided, alpha 0.05.
+Step 1. SE = 150/sqrt(200) = 10.6ms. z = (820-900)/10.6 = -7.55.
+Step 2. Two-sided p far below 1e-12, well under 0.05. Reject H0.
+Step 3. p is P(data this extreme | H0), not P(H0 | data). Rejection says the observed mean is incompatible with 900ms under sampling variation, nothing about practical size.
+Answer: Reject H0; report the 80ms gap with its CI, not the p-value alone.
+
+---
+
+Q: Same test but n=12, mean 820ms, s=150ms. What changes?
+Step 1. n=12 forbids the normal approximation; use t with df=11. SE = 150/sqrt(12) = 43.3ms, t = -1.85.
+Step 2. Two-sided p ≈ 0.09 > 0.05. Fail to reject.
+Step 3. Same point estimate, opposite conclusion: with n=12 the data are compatible with 900ms. Small samples widen, not shrink, uncertainty.
+Answer: Fail to reject; the z-test at n=12 would understate uncertainty.
+
+---
+
+Q: Staging shows p95 900ms before and 780ms after the index, each from n=40. Can we claim the fix worked?
+Step 1. No. With n=40 the sample 95th percentile rests on about 2 observations above it (expected count 40(0.05) = 2, SD about 1.4). A tail estimate from ~2 points has enormous variance; n=40 alone cannot support a reliable p95.
+Step 2. Worse, two point estimates cannot support a causal claim at all: no pairing, no repeated observations, no account of traffic mix or time-of-day.
+Step 3. Required design: repeated paired runs (same workload before/after on the same fixture), then a paired test on the differences with a reported CI.
+Answer: No claim is supported; run paired repeats and test the differences.
+
+---
+
+Q: Correct design for the index claim: 12 paired staging runs, mean paired difference (after-before) d-bar = -65ms, s_d = 40ms. Test and interval.
+Step 1. Pairing is valid only because each pair shares the same fixture, seed, and traffic shape; the unit of analysis is the pair, n=12 differences.
+Step 2. SE = 40/sqrt(12) = 11.5ms. t = -65/11.5 = -5.63 on df=11, p ≈ 0.0001.
+Step 3. 95% CI: -65 ± 2.201(11.5) = (-90.4, -39.6)ms. The interval excludes zero with margin; effect and uncertainty are both quantified.
+Answer: Significant improvement, estimated -65ms with 95% CI (-90.4, -39.6)ms.
+
+---
+
+Q: Why is comparing before-p95 = 900ms against after-p95 = 780ms (unpaired, one run each) invalid even if both samples were large?
+Step 1. Quantiles of two independent runs confound the intervention with run-to-run variation: traffic mix, cache warmth, noisy neighbors.
+Step 2. No pairing means no variance reduction from shared conditions and no standard error for the difference itself.
+Step 3. A valid comparison needs either paired repeats or a randomized/interleaved A/B with a CI on the difference, never two naked point estimates.
+Answer: Two point estimates carry no uncertainty and no identification; the comparison is story, not evidence.
+
+---
+
+Q: 95% CI for the improvement is (-90, -40)ms. State what this does and does not mean.
+Step 1. It means: under repeated identical experiments, about 95% of such intervals cover the true mean improvement. This interval excludes zero.
+Step 2. It does not mean: 95% probability the truth lies inside this particular interval (frequentist CI has no posterior over the parameter).
+Step 3. Practical read: improvement between 40 and 90ms at the stated confidence; ship on the lower bound, not the point estimate.
+Answer: (-90,-40)ms excludes zero; plan capacity on -40ms.
+
+---
+
+Q: p = 0.04 on the third variant tried. Ship it?
+Step 1. p = 0.04 means: if there were no effect, data this extreme would occur about 4% of the time. It is not P(no effect | data) = 4%.
+Step 2. Three variants were tried, so the family-wise false-positive rate exceeds 5%; uncorrected peeking inflates significance.
+Step 3. With Bonferroni over 3 tests the threshold is 0.0167, and 0.04 does not clear it.
+Answer: No. Correct for multiplicity or replicate the winning variant on fresh traffic.
+
+---
+
+Q: Dashboard monitors 20 latency metrics at alpha 0.05 each. Expected false alarms under no real change, and the fix?
+Step 1. Expected false positives = 20(0.05) = 1 per review round even when nothing changed.
+Step 2. Bonferroni per-test threshold 0.05/20 = 0.0025 holds family-wise error at 5%.
+Step 3. Cheaper operational alternative: alert on the one pre-registered primary metric, treat the other 19 as diagnostic.
+Answer: Expect ~1 false alarm per round; correct or pre-register.
+
+---
+
+Q: Regression of checkout time on index usage plus hour-of-day gives coefficient -70ms on the index dummy, R² = 0.18. Read it.
+Step 1. -70ms is the ceteris-paribus association holding hour fixed, not a proven causal effect; unmeasured confounders (deployOwarmth, traffic mix) may ride along.
+Step 2. R² = 0.18 means 18% of variance explained; prediction from this model stays noisy.
+Step 3. Causal reading needs the paired experiment, not a bigger regression.
+Answer: Association -70ms controlling for hour; run the paired test for causation.
+
+---
+
+Q: Cost of one keyset page on index (tenant_id, created_at, id) with LIMIT k?
+Step 1. Equality on tenant_id plus range on (created_at, id) maps to one bounded B-tree range scan: O(log n) descent plus O(k) leaf walk.
+Step 2. Total O(log n + k), independent of page depth. OFFSET page d costs O(d + k) by scanning and discarding d rows.
+Step 3. Tiebreak on id is required: created_at alone is not unique, and duplicate timestamps would skip or repeat rows across pages.
+Answer: O(log n + k) keyset vs O(d + k) offset; always carry the unique tiebreak.
+
+---
+
+Q: Hash index vs B-tree for the tenant timeline query with range paging?
+Step 1. Hash serves equality probes in average O(1) but cannot serve ordered range scans; the timeline needs order.
+Step 2. B-tree serves both the equality prefix and the ordered range in O(log n + k).
+Step 3. Worst cases differ too: hash degrades toward O(n) under collision attacks; B-tree stays logarithmic.
+Answer: B-tree; hash cannot walk ranges.
+
+---
+
+Q: Quicksort averages O(n log n) but has O(n²) worst case. When does the worst case bite, and the standard fix?
+Step 1. Sorted or adversarial input with a fixed pivot (e.g. always-first) degenerates partitioning to n-1 vs 1 each level.
+Step 2. Fix: randomized or median-of-three pivot plus insertion sort for tiny partitions; or use a guaranteed O(n log n) mergesort/heapsort when worst case is unacceptable.
+Step 3. Average-case analysis assumes all permutations equally likely, which adversarial or nearly-sorted real data violates.
+Answer: Degenerate pivots on structured input; randomize or bound the worst case.
+
+---
+
+Q: Fibonacci via naive recursion vs iterative DP.
+Step 1. Naive recursion recomputes subproblems: T(n) = T(n-1) + T(n-2), exponential ~O(1.6^n).
+Step 2. Memoized or iterative DP computes each F(k) once: O(n) time, O(1) space iterative.
+Step 3. General rule: overlapping subproblems plus optimal substructure admit DP; recursion without memoization re-pays the overlap.
+Answer: O(1.6^n) naive, O(n) time O(1) space iterative.
+
+---
+
+Q: BFS vs DFS on the service dependency graph to find the blast radius of auth-service.
+Step 1. Both visit each vertex and edge once: O(V + E).
+Step 2. BFS explores in increasing distance, so it yields shortest-hop impact rings; DFS dives deep first and finds a single chain fast with less bookkeeping.
+Step 3. For blast radius by distance, BFS level order is the answer; for cycle detection or one path, DFS.
+Answer: O(V+E) both; BFS for rings, DFS for paths and cycles.
+
+---
+
+Q: What do R + W > N guarantee for the session store, with R=2, W=2, N=3?
+Step 1. Any read quorum (2) and write quorum (2) overlap in at least one replica, so reads see the latest acknowledged write.
+Step 2. This is strong consistency for acknowledged writes only; unacknowledged or in-flight writes carry no guarantee.
+Step 3. Cost: every operation waits for a majority, trading latency and availability under partitions for consistency.
+Answer: Read-write overlap gives latest acknowledged reads at majority latency cost.
+
+---
+
+Q: Little's law applied: checkout gateway sustains arrival rate 120/s with mean residence 250ms. Mean in-flight requests?
+Step 1. L = λW = 120 × 0.25 = 30.
+Step 2. Provisioning follows: connection and thread budgets must cover ~30 concurrent plus headroom for bursts, since means hide tails.
+Step 3. If residence doubles under load while arrivals hold, in-flight doubles too; that is the queue exploding, visible before latency alarms fire.
+Answer: 30 mean in-flight; size pools from L with burst headroom.
+
+---
+
+Q: Eigenvalue intuition: what does Av = λv say, and why does rank matter for the feature matrix?
+Step 1. v is a direction the matrix only stretches by λ, not rotates: the pure axes of the transformation.
+Step 2. Rank counts independent columns; rank-deficient features mean redundant signals, and the regression coefficients stop being unique.
+Step 3. Fix redundancy by dropping or combining collinear features before interpreting any coefficient.
+Answer: Eigenvectors are pure stretch directions; deficient rank means duplicated features.
+
+---
+
+Q: Vector clocks between order events from two regions: clock A = [3,1], B = [2,2]. Ordered?
+Step 1. Neither dominates component-wise (3>2 but 1<2), so the events are concurrent, not ordered.
+Step 2. Vector clocks detect causality, never total order: concurrent events need application-level conflict resolution.
+Step 3. Last-writer-wins by wall clock would silently drop one update; merge by entity semantics instead.
+Answer: Concurrent; resolve by merge, not by timestamp.
+
+---
+
+Q: Cache with 91% hit rate, mean hit 2ms, miss 180ms. Mean latency and the tail lesson?
+Step 1. Mean = 0.91(2) + 0.09(180) = 18ms.
+Step 2. The mean hides the bimodal reality: 9% of users feel 180ms. Report p50/p95/p99 alongside.
+Step 3. Raising hit rate from 91% to 95% halves the slow fraction; the miss path, not the hit path, dominates user pain.
+Answer: 18ms mean, bimodal; optimize the miss path first.
+
+---
+
+Q: Expected false-positive count is not the same as the probability of at least one. With 20 independent tests at 0.05, compute both.
+Step 1. Expected count = 20 × 0.05 = 1.
+Step 2. P(at least one) = 1 - 0.95^20 = 1 - 0.358 = 0.64.
+Step 3. Most review rounds contain a false alarm somewhere (64%) even though the average count is just one.
+Answer: Expect 1; P(any) ≈ 64%. Pre-register the primary metric.
+
+---
+
+Q: A chooses the index because staging p95 fell 900 → 780ms (n=40 each, unpaired). Identify every error in this reasoning.
+Step 1. Tail error: with n=40 the p95 rests on ~2 observations; the estimate's variance dwarfs the 120ms gap.
+Step 2. Identification error: two unpaired point estimates cannot separate the intervention from run variation; no pairing, no repeats, no standard error of the difference.
+Step 3. Decision error: shipping on the point estimate instead of the lower confidence bound spends an unmeasured gain.
+Correction: 12 paired runs, paired t on differences, ship on the CI lower bound.
+Answer: Unreliable tail, no identification, no uncertainty; rerun paired.
+
+---
+
+Q: Draft claim: "p = 0.30, so there is a 30% chance the improvement is real." Correct it.
+Step 1. Wrong: p is computed assuming no effect, so it cannot be the probability the effect is real.
+Step 2. p = 0.30 says data this extreme occur 30% of the time under no effect: thoroughly compatible with noise.
+Step 3. Correct statement: no evidence against no-effect; the CI will include zero with room to spare.
+Correction: "p = 0.30 gives no evidence of improvement; withhold the claim."
+Answer: p is P(data|no effect), never P(effect|data).
+
+---
+
+Q: Draft analysis uses an unpaired t-test on before/after runs that share fixtures and seeds. Correct it.
+Step 1. Wrong: shared fixtures make the runs paired; unpaired analysis discards the pairing variance reduction and misstates df.
+Step 2. The unit is the pair: test the 12 differences against zero with a paired t (df=11), checking rough normality of differences, not of raw latencies.
+Step 3. Same data, tighter valid inference: pairing removes fixture-to-fixture variation from the error term.
+Correction: Paired t on differences: t = -5.63, df=11, CI (-90.4,-39.6)ms.
+Answer: Pairing is part of the design, not optional.
+
+---
+
+Q: Draft: "R² = 0.94, so the index causes faster checkout." Correct it.
+Step 1. Wrong twice: R² measures explained variance, not causation, and 0.94 on observational dashboard data usually signals leakage (e.g. including a downstream consequence of speed as a predictor).
+Step 2. Check for leakage first: any predictor computed after the outcome is known invalidates the model.
+Step 3. Causal claim needs the experiment; the regression at best suggests where to experiment.
+Correction: "High R² with observational data; audit for leakage, then test by experiment."
+Answer: Fit is not causation; leakage first, experiment second.
+
+---
+
+Q: Draft complexity claim: "keyset page costs O(1) because LIMIT is constant." Correct it.
+Step 1. Wrong: the B-tree descent to the start key costs O(log n) regardless of LIMIT; constant LIMIT bounds only the leaf walk.
+Step 2. Correct total O(log n + k) with k the page size; O(1) would require direct addressing with no search.
+Step 3. Contrast honestly: OFFSET is O(d + k), so keyset wins on depth dependence, not by being constant.
+Correction: O(log n + k); the win is depth-independence.
+Answer: Descent is logarithmic; LIMIT bounds only the scan.
+
+---
+
+Q: Draft: "n=1000, so the p99 estimate is solid." Assess.
+Step 1. Expected observations above the true p99: 1000(0.01) = 10, SD about 3. Better than n=40, still a 10-point tail.
+Step 2. Solid needs a CI: use order-statistic or bootstrap intervals around the quantile; with n=1000 the p99 CI still spans a visible band under skew.
+Step 3. For tight tail claims at p99+, plan n in the several thousands or aggregate across windows with stationarity checks.
+Correction: Report p99 with its interval; widen n or windows before claiming.
+Answer: ~10 tail points; interval required.
+
+---
+
+Q: Sketch Dijkstra against BFS for cheapest deploy path with non-uniform edge costs.
+Step 1. BFS assumes uniform cost and fails on weighted edges; Dijkstra with a priority queue handles non-negative weights in O((V+E) log V).
+Step 2. Negative edge weights break Dijkstra; Bellman-Ford at O(VE) is then the tool, and negative cycles mean no shortest path exists.
+Step 3. State assumptions before the algorithm: uniform costs BFS, non-negative Dijkstra, general Bellman-Ford.
+Answer: Match the algorithm to the weight assumptions.
+
+---
+
+Q: When does memoization fail to save an exponential recursion?
+Step 1. When subproblems do not overlap: each call solves distinct instances, so the cache never hits.
+Step 2. Example: naive partition enumeration with unique subcalls gains nothing from a table.
+Step 3. Diagnose by counting distinct states: if distinct states ≈ total calls, restructure the recurrence instead of memoizing.
+Answer: No overlap, no gain; count distinct states first.
+
+---
+
+Q: Hash table with a secret salt vs plain modulo hash for tenant-id keys under adversarial input. Compare.
+Step 1. Plain modulo over attacker-chosen keys admits collision flooding: worst case O(n) per op, a DoS vector.
+Step 2. Randomized hashing (per-process seed, e.g. SipHash-style) makes collisions unpredictable; expected O(1) holds adversarially.
+Step 3. B-tree alternative gives deterministic O(log n) worst case at constant-factor cost.
+Answer: Randomize or bound the worst case; never trust plain modulo on hostile keys.
+
+---
+
+Q: Bloom filter for the idempotency-key replay check: what do positive and negative answers mean?
+Step 1. Negative is definitive: key never seen, safe to execute.
+Step 2. Positive is probabilistic: possibly seen; confirm against the authoritative store before replaying.
+Step 3. Size for 1% false-positive at 1M keys: about 9.6 bits per key (~1.2MB). One-sided error only.
+Answer: Trust negatives, verify positives.
+
+---
+
+Q: Two-phase commit vs saga for orders plus payment across providers. Decide with the failure argument.
+Step 1. 2PC holds distributed locks until all vote; a slow provider stalls everyone and partitions block progress.
+Step 2. Saga uses local transactions plus compensations; each step completes independently and failures compensate explicitly.
+Step 3. Choose 2PC only when true atomicity across owners is mandatory and partitions are tolerable; default to saga with idempotent steps.
+Answer: Saga by default; 2PC only for mandatory atomicity.
+
+---
+
+Q: Outbox relay must publish in commit order. Why does publish-then-mark duplicate on crash?
+Step 1. Publish and mark-sent are two actions; a crash between them leaves a published-but-unmarked row.
+Step 2. Restart replays it: downstream sees a duplicate.
+Step 3. Fix: atomic claim (UPDATE WHERE state=PENDING) before publish, idempotent consumers on aggregate id as the backstop.
+Answer: Non-atomic pair duplicates; claim atomically, consume idempotently.
+
+---
+
+Q: Circuit breaker on the payment gateway: when closed, open, half-open, and the two thresholds that matter.
+Step 1. Closed: requests flow, failures counted over a window. Open: fail fast without calling, after the failure threshold trips.
+Step 2. Half-open: after the sleep window, allow a probe batch; success closes, failure re-opens.
+Step 3. Thresholds that matter: failure-rate trip point and the half-open probe volume; tune both from real drill data, not defaults.
+Answer: Closed flows, open fails fast, half-open probes; tune trip rate and probe volume.
+
+---
+
+Q: Retry with exponential backoff and jitter for 429s: give the schedule and the reason for each part.
+Step 1. Exponential growth (1s, 2s, 4s, cap 30s) prevents a synchronized retry stampede from holding the outage open.
+Step 2. Full jitter randomizes each delay so clients spread instead of marching in lockstep.
+Step 3. Idempotency keys make retries safe; without them, retries multiply the damage they were meant to route around.
+Answer: Backoff spaces, jitter spreads, idempotency makes it safe.
+
+---
+
+Q: Estimate the sample size to detect a 50ms improvement with s_d = 40ms at 80% power, alpha 0.05 two-sided, paired design.
+Step 1. Standardized effect d = 50/40 = 1.25, a large effect.
+Step 2. Paired n ≈ ((1.96 + 0.84)/1.25)^2 = (2.24)^2 ≈ 5.02, round up to 6 pairs minimum; plan 10–12 for margin and non-normality.
+Step 3. Power computed before the experiment justifies the run count; computing power after from observed data adds no information.
+Answer: About 6 pairs minimum, 10–12 planned; never post-hoc power.
+
+---
+
+Q: Draft: "observed power was 0.9, so the result is reliable." Correct it.
+Step 1. Wrong: observed (post-hoc) power is a monotone transform of the p-value; high observed power just restates a small p.
+Step 2. Reliability comes from pre-registered design: sample size from assumed effect, alpha, and desired power before seeing data.
+Step 3. Report the CI and the replication plan instead.
+Correction: "Post-hoc power restates p; reliability is in the design and the interval."
+Answer: Observed power is circular; design power in advance.
+
+---
+
+Q: Simpson's paradox check: index wins in every tenant slice but loses overall. Explain and resolve.
+Step 1. Slice sizes differ: the heavy tenant where the index helps least dominates the pooled average.
+Step 2. Pooling weights by volume, not by importance; the overall number answers a different question than each slice.
+Step 3. Resolve by reporting per-slice effects plus the pre-registered primary slice, never the naive pool alone.
+Answer: Weighting artifact; report slices and the primary endpoint.
+
+---
+
+Q: Draft: "correlation 0.9 between cache size and hit rate justifies 10x memory." Correct it.
+Step 1. Diminishing returns: hit rate is concave in size; the last points of hit rate cost the most memory.
+Step 2. Cost-benefit needs the miss-penalty math: 0.91→0.95 halves slow requests, 0.95→0.97 halves a smaller remainder at similar cost.
+Step 3. Size from the knee of the curve under steady traffic, re-measured after traffic shifts.
+Correction: "Price the marginal hit-rate point; buy the knee, not the correlation."
+Answer: Concave curve; buy the knee.
+
+---
+
+Q: State the Central Limit Theorem precisely enough to use, then its most abused condition in latency work.
+Step 1. Means of iid finite-variance samples approach normal as n grows, centered on the true mean with SE s/sqrt(n).
+Step 2. Abused condition: iid. Latency samples are autocorrelated and mix-dependent; consecutive requests share caches, pools, and traffic regimes.
+Step 3. Consequence: naive SEs understate uncertainty; use batch means, block bootstrap, or paired designs instead of raw n.
+Answer: CLT needs iid; latency is not iid, so adjust the SE.
+
+---
+
+Q: Bootstrap CI for the median improvement across 12 paired runs: recipe in three steps.
+Step 1. Resample the 12 differences with replacement, compute the median, repeat 10k times.
+Step 2. Take the 2.5th and 97.5th percentiles of the resampled medians as the 95% interval.
+Step 3. With n=12 the interval stays wide; report it wide rather than switching to a tighter unjustified method.
+Answer: Resample, median, percentiles; keep the honest width.
+
+---
+
+Q: When is the median the right latency summary and when is it misleading?
+Step 1. Right: skewed distributions where the typical experience matters and outliers are handled separately via p95/p99.
+Step 2. Misleading: bimodal systems (cache hit/miss) where the median sits in a valley nobody experiences; capacity planning on medians under-provisions tails.
+Step 3. Always pair: median for typical, p95/p99 for pain, max with n for context.
+Answer: Median for typical, quantiles for pain, never median alone.
+
+---
+
+Q: Draft: "we A/B tested with 100 users in each arm for one hour." List the three missing design elements.
+Step 1. Randomization unit and method: per-user hashing with seed recorded, else time-of-day confounds the arms.
+Step 2. Pre-registered primary metric and minimum detectable effect powering the duration, not a round one hour.
+Step 3. Guardrails and stopping rule: fixed horizon or valid sequential method; peeking without correction invalidates p.
+Correction: Hash-randomize, pre-register metric and MDE, fix the horizon.
+Answer: Randomization, pre-registration, stopping rule.
+
+---
+
+Q: Peeking at the A/B daily and shipping when p < 0.05: quantify the damage with 5 looks.
+Step 1. Nominal 5% becomes roughly 1 - 0.95^5 ≈ 23% false-positive rate under no effect with naive peeking.
+Step 2. Fixes: fixed horizon decided in advance, or alpha-spending / sequential methods that budget error across looks.
+Step 3. Dashboards that update p-values live without sequential adjustment manufacture significance.
+Answer: ~23% false positives at 5 peeks; fix horizon or spend alpha.
+
+---
+
+Q: Bayes factor vs p-value in one paragraph each, then when you would switch.
+Step 1. p-value: probability of data this extreme under H0; screening tool with pre-registered alpha, silent on evidence for H0.
+Step 2. Bayes factor: relative predictive performance of H1 vs H0; quantifies evidence both ways at the price of prior sensitivity.
+Step 3. Switch when the question is evidence quantification or model comparison rather than error-rate-controlled decision making.
+Answer: p for decisions with error control, Bayes factor for evidence grading.

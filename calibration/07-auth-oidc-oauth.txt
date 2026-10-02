@@ -1,0 +1,423 @@
+Concept (RFC 6749 roles; RFC 8414 metadata; reviewed 2026-10): four roles — resource owner, client, authorization server, resource server — plus metadata discovery so clients learn endpoints and capabilities instead of hardcoding them.
+Participants: SPA or service (client), IdP (authorization server), API (resource server).
+Sequence: client reads authorization-server metadata, directs the owner to the authorization endpoint, exchanges the code at the token endpoint, calls the API with the access token.
+Invariant: endpoint locations and capabilities come from the configured issuer's metadata over TLS or from deployment config, never from request parameters or attacker-influenced input. Metadata itself is unsigned JSON; trust comes from the pre-configured issuer plus transport security.
+Validation: issuer identifier matched exactly (no discovery on untrusted input), TLS on all endpoints, metadata cached with a refresh bound.
+Failure: metadata fetched per-request from a client-supplied issuer enables SSRF and endpoint substitution.
+Remediation: allow-listed issuers, metadata pinned at deploy with periodic refresh.
+Regression test: unknown-issuer request rejected before any network call.
+
+---
+
+Concept (RFC 9700 §2.1; reviewed 2026-10): authorization code with PKCE S256 for browser and native flows — MUST for public clients, RECOMMENDED for confidential clients; implicit and resource-owner-password grants are forbidden under current BCP.
+Participants: browser user, SPA, authorization server, API.
+Sequence: SPA creates code_verifier and code_challenge (S256), redirects with challenge plus state; owner authenticates; server returns code to the exact registered redirect URI; SPA redeems code plus verifier at the token endpoint.
+Invariant: code redemption is bound to the transaction-specific PKCE verifier at the token endpoint; separately, state and nonce bind each front-channel response to the client transaction that initiated it. The verifier and the transaction binding are independent mechanisms.
+Validation: S256 method enforced for public clients and default for all (reject plain); state compared; redirect URI string-matched; single use of code.
+Failure: plain PKCE accepted lets a network observer who captured the challenge redeem the code.
+Remediation: S256 required server-side; plain rejected even from first-party clients.
+Regression test: plain-method flow rejected; replayed code rejected on second use.
+
+---
+
+Concept (RFC 9700 §4.5, §4.7; reviewed 2026-10): state, nonce, and redirect binding defeat CSRF, replay, and mix-up at the authorization endpoint.
+Participants: SPA, authorization server, owner browser.
+Sequence: state generated per attempt and stored in session; nonce generated per OIDC attempt and later matched to the ID token claim; redirect URI registered exactly.
+Invariant: each front-channel response is attributable to exactly one outstanding request the client initiated.
+Validation: state equality, nonce equality with the ID token (after exchange), and issuer identification on the authorization response before redemption — via the iss response parameter where the AS returns it, via JARM, or via prior trusted issuer context. An ID Token's own iss is only available after token exchange and cannot serve the pre-redemption check.
+Failure: missing iss check lets an attacker swap responses between two providers sharing a client id.
+Remediation: validate iss, aud, nonce together; reject on any mismatch before code redemption.
+Regression test: cross-provider response substitution rejected; stale-state replay rejected.
+
+---
+
+Concept (RFC 9700 §4.1; reviewed 2026-10): exact redirect-URI matching, no wildcards, no open path prefixes.
+Participants: client registration, authorization server.
+Sequence: registration stores full URIs; each request's redirect_uri is string-compared; mismatch aborts before owner interaction.
+Invariant: tokens and codes go only to pre-registered destinations.
+Validation: exact string match including scheme, host, port, path; localhost allowed only for native apps per RFC 8252 loopback rules.
+Failure: prefix matching on https://app.acme.test/callback also matches https://app.acme.test/callback.evil.test.
+Remediation: exact match; one URI per environment; native apps use claimed HTTPS or loopback with ephemeral port.
+Regression test: prefix-sibling URI rejected; case-variant host rejected.
+
+---
+
+Concept (RFC 9700 §2.1.2; reviewed 2026-10): tokens in the authorization response (implicit flow) cannot be sender-constrained and leak through URLs, history, and referrers.
+Participants: legacy SPA, authorization server, browser history.
+Sequence (forbidden): token returned in the fragment; stored in history, logs, and referrer headers downstream.
+Invariant: access tokens travel only in back-channel token responses, never in front-channel redirects.
+Validation: server refuses response_type=token; client never parses tokens from fragments.
+Failure: "works in the demo" keeps implicit alive; one shared link leaks a live token.
+Remediation: migrate to code plus PKCE; server-side kill-switch rejecting implicit response types.
+Regression test: response_type=token request rejected with an error, not a token.
+
+---
+
+Concept (RFC 6749 §4.4; RFC 9700 §2.1; reviewed 2026-10): client credentials grant for machine-to-machine calls, scoped per workload.
+Participants: backend service (confidential client), authorization server, downstream API.
+Sequence: client authenticates (secret or private_key_jwt), requests a scope narrow to the job, caches the token until near expiry, refreshes with margin.
+Invariant: each workload holds the minimum scope for its single job; no shared super-tokens across services.
+Validation: audience set to the target API, lifetime short (minutes), scope from an allow-list per client id.
+Failure: one token with all scopes shared by five services; any compromise is total.
+Remediation: per-workload clients and scopes; secret in the secret store, injected at deploy, rotated on schedule.
+Regression test: over-scoped request rejected; token used outside its audience rejected.
+
+---
+
+Concept (RFC 7523; reviewed 2026-10): private_key_jwt replaces shared secrets for confidential-client authentication.
+Participants: service holding a private key, authorization server with the registered public key.
+Sequence: client builds a JWT (iss and sub equal client_id, aud equal token endpoint, jti unique, exp minutes), signs it, posts as client_assertion.
+Invariant: authentication material is asymmetric: the server holds only the public key, so a server-side leak does not impersonate the client.
+Validation: signature, aud, expiry window; jti uniqueness with a replay cache as a stronger deployment policy (RFC 7523 makes jti optional and replay protection discretionary — this file recommends enforcing it, labeled as policy, not as an RFC MUST).
+Failure: shared secret checked into the repo works until the first leak, then every deployment is suspect.
+Remediation: private_key_jwt with per-environment keys; static secrets deleted, not just deprecated.
+Regression test: replayed assertion (same jti) rejected; wrong-audience assertion rejected.
+
+---
+
+Concept, exotic tier (RFC 9126; reviewed 2026-10): Pushed Authorization Requests move the authorization payload to a back-channel POST, returning request_uri consumed once at the front channel.
+Participants: confidential client, authorization server, browser.
+Sequence: client POSTs the full authorization request with authentication; server returns request_uri (one-time, short-lived); front channel carries only that URI.
+Invariant: request integrity and client authentication happen before the owner ever sees a URL, defeating tampering and injection in request parameters.
+Validation: request_uri single use by the client (MUST), short expiry; server treats URIs as one-time (SHOULD) with only narrow tolerance for browser reload duplicates. DPoP key binding alongside PAR (dpop_jkt or DPoP header) is a separate optional composition, not part of PAR itself.
+Failure: long-lived or reusable request_uri replays the original authorization with modified front-channel parameters.
+Remediation: enforce short-lived URIs with client single-use; servers SHOULD enforce one-time use, tolerating at most refresh-duplicate replays, never general reuse; required for high-security profiles, optional elsewhere.
+Regression test: replayed request_uri rejected; tampered front-channel parameter against a PAR URI rejected.
+
+---
+
+Concept, exotic tier (RFC 9101; reviewed 2026-10): JWT-Secured Authorization Request signs or encrypts the whole authorization request as a request object.
+Participants: client with signing key, authorization server.
+Sequence: client builds the authorization parameters as claims, signs (optionally encrypts), sends as request parameter.
+Invariant: the authorization server processes only requests whose integrity (and where needed, confidentiality) is cryptographically assured.
+Validation: signature against registered keys, aud, exp, required claims present; encrypted variantRSA-OAEP plus content encryption per profile.
+Failure: unsigned request objects accepted "for compatibility" recreate every tampering vector PAR was meant to close.
+Remediation: require signed request objects for confidential high-risk clients; reject mixed mode.
+Regression test: unsigned request object rejected where policy requires signing; tampered claim detected.
+
+---
+
+Concept, exotic tier (RFC 9396; reviewed 2026-10): Rich Authorization Requests express fine-grained permissions as structured authorization_details instead of coarse scopes.
+Participants: client needing payment-grade granularity, authorization server, resource server.
+Sequence: client sends typed authorization details (e.g. pay €10 to merchant X, one-time); server shows the exact details at consent; issued token carries them.
+Invariant: what the owner approved is semantically what the token authorizes — authorization equivalence between consent and enforcement, carried in machine-readable form. The AS passes authorization details to the RS, typically in the token or introspection response.
+Validation: type allow-list, field validation per type, details enforced at the resource server against the same semantics shown at consent.
+Failure: consent screen shows scopes while the token carries broader details — approval and authorization diverge.
+Remediation: render authorization_details at consent; resource server enforces equivalent semantics, not just scope presence.
+Regression test: token used beyond its approved details rejected; consent rendering reviewed against enforced semantics (equivalence, not byte identity).
+
+---
+
+Concept (RFC 9449; reviewed 2026-10): DPoP sender-constrains tokens at the application layer for clients that cannot use mTLS, notably SPAs and device apps.
+Participants: public client holding a key pair, authorization server, resource server.
+Sequence: client sends DPoP proof JWT (htm, htu, iat, jti, optional nonce) with token and API requests; server binds issued tokens to the key thumbprint (jkt); resource server checks proof plus binding.
+Invariant: a stolen token alone is useless without the private key that proves possession per request.
+Validation: proof freshness (seconds to minutes), htu and htm match the actual request, ath matches the presented access token, jti unique per proof with replay detection (core proof property: a repeated jti is rejected), nonce honored when issued.
+Failure: bearer fallback accepted alongside DPoP lets attackers use the token without any proof.
+Remediation: DPoP-required resource servers reject proof-less calls outright; short token lifetimes bound pre-computed proof abuse.
+Regression test: token replayed without proof rejected; proof with wrong htu rejected; stale proof rejected.
+
+---
+
+Concept (RFC 8705; reviewed 2026-10): mutual-TLS certificate-bound tokens constrain tokens at the TLS layer for services that terminate TLS themselves.
+Participants: confidential client with certificate, authorization server, resource server seeing the same client certificate.
+Sequence: authorization server records the client certificate thumbprint in the token confirmation claim; resource server compares against the presented certificate.
+Invariant: token usability requires the TLS-layer identity, which never appears in logs, URLs, or JSON.
+Validation: confirmation claim present and the presented TLS client certificate compared against the certificate bound to the token (thumbprint match per RFC 8705); broader PKI chain validation follows deployment policy rather than a universal rule.
+Failure: TLS terminated at a proxy that strips client identity breaks the binding silently; tokens verify while constraint is void.
+Remediation: terminate or forward client identity explicitly end to end; monitor for confirmation-claim absence as a Sev-1 signal.
+Regression test: token presented over a different client certificate rejected; missing confirmation claim rejected.
+
+---
+
+Concept (RFC 8707 indicators; RFC 9068 aud; reviewed 2026-10): audience restriction limits where a token is accepted.
+Participants: client, authorization server, one or more resource servers.
+Sequence: client requests with resource indicators naming target APIs; server mints tokens with aud bound to those APIs; each API accepts only its audience.
+Invariant: a token stolen from API A is invalid at API B.
+Validation: aud checked as allow-list membership, never substring; the client's resource indicators map explicitly to the aud values minted (RFC 8707 request maps to RFC 9068 enforcement); multi-audience tokens only where the deployment explicitly allows. JWT access tokens enforce this locally per RFC 9068; opaque tokens enforce it at introspection time instead — same invariant, different checkpoint.
+Failure: single-audience tokens accepted everywhere "to keep config simple" recreates bearer-everywhere.
+Remediation: per-API audiences enforced at each resource server; counterfeit-resource replay covered by sender constraint on top.
+Regression test: cross-audience token rejected; audience-less token rejected where policy requires aud.
+
+---
+
+Concept (RFC 9700 §4.14; reviewed 2026-10): refresh-token rotation with reuse detection turns theft into a signal.
+Participants: client, authorization server.
+Sequence: each refresh response issues a new refresh token and invalidates the old; presenting an already-used token triggers reuse detection.
+Invariant: at most one live refresh token per chain; a fork in the chain means compromise.
+Validation: rotation with reuse detection is the RFC-mandated baseline for public clients (sender-constrained refresh or rotation/replay detection per RFC 9700); the seconds-scale grace for concurrency races plus revoke-the-family-and-alert on reuse is our deployment policy on top of that mandate, not itself normative.
+Failure: infinite-reuse refresh tokens let stolen credentials persist for months undetected.
+Remediation: rotation default on; reuse revokes the grant family and pages, never silently re-issues.
+Regression test: reused refresh token revokes the family and fires the alert; concurrent-legitimate race tolerated within the grace window.
+
+---
+
+Concept (RFC 9700 §4.14; reviewed 2026-10): public clients must use sender-constrained refresh tokens or rotation — rotation is not universally mandatory, the choice is constrained.
+Participants: SPA or native app, authorization server.
+Sequence: refresh issued bound to the DPoP key, or issued with rotation; confidential clients additionally authenticate at use.
+Invariant: a leaked refresh token from a public client cannot be redeemed without the bound key or is single-use with theft detection.
+Validation: DPoP proof key matches the bound jkt on every refresh, or rotation chain enforced with reuse detection.
+Failure: long-lived static refresh token in localStorage with neither binding nor rotation: one XSS exfiltrates permanent access.
+Remediation: DPoP-bound refresh plus rotation together for high value; short absolute lifetimes cap the worst case.
+Regression test: refresh presented with a different DPoP key rejected; static-token redemption rejected by policy.
+
+---
+
+Concept (RFC 7009 revocation; reviewed 2026-10): revocation has propagation limits that incident response must respect.
+Participants: incident responder, authorization server, resource servers holding cached validation material.
+Sequence: revoke refresh at the server (immediate for new issuance), access tokens die only by expiry unless resource servers check status per call.
+Invariant: response plans assume live access tokens until their exp, however fast refresh is revoked.
+Validation: short access lifetimes bound the exposure window; critical APIs use introspection or status checks where the window matters.
+Failure: "we revoked everything" declared while stolen access tokens work for another 55 minutes.
+Remediation: lifetimes sized to the incident budget (minutes for sensitive APIs), revocation plus forced re-auth for sessions, key rotation for systemic compromise.
+Regression test: drill asserts a revoked-refresh access token still works until exp (documents the window), then expires; status-checked endpoints reject immediately.
+
+---
+
+Concept (OpenID Connect Core 1.0; reviewed 2026-10): discovery bootstraps trust in the provider's endpoints and keys.
+Participants: relying party, OpenID provider.
+Sequence: relying party fetches .well-known/openid-configuration from the allow-listed issuer, caches JWKS, validates signatures against it.
+Invariant: all provider locations and keys come from the discovered document for the expected issuer, never from login hints or request parameters.
+Validation: issuer exactly matches, HTTPS endpoints only, JWKS refresh bounded with failure-open explicitly forbidden.
+Failure: discovery per login request from user input turns the provider address into an attacker choice.
+Remediation: allow-listed issuers, pinned discovery at deploy, background refresh with last-known-good retention.
+Regression test: unknown issuer rejected without network access; JWKS outage keeps validating against cache within bound, then fails closed.
+
+---
+
+Concept (OIDC Core §3 ID Token validation; reviewed 2026-10): the ID token checklist, every item mandatory.
+Participants: relying party validating, provider that minted.
+Sequence: parse JOSE header, select key by kid, verify signature, then claims.
+Validation checklist: iss equals expected provider; aud contains our client_id (azp checked when multiple); exp in the future within the bounded deployment-defined skew; iat sane; nonce equals the session value for login flows; sub present and mapped to a local account, never trusted as a global identifier; auth_time honored when max_age was requested; acr/amr meet the policy for the attempted action.
+Failure: signature valid but aud unchecked accepts tokens minted for another client of the same provider.
+Remediation: checklist enforced in one shared validator used by every entry point; no ad-hoc claim checks scattered in handlers.
+Regression test: each checklist item has a negative fixture (wrong iss, aud, exp, nonce, missing sub) and all are rejected.
+
+---
+
+Concept (OIDC Core; reviewed 2026-10): the access token authorizes API calls, the ID token authenticates the user to the client — never interchange them.
+Participants: SPA, API, provider.
+Sequence: SPA sends the access token to the API; the API validates scope, audience, expiry; the ID token stays client-side for identity display and session decisions.
+Invariant: resource servers decide on access tokens; clients decide identity on ID tokens.
+Validation: API rejects ID tokens (wrong aud shape, no scope semantics); client never sends the ID token as a credential.
+Failure: API accepts the ID token because "it is also a JWT and signature verifies" — scopes unenforced, audience wrong, lifetime semantics mismatched.
+Remediation: audience and token-type checks at the API that only access tokens (or RFC 9068 JWT profiles) can pass; separate validators per token kind.
+Regression test: ID token presented to the API rejected; access token without required scope rejected.
+
+---
+
+Concept (OIDC Core §5 UserInfo; reviewed 2026-10): UserInfo supplements identity claims over an authenticated call; it is not an authorization decision input.
+Participants: client, UserInfo endpoint.
+Sequence: client calls UserInfo with the access token, merges stable claims (sub first) into the session, treats the rest as hints.
+Invariant: authorization uses locally assigned roles and verified tenant claims, never raw provider profile fields.
+Validation: sub match with the ID token, TLS, response caching bounded, group/role claims mapped through an explicit allow-list.
+Failure: is_admin: true from a self-asserted provider profile copied into the session grants admin to anyone editing their profile.
+Remediation: map provider claims to internal roles explicitly; drop unmapped claims; tenant derived from verified claim plus enforcement, not from profile text.
+Regression test: hostile profile with elevated claims maps to base role only.
+
+---
+
+Concept (OIDC subject identifiers; reviewed 2026-10): pairwise vs public subs control cross-client correlation.
+Participants: provider, two client applications of the same user.
+Sequence: public sub identical everywhere; pairwise sub differs per client (sector identifier), unlinkable without collusion.
+Invariant: correlation happens only where the deployment intends it.
+Validation: pairwise configured for privacy-sensitive fleets; account linking explicit and consented, never by silent sub matching.
+Failure: public subs logged across services let any log reader join user activity across clients.
+Remediation: pairwise by default; public only where cross-client identity is the product requirement, documented as such.
+Regression test: same user yields different subs across test clients under pairwise; linking table empty without consent flow.
+
+---
+
+Concept (OIDC auth_time, amr, acr; reviewed 2026-10): step-up authentication for sensitive actions uses volcanic claims, not session age alone.
+Participants: client, provider, sensitive endpoint (payment, role change).
+Sequence: sensitive action demands max_age short or acr meeting the policy; provider re-authenticates when stale; ID token carries auth_time and amr; API enforces before executing.
+Invariant: privilege of the action dictates freshness and strength of the authentication behind it.
+Validation: auth_time within the action's window, amr includes a phishing-resistant method where required, acr equals or exceeds policy.
+Failure: 8-hour-old password login authorizes a payout because "the session is valid".
+Remediation: per-action auth requirements enforced server-side; client hints never sufficient.
+Regression test: stale-auth payout rejected; phishing-resistant-method requirement rejects password-only auth_time.
+
+---
+
+Concept (OIDC RP-Initiated Logout 1.0 plus back-channel; reviewed 2026-10): logout terminates the provider session and notifies clients; it cannot recall issued access tokens.
+Participants: user, relying party, provider, downstream clients.
+Sequence: RP redirects to end_session_endpoint with post-logout URI and state; provider clears its session and fires back-channel logout tokens to registered clients; each client kills its local session.
+Invariant: logout is best-effort broadcast with per-client confirmation, not a global kill switch.
+Validation: post-logout URIs pre-registered, logout tokens validated like ID tokens (iss, aud, sub, sid, events claim), front-channel used only where back-channel unavailable.
+Failure: "logout works" declared while the SPA keeps a valid access token for 55 more minutes and a second tab stays live.
+Remediation: short access lifetimes bound the residue; sensitive apps add per-call status checks; logout races documented in UX (all tabs re-check).
+Regression test: post-logout API call with the old access token still succeeds until exp (window documented); back-channel notification kills the sibling session.
+
+---
+
+Concept (RFC 7515, 7519; reviewed 2026-10): JWT validation is an allow-list discipline over algorithms, keys, and claims.
+Participants: any JWT consumer.
+Sequence: read alg and kid without trusting them, select the expected key, verify, then claims.
+Validation checklist: alg in the allow-list (RS256/ES256 deployments reject none and HS; never trust the token's alg choice against a mixed key set), key from current JWKS by kid with cache bounds, iss/aud/exp/nbf enforced, clock skew capped at the deployment-defined bound, typ checked where profiles use it.
+Failure: alg confusion — RSA public key used as HMAC secret verifies attacker-signed tokens.
+Remediation: separate key sets per alg, alg pinned in code (never negotiated from the token alone), confusion fixtures in the suite.
+Regression test: none-alg, wrong-alg, wrong-kid, future-nbf, skewed-exp fixtures all rejected.
+
+---
+
+Concept (RFC 7516, nested JWT; reviewed 2026-10): sign-then-encrypt ordering with typ and cty keeping the layers straight.
+Participants: token producer needing confidentiality plus authenticity, consumer peeling both layers.
+Sequence: payload signed (JWS), then the JWS encrypted as JWE with typ JWT and cty JWT marking nesting.
+Invariant: inner signature verified after decryption; outer layer alone never authorizes.
+Validation: decrypt with the current data-encryption key, then run the full JWS checklist on the inner token.
+Failure: outer JWE accepted as proof of content because "only we could have encrypted it" — encryption is not authentication of the claims.
+Remediation: always verify the inner signature; rotate data-encryption keys with dual-accept.
+Regression test: re-encrypted foreign payload (valid outer, forged inner) rejected at signature check.
+
+---
+
+Concept (RFC 9068 JWT access-token profile; reviewed 2026-10): JWT-structured access tokens with REQUIRED claims for interoperable resource servers.
+Participants: authorization server, resource server validating locally.
+Sequence: server mints JWT with iss, exp, aud, client_id, jti, sub; resource server validates per profile without introspection.
+Invariant: profile conformance is what makes local validation safe; deviations return to introspection.
+Validation: strict RFC 9068 profile checklist — typ header at+jwt, iss, exp, aud matching this API, sub, client_id, iat, jti; lifetime short.
+Failure: self-styled "JWT access tokens" missing aud and jti accepted by a lenient validator — cross-API replay with no traceability.
+Remediation: strict profile validation or opaque tokens; no middle ground of JWT-shaped bearer strings.
+Regression test: profile-violating token (missing aud/jti) rejected; cross-audience replay rejected.
+
+---
+
+Concept (RFC 7662 introspection; reviewed 2026-10): opaque tokens plus active introspection for high-value APIs.
+Participants: resource server, introspection endpoint.
+Sequence: server posts the token, receives active flag with scope, client_id, exp, and token type; caches the verdict briefly.
+Invariant: the authorization server remains the authority for token state; caches are bounded conveniences.
+Validation: TLS with server authentication, active flag true, scope and audience sufficient, cache TTL in seconds to low minutes.
+Failure: hour-long introspection cache recreates the revocation blind window the design was meant to close.
+Remediation: TTL sized to the incident budget; revocation-sensitive actions re-check synchronously.
+Regression test: revoked token rejected within the TTL bound; cache-expiry behavior asserted, not assumed.
+
+---
+
+Concept (authorization models; no single RFC — design discipline; reviewed 2026-10): RBAC for coarse roles, ABAC and claims for fine decisions, scopes for delegation.
+Participants: policy designers, enforcement points.
+Sequence: roles gate entry (admin, operator, member); claims and attributes decide within (tenant, ownership, clearance); scopes bound what delegated clients may do.
+Invariant: coarse checks never substitute for fine ones; each layer answers a different question.
+Validation: role matrix tested per endpoint; attribute rules tested with boundary values (own vs other tenant, edge clearance); scope tests assert least privilege per client.
+Failure: hasRole checks everywhere while ownership lives nowhere — the API1 finding wearing RBAC camouflage.
+Remediation: roles at the perimeter, ownership and attributes at the resource (see 06 invariants); scopes minted per workload.
+Regression test: role-correct but attribute-wrong requests denied; scope-creep fixtures denied.
+
+---
+
+Concept (tenant isolation design; reviewed 2026-10): tenancy as a verified claim plus enforcement at every layer, never a request parameter.
+Participants: gateway, services, Postgres with forced RLS.
+Sequence: gateway authenticates and sets tenant context from the verified token claim; services propagate it; RLS re-enforces it in the database.
+Invariant: tenant context cannot be supplied by the client under any parameter name.
+Validation: claim-to-context mapping tested, forged-param ignored test, RLS policy per table with bypass auditing.
+Failure: tenant_id read from the query string "for admin tooling convenience" — one convenience, total isolation loss.
+Remediation: single context-carrying mechanism, enforced mapping, RLS as the backstop that survives application bugs.
+Regression test: forged tenant parameter ignored; direct service call without context denied; RLS denial fixtures green.
+
+---
+
+Concept (scopes vs roles discipline; reviewed 2026-10): scopes delegate, roles classify — mixing them corrupts both.
+Participants: client developers, API authors.
+Sequence: scopes requested per task (read:orders, write:profile), roles assigned per user (support-tier-2), enforcement checks both where both apply.
+Invariant: a scope never implies a role and a role never mints a scope; the token carries delegation, the directory carries identity.
+Validation: scope allow-list per client id, role matrix per endpoint, tests crossing them (valid scope plus wrong role, right role plus missing scope).
+Failure: scope: admin accepted as a role at the API — any client requesting it becomes admin.
+Remediation: disjoint namespaces enforced in code review checklists; admin powers only via roles, never via requested scopes.
+Regression test: self-requested admin scope rejected at issuance; role-without-scope denied at the API.
+
+---
+
+Concept (IdP integration patterns; reviewed 2026-10): brokered identity with Keycloak, Entra ID, or Auth0 behind one internal contract.
+Participants: internal services, external or upstream IdP.
+Sequence: broker validates the upstream token or code flow, maps claims to the internal profile, mints internal tokens with internal audiences; services know only the broker.
+Invariant: internal APIs depend on the broker contract, never on upstream claim shapes.
+Validation: claim-mapping table versioned, upstream changes absorbed at the broker, broker tokens carry internal iss and aud.
+Failure: services parsing Entra group ObjectIds directly — one directory restructure breaks every authorization check.
+Remediation: broker translates to stable internal roles; upstream treated like any third-party API (verified, schema-checked).
+Regression test: upstream claim-shape change absorbed with broker-only diff; services untouched and green.
+
+---
+
+Concept (JWKS rotation; reviewed 2026-10): key rollover without downtime or validation gaps.
+Participants: authorization server rotating, all validators with cached JWKS.
+Sequence: new key published alongside old, tokens minted on new, validators accept both during the window, old removed after lifetimes drain plus margin.
+Invariant: at every instant the validator set covers every key that can still mint or verify live tokens.
+Validation: kid selection current, cache refresh bounded, dual-accept monitored by kid label, removal only after old-key verification rate holds at zero.
+Failure: old key deleted at publish time — in-flight tokens fail until caches converge, an outage shaped like a security improvement.
+Remediation: publish-then-drain procedure with the 24h-zero-rate rule; emergency rotation runbook rehearsed.
+Regression test: dual-accept window test (both kids verify); post-removal test (old-kid token rejected, new-kid accepted).
+
+---
+
+Concept (browser session binding; reviewed 2026-10): the session cookie and the token set must move together.
+Participants: SPA, session backend, provider session.
+Sequence: login binds session id to sub and auth_time; refresh rotates tokens within the session; logout kills local session and notifies the provider.
+Invariant: no valid token outlives its session's death except inside the documented access-token residue window.
+Validation: session fixation rejected (pre-login id invalid after login), concurrent-session policy enforced, residue window asserted in tests.
+Failure: logout clears the cookie while the refresh token in storage keeps minting access for weeks.
+Remediation: refresh stored server-side or bound to the session; logout revokes the chain (see rotation reuse detection).
+Regression test: post-logout refresh rejected; fixation fixture rejected.
+
+---
+
+Concept (clock skew bounds; deployment policy; reviewed 2026-10): one explicit bounded skew, defined by the deployment (60s in ours), identical everywhere.
+Participants: distributed validators without shared clocks.
+Sequence: exp and nbf checked with a single configured skew constant, identical across services.
+Invariant: time validation is deterministic and reviewable, not per-library default.
+Validation: skew constant in one place, tests at the boundary pair (accept just inside, reject just outside the configured bound), NTP monitored.
+Failure: library-default skews differ per service (0s here, 300s there) — tokens valid in one hop and dead in the next, or accepted five minutes stale.
+Remediation: one skew constant, asserted in contract tests across services.
+Regression test: boundary pair green/red as specified; skew constant referenced, not duplicated.
+
+---
+
+Concept (authorization-code reuse and binding; RFC 9700 §4.5; reviewed 2026-10): codes are single-use and bound to the client, the redirect URI, and the PKCE verifier — no stronger session binding than that is protocol-required.
+Participants: browser, authorization server, token endpoint.
+Sequence: code issued bound to client, redirect URI, and PKCE verifier; first redemption consumes it; replays alert.
+Validation: single-use enforced, verifier match, client binding match, reuse triggers reuse-detection response (revoke the chain, alert).
+Failure: multi-use codes "for reliability" let a leaked code be redeemed by whoever arrives second — usually the attacker.
+Remediation: single-use with tight lifetime (seconds to a minute); reliability via proper error handling, never via reuse.
+Regression test: second redemption rejected and revokes; expired code (past 60s) rejected.
+
+---
+
+Concept (browser history and referrer leakage; RFC 9700 §4.3; reviewed 2026-10): front-channel values persist where you cannot delete them.
+Participants: SPA, browser history, downstream links, logs.
+Sequence: authorization response parameters land in history entries, referrer headers to third parties, and server logs of the redirect endpoint.
+Invariant: nothing reusable or long-lived crosses the front channel — codes are single-use and short-lived precisely so their inevitable leakage is worthless.
+Validation: no tokens in URLs ever, codes expire in about a minute, redirect endpoints log without query strings.
+Failure: access_token in the fragment "temporarily" becomes permanent in a thousand histories and one analytics export.
+Remediation: code flow only, short code lifetime, query-stripped logging at the redirect endpoint, referrer policy strict on all pages.
+Regression test: log-output assertion contains no code or token patterns; referrer from the app carries origin only.
+
+---
+
+Concept (OAuth 2.1, Internet-Draft draft-ietf-oauth-v2-1-16, September 2026 — NOT an RFC; reviewed 2026-10): the consolidation trajectory — code plus PKCE, no implicit, no ROPC, exact redirect matching, sender-constrained refresh for public clients.
+Participants: standards trackers, architects planning multi-year baselines.
+Sequence: 2.1 folds RFC 6749 plus RFC 8252, RFC 9700, and browser-app guidance into one framework, removing insecure modes.
+Invariant for this file: 2.1 material is labeled draft everywhere it appears and never cited as normative; RFC 9700 plus the component RFCs remain the normative baseline until 2.1 publishes.
+Validation: track the draft (IESG milestone December 2026 per status page); adopt only what already exists as finalized RFCs.
+Failure: "we are 2.1-compliant" claimed in 2026 against a moving draft — compliance with an expiring document.
+Remediation: claim "RFC 9700 aligned, 2.1-ready"; re-verify on publication and record the new RFC number in the manifest refresh.
+Regression test: none normative; a calendar reminder owns the re-verification, not a test.
+
+---
+
+Concept (privilege minimization; RFC 9700 §2.2; reviewed 2026-10): tokens carry the least authority the task needs, audience aside.
+Participants: client requesting, server minting, API enforcing.
+Sequence: request minimum scopes and single audience per token; prefer several narrow tokens over one broad token; lifetime matched to sensitivity.
+Invariant: compromise of any one token exposes at most one task on one API for minutes.
+Validation: scope-minimization review per client, audience-per-token assertion, lifetime tiers (minutes for sensitive, bounded hours otherwise).
+Failure: one all-scopes all-audiences day-long token "to reduce round trips" — the skeleton key anti-pattern.
+Remediation: narrow tokens plus caching discipline; round-trip cost addressed with session reuse, never with broader tokens.
+Regression test: over-broad request rejected or down-scoped with warning; skeleton-key fixture denied at every API.
+
+---
+
+Concept (incident response for token leakage; reviewed 2026-10): minutes matter, and access tokens outlive your response unless lifetimes were already short.
+Participants: responder, authorization server, affected users and clients.
+Sequence: scope the leak (which tokens, which audiences, what window), revoke refresh chains, rotate client credentials and signing keys if indicated, force re-authentication, watch for reuse-detection alerts.
+Invariant: response assumes live access tokens until their exp; the plan never promises instant invalidation of bearer tokens.
+Validation: access lifetimes were sized for this day (minutes on sensitive APIs), revocation paths rehearsed, key-rotation runbook timed.
+Failure: "revoked at the dashboard" while the leaked access token works 55 more minutes against the payments API.
+Remediation: short lifetimes as pre-incident work, status-checked endpoints for crown jewels, post-incident rotation of everything the token could have touched.
+Regression test: semi-annual drill timed end to end; drill asserts the documented residue window, then asserts closure after expiry.

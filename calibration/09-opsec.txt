@@ -1,0 +1,221 @@
+Rule: Every secret has an owner, a scope, and an expiry; undated secrets are incidents waiting.
+Violation: JWT signing key created two years ago in a chat message, still in production, owner unknown.
+Practice: Generate in the secret manager, inject at deploy, scope to one workload, expire routinely; static exceptions need a named owner and review date.
+Control: Nightly scan lists secrets past 80% of lifetime; owner paged automatically.
+Recovery: Expired secret rolls via the dual-accept procedure; unknown-owner secret gets an owner within the sprint or is revoked.
+
+---
+
+Rule: Prefer short-lived workload-bound credentials; long-lived keys require written justification.
+Violation: CI deploys with a three-year-old cloud key stored as a repo variable.
+Practice: OIDC workload identity (CI role assumed per run, minutes-long tokens); static keys only where OIDC is impossible, documented with expiry.
+Control: CI job fails if a static cloud key older than 90 days is referenced.
+Recovery: Replace with workload identity; rotate the old key; audit its usage history for unknown callers.
+
+---
+
+Rule: Never pass secrets as process arguments.
+Violation: deploy.sh --db-password=s3cret visible in ps output, shell history, and the CI log.
+Practice: Arguments carry references (secret names, file paths); values arrive via manager injection or mounted files with tight permissions.
+Control: Pre-commit and CI scanners flag --password=, -p secrets, and credential-shaped literals in commands.
+Recovery: Rotate the exposed value; purge logs and history entries containing it.
+
+---
+
+Rule: Environment variables are a transport with known leak paths, not a safe store.
+Violation: DB password in env, readable via /proc from a sidecar, dumped in a crash report, inherited by a debug child process, echoed in a verbose CI log.
+Practice: Prefer secret-manager or runtime injection with documented exposure boundaries (which processes, which logs, which dumps may legitimately see the value); env only within those boundaries and never for the highest-sensitivity values.
+Control: Boundary document per sensitivity tier; scanner flags credential-shaped env in CI logs and artifacts.
+Recovery: Rotate the exposed value; treat every configured boundary-crosser (dumps, child processes, logs) as contaminated until proven otherwise.
+
+---
+
+Rule: Redact by default at every telemetry boundary.
+Violation: 401-burst debug log prints the Authorization header to prove "what the client sent".
+Practice: Allow-list logged fields (key id, issuer, outcome); headers, bodies, and tokens never cross into logs, traces, or metrics.
+Control: Redaction test fails the build on credential-shaped values in log output; sampled production logs scanned nightly.
+Recovery: Purge the contaminated retention window if possible; rotate anything that crossed the boundary.
+
+---
+
+Rule: Crash dumps and error responses carry no secrets.
+Violation: Heap dump uploaded to the ticket includes the in-memory token cache; 500 response echoes the SQL bind values.
+Practice: Dumps sanitized or access-controlled with owner approval; error contracts return codes and request ids only.
+Control: Dump-access audit quarterly; error-shape contract test asserts no values leak.
+Recovery: Treat an unsanitized dump like a secret exposure of everything it held; rotate accordingly.
+
+---
+
+Rule: URLs never carry credentials, tokens, or session ids.
+Violation: Password-reset link with ?token= plus analytics forwarding the full URL to a third party.
+Practice: Tokens in POST bodies or headers; reset links single-use, short-lived, and consumed on open; analytics stripped of query strings.
+Control: Log-output assertion rejects credential patterns in URLs; outbound-link audit per release.
+Recovery: Invalidate issued link tokens; rotate anything the logs forwarded.
+
+---
+
+Rule: Never place secrets in commands at all; history controls are detection, not prevention.
+Violation: curl -H "Authorization: Bearer live-token" executed interactively, persisted forever.
+Practice: Values arrive via files, prompts, or manager injection — never inline. Leading-space and HISTCONTROL habits reduce accidents but are conveniences, not controls; assume any typed secret is persisted somewhere.
+Control: History scanner flags token shapes weekly as detection; the prevention is workflows that never need inline secrets.
+Recovery: Rotate the token; delete history lines on every machine that ran it; check shell backups and dotfile repos.
+
+---
+
+Rule: Screenshots and support bundles get redacted before they leave the machine.
+Violation: Support bundle with .env and full headers attached to a public vendor ticket.
+Practice: Redaction checklist per bundle type; env files excluded by default and added only as named references.
+Control: Bundle-creation script strips known-sensitive paths automatically.
+Recovery: Rotate everything the bundle contained; request deletion from the vendor where possible.
+
+---
+
+Rule: Pre-commit hooks plus CI scanners, layered — neither alone suffices.
+Violation: Hook skipped with --no-verify "just this once"; CI has no scanner so the key lands on main.
+Practice: Pre-commit blocks (fast feedback), CI blocks (unenforceable bypass), history scan on schedule (catches what both missed); .gitignore covers env, keys, dumps, and local config.
+Control: CI secret-scan job required on every PR; dedicated non-sensitive canary tokens (worthless by design, tightly scoped alerting) committed as honeypots trip alerts if ever used — never anything resembling a usable credential.
+Recovery: Follow the history-remediation rule below; hooks never trusted as the only layer.
+
+---
+
+Rule: Committed secret means remove plus rotate plus assess — removal alone is theater; rotate credentials, not non-credentials.
+Violation: Key deleted in a follow-up commit; it remains in history and was already cloned.
+Practice: Purge with filter-repo, force-push, rotate the secret and every credential derivable from it (tokens minted with it, sessions it protects); artifacts it merely touched but cannot regenerate (old log lines referencing a key id) get assessed and contained, not "rotated".
+Control: Exposure checklist attached to the incident ticket; cannot close while rotation items are open.
+Recovery: Completed rotation plus window assessment; canary check for unknown usage.
+
+---
+
+Rule: Sign commits for authorship and integrity; enforce review through branch protection — signing alone authorizes nothing.
+Violation: Direct push to main bypassing review "because CI was slow"; signed, but unreviewed.
+Practice: Signed commits prove who wrote what; protected branches with required checks and reviewers decide what merges. Both layers, each doing its own job.
+Control: Server-side rules require signatures and reviews independently; bypass attempts logged and alerted.
+Recovery: Audit the bypassed window; re-verify anything merged without checks.
+
+---
+
+Rule: Forked PRs run as untrusted code.
+Violation: Community PR exfiltrates CI secrets because the workflow shares them with fork runs.
+Practice: Fork workflows get no secrets, read-only tokens, and isolated runners; required-secret jobs run only after maintainer approval on safe steps.
+Control: Workflow audit asserts secretless fork jobs; CODEOWNERS gates the approval step.
+Recovery: Rotate any secret a fork job could observe; review workflow diffs like code.
+
+---
+
+Rule: Runners hold least privilege with short lifetimes.
+Violation: Self-hosted runner with cluster-admin kubeconfig shared by all repos.
+Practice: Ephemeral runners per job, scoped tokens, minimal IAM per workflow; persistent runners isolated per trust level.
+Control: Quarterly runner-permission audit; token lifetime assertions in workflow lint.
+Recovery: Re-scope first, then rotate the over-broad credentials the runners held.
+
+---
+
+Rule: Protected environments gate production deploys.
+Violation: Any merged PR auto-deploys to production at 2am with no approver.
+Practice: Environment protection rules with required reviewers for prod; staging auto-deploys, prod does not; deployment windows recorded.
+Control: Environment policy as code; bypass attempts logged and alerted.
+Recovery: Freeze deploys, verify what shipped in the bypass window, re-run checks.
+
+---
+
+Rule: Artifacts and caches are poisoning targets, not inert storage.
+Violation: Build cache keyed only by branch name serves one PR's tainted objects to another.
+Practice: Cache keys include lockfile hashes; artifacts immutable with digests; provenance recorded where deployed.
+Control: Cache-key lint; artifact digest verification at deploy; provenance attestation checked.
+Recovery: Rebuild from clean cache; invalidate affected artifacts; trace which deploys consumed them.
+
+---
+
+Rule: Shell, editor, and core dumps stay secret-free.
+Violation: Editor swap file of .env committed by accident; core dump world-readable in /tmp.
+Practice: Swap and backup files git-ignored globally; core pattern restricted with tight umask; /tmp cleaned on schedule.
+Control: Global gitignore distributed to the team; dump-permission audit on shared hosts.
+Recovery: Treat like any committed secret: remove, rotate, assess.
+
+---
+
+Rule: Clipboard and local caches get the same suspicion as history, handled per environment.
+Violation: Production token copied to a clipboard manager with infinite retention, synced to a personal device.
+Practice: Short retention or exclusion for clipboard managers on work machines; local credential files (kube config, cloud credentials) with strict permissions and idle expiry where the platform supports it; assess per environment rather than assuming one setup fits all.
+Control: Workstation checklist covers clipboard and cache posture; credential-file permission scan (0600 or better).
+Recovery: Rotate what the cache held; wipe the sync target.
+
+---
+
+Rule: Production data stays classified; debugging follows the approved access path with expiry and audit.
+Violation: Full customer dump restored to a laptop for "a quick repro".
+Practice: Data classification decides what may leave production at all; approved path is anonymized or synthetic fixtures, or time-boxed audited access to a sanitized subset — never a full copy on a personal machine.
+Control: Egress review on large data moves; access grants expire automatically and land in the audit log; fixture-generation job maintained so nobody needs the excuse.
+Recovery: Wipe the copy, verify deletion, classify what the copy contained and respond under the matching exposure tier.
+
+---
+
+Rule: Break-glass access is fast, narrow, and fully audited — never a standing privilege.
+Violation: Three engineers hold permanent production database superuser "for incidents".
+Practice: Just-in-time elevation with approver, expiry in hours, session recording, reason ticket mandatory.
+Control: Standing-privilege audit monthly; elevation log reviewed weekly; expired grants auto-revoked.
+Recovery: Remove standing grants first; rotate credentials the standing accounts could see.
+
+---
+
+Rule: Separate human and service identities, always.
+Violation: Deploy script uses an engineer's personal token; she leaves, deploys break — or worse, keep working.
+Practice: Services own service accounts with scoped roles; humans authenticate as themselves with short sessions; no shared passwords anywhere.
+Control: Identity inventory distinguishes human vs workload; offboarding checklist revokes within the hour.
+Recovery: Offboarded-human audit: enumerate everything their credentials touched, rotate service-side.
+
+---
+
+Rule: Production shells are controlled, recorded, and rare.
+Violation: Routine debugging via daily prod SSH with no record of commands run.
+Practice: Session manager with logging instead of raw SSH; read-mostly commands pre-approved; writes require the break-glass ticket.
+Control: Session logs retained and sampled; unrecorded access paths (direct SSH) closed at the network layer.
+Recovery: Review recent session logs after any incident for unrecorded-equivalent gaps.
+
+---
+
+Rule: Elevated access needs approval plus expiry, no exceptions for seniority.
+Violation: Permanent admin "because architect".
+Practice: Elevation request with reason, approver, and time bound; recurring needs become scoped roles, not permanent grants.
+Control: Grant-expiry automation; quarterly access recertification against actual usage.
+Recovery: Downgrade first, ask questions during the review cycle, not before.
+
+---
+
+Rule: Tier the exposure response by blast radius — proportional cost keeps the rule followed.
+Violation: Full incident declared over a leaked dev-only seed, burning a day; next month a prod key leak gets a shrug.
+Practice: Tier one (production or customer-bearing): assume compromise — revoke, rotate dependents, scope blast radius, preserve evidence, assess logs/artifacts/caches, post-incident review. Tier two (dev/test-only, no prod overlap): rotate, verify isolation, log, move on.
+Control: Tier decision recorded in the first hour with the isolation evidence attached; tier-one checklist enforced by the ticket template.
+Recovery: Tier one follows the full containment path below; tier two closes on rotation plus the isolation proof.
+
+---
+
+Rule: On tier-one exposure, revoke first and investigate with the fresh credentials.
+Violation: Team spends two hours scoping while the key stays live.
+Practice: Revoke/rotate immediately, then scope the window from logs; preserve evidence (images, logs, access records) before rebuilding.
+Control: Runbook orders revocation before scoping; drill timing asserts revocation inside 30 minutes.
+Recovery: Invalidate dependent credentials, rebuild affected workloads from known-good, heighten monitoring for a week.
+
+---
+
+Rule: Scope the blast radius from access records, not from optimism.
+Violation: "Only we knew the key" with no log review.
+Practice: Enumerate every caller, artifact, cache, and log the secret could have reached in its lifetime; canary and usage-anomaly checks for unknown callers.
+Control: Scope document attached to the incident; unknown-caller finding extends the window automatically.
+Recovery: Rotate everything in the scoped set, not just the headline secret.
+
+---
+
+Rule: Every exposure ends with a regression control, tier-appropriate.
+Violation: Rotated and forgotten; the same .env committed again next quarter.
+Practice: Tier one: automated test plus detection improvement plus hardening change, each owned and dated. Tier two: at minimum the automated check that would have caught it.
+Control: Incident tickets cannot close with open control items; recurrence escalates the control level.
+Regression control: Quarterly review of exposure repeats; second occurrence of a class triggers a systemic fix, not another reminder.
+
+---
+
+Rule: Hunt secrets in the systems that aggregate them: observability, builds, and orchestration.
+Violation: Trace attributes carry user tokens for "debugging", CI artifacts archive .env files, a Docker layer bakes in a private key, a K8s manifest with a plaintext password ships to the repo, APM tags include cardholder data.
+Practice: Attribute allow-lists on traces and APM (drop or hash sensitive fields at the SDK), CI artifacts exclude secret paths by default, multi-stage Docker builds with secret mounts (never COPY of key files), K8s secrets from the manager (sealed or external), never literals in manifests, caches and crash reports under the same redaction tests as logs.
+Control: Scheduled scan across attribute schemas, artifact contents, image layers (dive-style diff on secret paths), and manifests for literal secrets; findings routed like any exposure by tier.
+Recovery: Rotate what each surface held; purge the contaminated artifact, layer, or trace window where possible; add the surface to the redaction checklist so the class cannot recur silently.

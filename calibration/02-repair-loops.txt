@@ -1,0 +1,550 @@
+Failure:
+$ ./mvnw -q compile
+ERROR ApiErrorMapper.java:[31,13] the switch expression does not cover all possible input values
+Diagnosis: ApiError is a sealed interface permitting NotFound, Conflict, Forbidden, but the switch handles only three of four after RateLimited was added to the permits list.
+Fix:
+static int status(ApiError e) {
+    return switch (e) {
+        case NotFound ignored -> 404;
+        case Conflict ignored -> 409;
+        case Forbidden ignored -> 403;
+        case RateLimited ignored -> 429;
+    };
+}
+Verify:
+$ ./mvnw -q compile
+BUILD SUCCESS
+
+---
+
+Failure:
+$ ./mvnw -q compile
+ERROR UserRef.java:[12,5] canonical constructor must not declare its own type parameters; invalid assignment to compact constructor parameter
+Diagnosis: A compact record constructor tried to reassign its implicit parameters instead of normalizing via the parameter names directly.
+Fix:
+record UserRef(UUID id, String email) {
+    UserRef {
+        if (id == null) throw new IllegalArgumentException("id required");
+        email = email.trim().toLowerCase();
+    }
+}
+Verify:
+$ ./mvnw -q -Dtest=UserRefTest test
+Tests run: 4, Failures: 0
+
+---
+
+Failure:
+JFR dump shows platform threads pinned: carrier rapidity collapse, throughput halved after moving checkout fan-out to virtual threads with a synchronized cache block.
+Diagnosis: Virtual threads pin their carrier when running synchronized blocks or native frames; the shared LRU cache used synchronized methods on the hot path.
+Fix: Replace the synchronized LRU with a ConcurrentHashMap plus caffeine-style striped locks, keeping the synchronized section out of virtual-thread execution.
+Verify:
+$ ./mvnw -q -Dtest=CheckoutLoadTest test
+p95 880ms -> 140ms, pinning events 0 in JFR
+
+---
+
+Failure:
+$ ./mvnw -q -Dtest=OwnershipTest test
+FAIL crossTenantReadForbidden: expected 403 but was 200
+Diagnosis: The controller gained a new GET /users/{id}/profile overload without the @PreAuthorize ownership check; the existing method stayed protected.
+Fix:
+@GetMapping("/users/{id}/profile")
+@PreAuthorize("@authz.canReadUser(authentication, #id)")
+UserProfile profile(@PathVariable UUID id) {
+    return profiles.forUser(id, tenant());
+}
+Verify:
+$ ./mvnw -q -Dtest=OwnershipTest test
+Tests run: 6, Failures: 0
+
+---
+
+Failure:
+org.hibernate.LazyInitializationException: could not initialize proxy - no Session at UserController.getOrders
+Diagnosis: Controller serializes orders.lines outside the transaction; Spring Boot 4 keeps open-session-in-view disabled by default, so lazy collections detach.
+Fix: Fetch-join at the repository boundary so the aggregate is complete before leaving the transaction.
+@Query("select o from Order o left join fetch o.lines where o.tenantId = :t and o.id = :id")
+Optional<Order> findComplete(UUID t, UUID id);
+Verify:
+$ ./mvnw -q -Dtest=OrderControllerTest test
+Tests run: 9, Failures: 0
+
+---
+
+Failure:
+$ ./mvnw -q -Dtest=UserRepositoryTest verify
+Could not find a valid Docker environment. Testcontainers needs docker available.
+Diagnosis: CI runner image updated and lost the docker socket mount; Testcontainers cannot start the Postgres 18 container.
+Fix: Re-mount the socket and pin the image digest in CI config, plus reuse containers between test classes.
+Verify:
+$ ./mvnw -q -Dtest=UserRepositoryTest verify
+Tests run: 12, Failures: 0, containers reused
+
+---
+
+Failure:
+$ npx tsc --noEmit
+src/users/api.ts(41,7): error TS2322: Type 'string | null' is not assignable to type 'string'.
+Diagnosis: fetchUsers returns nextCursor as string | null but the query-key factory typed cursor as string.
+Fix:
+export const userKeys = {
+  list: (tenant: string, cursor: string | null, limit: number) =>
+    ["users", tenant, cursor, limit] as const,
+};
+Verify:
+$ npx tsc --noEmit
+clean
+
+---
+
+Failure:
+$ npx tsc --noEmit
+src/users/table.ts(18,11): error TS2339: Property 'rows' does not exist on type 'QueryResult'.
+Diagnosis: Code reads .rows without narrowing the discriminated union past the pending and failure variants.
+Fix:
+if (result.status !== "success") return emptyTable();
+renderRows(result.rows, result.nextCursor);
+Verify:
+$ npx tsc --noEmit
+clean
+
+---
+
+Failure:
+$ npx tsc --noEmit
+error: Option 'baseUrl' is deprecated and has been removed in this version. Did you mean 'paths'?
+Diagnosis: TypeScript 7 promotes 6.x deprecations to hard errors; the inherited tsconfig still sets baseUrl and a legacy moduleResolution.
+Fix: Remove baseUrl, set moduleResolution to bundler, move path aliases under paths, keep strict and stableTypeOrdering defaults.
+Verify:
+$ npx tsc --noEmit
+clean
+
+---
+
+Failure:
+$ npm run check
+src/components/UserTable.vue(33,19): Object is possibly 'undefined' (Volar, strict template checking).
+Diagnosis: users.value is accessed before the query resolves; Vue template type-checking flags the nullable ref.
+Fix:
+<li v-for="u in users ?? []" :key="u.id">{{ u.email }}</li>
+Verify:
+$ npm run check
+clean
+
+---
+
+Failure:
+$ npm test -- userSearch
+FAIL useUserSearch > appends pages without duplicates: expected 50 unique, got 47
+Diagnosis: Infinite-query pageParam defaults to 0 on refetch while the backend speaks opaque cursors, so pages overlap after invalidation.
+Fix: Thread nextCursor as pageParam and stop when it is null.
+useInfiniteQuery({
+  queryKey: userKeys.list(tenant),
+  queryFn: ({ pageParam }) => fetchUsers(tenant, pageParam ?? null, 25),
+  getNextPageParam: (last) => last.nextCursor,
+  initialPageParam: null,
+});
+Verify:
+$ npm test -- userSearch
+Tests: 7 passed
+
+---
+
+Failure:
+$ pytest -q
+FAILED test_checkout.py::test_async_hold - Failed: async def functions require anyio or asyncio marker
+Diagnosis: pytest-asyncio is installed but the project standardized on anyio; the test lacks the marker and the suite runs in strict mode.
+Fix:
+import pytest
+pytestmark = pytest.mark.anyio
+Verify:
+$ pytest -q
+24 passed
+
+---
+
+Failure:
+$ ./mvnw -q -Dtest=CheckoutTest test
+ERROR: deadlock detected (SQLSTATE 40P01). Process 811 waits for ShareLock on transaction 5091; blocked by process 733.
+Diagnosis: Checkout locks orders then users while the refund job locks users then orders; opposite order under concurrency.
+Fix: Lock parent before child in both paths; keep the critical section minimal and retry once on 40P01.
+Verify:
+$ ./mvnw -q -Dtest=CheckoutConcurrencyTest test
+200 concurrent pairs, 0 deadlocks
+
+---
+
+Failure:
+$ psql -c "SELECT * FROM orders;"
+ERROR: new row violates row-level security policy for table orders (SQLSTATE 42501)
+Diagnosis: RLS is forced but the connection never set app.tenant_id, so every row is invisible including to the app role.
+Fix: Set the tenant on every pooled connection checkout.
+SET app.tenant_id = 'acme-uuid-here';
+Verify:
+$ psql -c "SET app.tenant_id='acme-uuid-here'; SELECT count(*) FROM orders;"
+count matches tenant fixture
+
+---
+
+Failure:
+EXPLAIN ANALYZE shows Seq Scan on users, Execution Time: 912ms for page 400 with LIMIT 25 OFFSET 10000.
+Diagnosis: OFFSET scans and discards 10k rows; no usable index order for (created_at, id) paging.
+Fix: Keyset pagination on the composite index.
+CREATE INDEX users_tenant_created ON users (tenant_id, created_at, id);
+SELECT id, email, created_at FROM users
+WHERE tenant_id = $1 AND (created_at, id) > ($2, $3)
+ORDER BY created_at, id LIMIT $4;
+Verify:
+EXPLAIN ANALYZE: Index Scan, Execution Time: 3.1ms
+
+---
+
+Failure:
+Support escalates: support agent sees other tenants rows via the helper function despite RLS.
+Diagnosis: SECURITY DEFINER helper runs as owner (bypassing RLS) and lacks SET search_path, so it is both over-privileged and hijackable.
+Fix:
+CREATE OR REPLACE FUNCTION tenant_orders(tid uuid)
+RETURNS SETOF orders LANGUAGE sql SECURITY DEFINER
+SET search_path = pg_catalog, public AS
+$$ SELECT id, tenant_id, total FROM orders WHERE tenant_id = tid $$;
+REVOKE EXECUTE ON FUNCTION tenant_orders(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION tenant_orders(uuid) TO app_role;
+Verify:
+As app_role with tenant set: only own rows; search_path attack test passes.
+
+---
+
+Failure:
+Flyway Validate failed: Detected applied migration not resolved locally: V14__add_gin_trgm.sql
+Diagnosis: A developer rebased and renamed V14 locally after it had already applied on shared staging.
+Fix: Baseline the rename as an out-of-order repeatable fix, never edit applied versioned files; adopt R__ repeatable scripts for index tuning.
+Verify:
+$ ./mvnw -q flyway:validate
+Validated successfully, staging and local agree
+
+---
+
+Failure:
+Consumer group orders-svc lags 400k, rebalance every 2 minutes, logs show JoinGroup failed: Member revoked.
+Diagnosis: max.poll.interval.ms (5m default) exceeded by a slow transaction that also calls the payment API inline; the broker evicts the member.
+Fix: Move payment capture out of the poll loop via the outbox, shorten processing under 60s, raise max.poll.interval.ms to 10m as belt and braces.
+Verify:
+Lag drains to 0, zero rebalances over 1h soak
+
+---
+
+Failure:
+ERROR: TransactionalId orders-tx-0: Producer attempted to use a transactional id which has been fenced (ProducerFencedException).
+Diagnosis: Two producer instances share one transactional.id after a rolling deploy; the new instance fenced the old mid-transaction.
+Fix: Unique transactional.id per pod (StatefulSet ordinal or pod name suffix), abort on fence, single writer per partition key.
+Verify:
+Exactly-once audit over 50k messages: 0 duplicates, 0 gaps
+
+---
+
+Failure:
+Poison pill: consumer crashes on malformed Avro, restarts, crashes again on the same offset; lag frozen.
+Diagnosis: No dead-letter path; the retry loop replays the same record forever.
+Fix: After 3 attempts publish the raw bytes plus headers to orders.DLQ with error metadata, commit the offset, alert on DLQ growth.
+Verify:
+Lag drains, DLQ holds the 7 bad records with cause headers, alert fires once
+
+---
+
+Failure:
+io.confluent.kafka.schemaregistry.client.rest.exceptions.RestException: Schema being registered is incompatible with an earlier schema; error code: 42205
+Diagnosis: Field email changed from optional to required (BACKWARD-incompatible under BACKWARD mode); old consumers would break.
+Fix: Keep email optional, add email_v2 as the required successor, dual-read during migration, remove the old field next quarter.
+Verify:
+Compatibility check passes, old and new consumers green
+
+---
+
+Failure:
+org.apache.kafka.common.errors.SaslAuthenticationException: Authentication failed: Invalid username or password
+Diagnosis: SASL/SCRAM secret rotated in the vault but the Connect worker still mounts the old Secret version.
+Fix: Mount secrets by versioned key and roll workers after rotation; add a startup probe that fails fast on 401 so the deploy halts instead of half-running.
+Verify:
+Workers reconnect with SCRAM-SHA-512, connector tasks running: 12/12
+
+---
+
+Failure:
+KRaft controller quorum unavailable: 2 of 3 controllers down after an AZ event, metadata updates stall, brokers report NOT_CONTROLLER.
+Diagnosis: All three controllers sat in one AZ; Raft needs a majority across failure domains.
+Fix: Spread 3 (or 5) controllers across AZs with anti-affinity, separate controller quorum from brokers, verify leader election before reopening writes.
+Verify:
+Kill one AZ in staging: leader re-elected in 8s, produce/consume uninterrupted
+
+---
+
+Failure:
+Alert: consumer lag orders-svc p99 12m and climbing, no errors in logs.
+Diagnosis: Not an error but a capacity gap: traffic doubled, partition count unchanged, per-partition throughput capped by single-threaded processing.
+Fix: Double partitions (with key-hash review for ordering), raise concurrency to match, confirm ordering guarantees per key still hold.
+Verify:
+Lag back under 30s at 2x traffic in load test
+
+---
+
+Failure:
+$ docker build -t users-svc .
+Step 9/14 slow every time: npm ci re-runs from scratch, 6-minute builds.
+Diagnosis: package.json copies after source, busting the layer cache on every code change.
+Fix: Multi-stage with dependency layer first.
+FROM node:22-slim AS deps
+WORKDIR /app
+COPY package.json pnpm-lock.yaml ./
+RUN corepack enable && pnpm install --frozen-lockfile
+COPY . ./
+RUN pnpm build
+Verify:
+No-op rebuild: 41s; code-only change rebuild: 55s
+
+---
+
+Failure:
+Nginx: 502 Bad Gateway on /api/users, upstream prematurely closed connection.
+Diagnosis: Upstream Spring Boot binds 127.0.0.1:8080 inside the container while Nginx proxies to the service name port that nothing listens on.
+Fix:
+location /api/ {
+    proxy_pass http://users-svc:8080/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+Verify:
+$ curl -s -o /dev/null -w "%{http_code}" https://app.acme.test/api/users
+200
+
+---
+
+Failure:
+Nginx: SSL_do_handshake() failed, no shared cipher with client on legacy scanners.
+Diagnosis: ssl_protocols includes TLSv1/1.1 for one legacy client, dragging the whole vhost down to weak ciphers.
+Fix: Terminate legacy on a separate server block; main vhost TLSv1.2+ only with a modern cipher list, HSTS on.
+ssl_protocols TLSv1.2 TLSv1.3;
+Verify:
+ssllabs-style scan: A rating, legacy endpoint isolated and logged
+
+---
+
+Failure:
+WebSocket /ws/orders drops every 60s behind Nginx with plenitude of 1006 close codes.
+Diagnosis: Missing Upgrade/Connection proxy headers plus default 60s proxy_read_timeout killing idle sockets.
+Fix:
+location /ws/ {
+    proxy_pass http://users-svc:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 3600s;
+}
+Verify:
+Idle socket survives 10m, order events stream continuously
+
+---
+
+Failure:
+SSE /orders/{id}/events arrives in 30s bursts instead of live.
+Diagnosis: Nginx buffers proxied responses by default; event-stream chunks wait for the buffer to fill.
+Fix:
+location /events/ { proxy_buffering off; proxy_cache off; }
+plus header X-Accel-Buffering: no from upstream.
+Verify:
+Events land under 200ms end to end
+
+---
+
+Failure:
+kubectl get pods: users-svc CrashLoopBackOff, logs show successful start then SIGKILL at readiness.
+Diagnosis: Readiness probe hits /actuator/health before the Hikari pool warms, fails, kubelet restarts a healthy-but-slow container in a loop.
+Fix: Separate liveness (process alive) from readiness (pool + migrations done), add initialDelay via startupProbe, warm the pool on boot.
+Verify:
+3/3 pods Ready, zero restarts over 30m
+
+---
+
+Failure:
+Pod OOMKilled at 512Mi during the morning import, heap dump shows a full in-memory CSV accumulator.
+Diagnosis: Batch job loads the whole file into a List before writing; container limit kills it before GC can help.
+Fix: Stream rows with a cursor-backed reader and chunked writes (Spring Batch chunk 500), set -Xmx to 75% of the limit.
+Verify:
+Import of 2M rows peaks at 380Mi, completes in 11m
+
+---
+
+Failure:
+CI red on main: CheckoutTest passes locally, fails on runners 1 in 4 with timing assertions.
+Diagnosis: Wall-clock assertions (elapsed < 200ms) flake on shared runners; the test measures the machine, not the code.
+Fix: Replace elapsed assertions with deterministic fakes (virtual clock, stubbed gateway), move the 200ms budget to a nightly perf job with percentiles.
+Verify:
+50 consecutive CI runs green, nightly perf tracks p95 separately
+
+---
+
+Failure:
+$ pnpm install
+ERR_PNPM_OUTDATED_LOCKFILE: Cannot install with frozen-lockfile because the lockfile is not up to date with package.json
+Diagnosis: A dependency was bumped in package.json without regenerating the lockfile; CI installs with --frozen-lockfile and fails closed.
+Fix: Run pnpm install locally, commit the lockfile, enforce frozen installs in CI and Docker.
+Verify:
+CI install clean, Docker deps layer cached again
+
+---
+
+Failure:
+Dev SPA calls https://api.acme.test/users and gets CORS blocked: No Access-Control-Allow-Origin.
+Diagnosis: Dev server runs on localhost:5173, not in the allowlist, and preflight needs explicit headers.
+Fix: Dev-only Vite proxy avoids CORS entirely; production allowlists the exact origin.
+server: { proxy: { "/api": { target: "http://localhost:8080", changeOrigin: true } } }
+Verify:
+Dev requests 200, production preflight passes with exact origin
+
+---
+
+Failure:
+$ ./mvnw -q -Dtest=TokenTest test
+FAIL rejectsExpired: token accepted 90s after expiry
+Diagnosis: Test clock fixed at issuance while the validator allows 120s skew; the test never advances past the window.
+Fix: Parameterize skew to 60s max and advance the test clock beyond expiry plus skew.
+Verify:
+Boundary test: accepted at expiry+59s, rejected at expiry+61s
+
+---
+
+Failure:
+Heap usage climbs after deploy, Full GC every 40s, JFR shows char[] retained by an unbounded Caffeine cache without expiry.
+Diagnosis: Cache was added without maximum size or expireAfterWrite; every tenant query adds entries forever.
+Fix: Bound it and expire aggressively.
+Caffeine.newBuilder().maximumSize(10_000).expireAfterWrite(Duration.ofMinutes(5)).build();
+Verify:
+Heap flat over 24h soak, hit rate 91%
+
+---
+
+Failure:
+Duplicate charges: two orders created from one checkout click during a 300ms network stall.
+Diagnosis: POST /orders has no idempotency key; the client retried and the server executed twice.
+Fix: Require Idempotency-Key, store response by key, same key plus same payload replays stored response, same key plus different payload returns 422.
+Verify:
+Double-click replay test: one charge, second response replayed with identical body
+
+---
+
+Failure:
+Legit users blocked at 9am daily: 429 storm right after standup.
+Diagnosis: Rate limiter keys by IP; the whole office shares one egress IP and burns the bucket together.
+Fix: Key by authenticated principal plus endpoint, keep a looser IP fallback for anonymous routes.
+Verify:
+Peak-hour false positives 0, abusive client still cut off in 40s
+
+---
+
+Failure:
+CompletableFuture chain silently drops payment failures: order marked paid, money never captured.
+Diagnosis: exceptionally() logs but the exceptionally result feeds all downstream stages as success.
+Fix: Handle and rethrow, or use handle() with explicit branching so failure stays failure.
+future.thenCompose(this::authorize)
+      .thenCompose(this::capture)
+      .exceptionally(e -> { alerts.paymentFailed(orderId, e); throw new CompletionException(e); });
+Verify:
+Failure-injection test: order stays unpaid, alert fires, no silent success
+
+---
+
+Failure:
+jakarta.persistence.OptimisticLockException on concurrent profile edits, users see 500.
+Diagnosis: @Version conflict surfaces raw; the client retries the identical stale payload in a loop.
+Fix: Catch, refetch, rebase the intent onto fresh state, retry once, then return 409 with current version for manual merge.
+Verify:
+Concurrent-edit test: second writer gets 409 with mergeable state, zero 500s
+
+---
+
+Failure:
+HikariPool - Connection is not available, request timed out after 30000ms at peak.
+Diagnosis: Pool max 10 with checkout transactions holding connections across a 2s downstream call; threads queue then time out.
+Fix: Shrink transaction scope to the DB touch only, move the downstream call outside, raise max to 25 with leak detection at 60s.
+Verify:
+Peak replay: 0 timeouts, median checkout 180ms
+
+---
+
+Failure:
+java.net.UnknownHostException: postgres in the users-svc container, works from host.
+Diagnosis: Container runs on the default bridge with no shared network; service-name DNS only resolves on the compose network.
+Fix: Attach both services to one user-defined network and use the service name as host.
+Verify:
+$ docker compose exec users-svc getent hosts postgres
+resolves; app boots against postgres:5432
+
+---
+
+Failure:
+Postgres refuses writes: could not extend file, No space left on device; WAL volume 100%.
+Diagnosis: Archiving stalled and base backups stopped months ago; WAL segments accumulate forever.
+Fix: Restore archiving, take a base backup, set wal_keep and retention, alert on volume over 70%.
+Verify:
+WAL replays, volume back to 31%, alert rule added
+
+---
+
+Failure:
+GitHub Actions: main green, PRs fail on npm run build with out-of-memory in tsc.
+Diagnosis: Runners default to 2GB Node heap while the monorepo type-check needs more; main passes because of warm cache.
+Fix: NODE_OPTIONS=--max-old-space-size=6144 on the type-check job, split lint and type-check into parallel jobs.
+Verify:
+5 consecutive PR builds green, type-check under 4m
+
+---
+
+Failure:
+Nuxt SSR hydration mismatch: server renders count 0, client flashes 25 then settles.
+Diagnosis: Server prefetches with no cursor while the client resumes from cached first page; markup differs on first paint.
+Fix: Dehydrate the exact first-page query (same key, same cursor) so server and client render identical HTML.
+Verify:
+Hydration warnings 0 across the three search pages
+
+---
+
+Failure:
+StructuredTaskScope fails the whole checkout when recommendations time out, although recommendations are best-effort. (JDK 25 preview API: scopes open via static factories, default policy throws on first failure; compile and run with --enable-preview.)
+Diagnosis: The default join policy cancels siblings on any child failure, including the non-critical one.
+Fix: Join with per-child handling: require core, degrade recommendations to empty on timeout. Subtask state decides the fallback.
+try (var scope = StructuredTaskScope.open()) {
+    var core = scope.fork(() -> loadCore(tenant));
+    var reco = scope.fork(() -> loadReco(tenant));
+    scope.join();
+    return render(core.get(), reco.state() == Subtask.State.SUCCESS ? reco.get() : List.of());
+}
+Verify:
+Reco outage drill: checkout 200 with empty rail, core path unaffected
+
+---
+
+Failure:
+Kafka Streams rebalance takes 9 minutes after each deploy, EOS guarantees hold but lag spikes.
+Diagnosis: Default StandbyTasks 0 plus large state stores; every rebalance restores from changelog from scratch.
+Fix: Standby replicas 1, shorter commit interval during deploy windows, staggered rolling restart so only one instance rebalances at a time.
+Verify:
+Rebalance under 90s across three deploy drills
+
+---
+
+Failure:
+Outbox relay publishes twice after a crash between publish and mark-sent.
+Diagnosis: Publish-then-mark is not atomic; a crash in between replays the row on restart.
+Fix: Mark claimed with an atomic UPDATE ... WHERE state = PENDING inside the relay transaction, publish, then mark sent; consumers stay idempotent on aggregate id.
+Verify:
+Kill -9 drill mid-relay: zero duplicates downstream over 20 runs
+
+---
+
+Failure:
+Spring Batch import slows from 20k rows/s to 2k rows/s after the first million.
+Diagnosis: JPA persist without flush/clear grows the persistence context unboundedly; every flush gets slower.
+Fix: Chunk 500 with clear, stateless inserts via JdbcTemplate batch for the hot path.
+Verify:
+Throughput flat at 19k rows/s across the full 2M file

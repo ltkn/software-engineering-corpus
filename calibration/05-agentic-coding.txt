@@ -1,0 +1,332 @@
+Goal: Add cursor pagination to the users search endpoint.
+Context: Spring Boot 4.1 service, Postgres 18, Vue 3 frontend with TanStack Query v5.
+Investigation: Read UserController (returns List<User>), UserRepository (offset query), migration history (composite index absent), frontend useUsers hook (no cursor state).
+Plan: 1. Add migration for composite index. 2. Add keyset repository method. 3. Extend controller contract with optional cursor. 4. Update query key and hook. 5. Cover with integration test.
+Decisions: Keyset on (tenant_id, created_at, id) rather than OFFSET because page 400 already costs 900ms; cursor optional so the contract stays backward-compatible; tiebreak on id because created_at is not unique.
+Verification: EXPLAIN ANALYZE shows Index Scan 3ms; OwnershipTest plus new PaginationTest green (15 tests); frontend type-check clean.
+Outcome: Shipped with additive contract; old offset params deprecated, removal scheduled next quarter.
+
+---
+
+Goal: Locate where checkout latency originates in an unfamiliar module.
+Context: checkout-service, six packages, no README.
+Investigation: Read the package tree first, then CheckoutService (orchestration), then PricingClient (only outbound call), then the order query. Skipped the promotions package after its imports showed no checkout references.
+Decisions: Follow the request path, not the package list; read interfaces before implementations; stop exploring once the single outbound call plus one query explain the budget.
+Verification: Confirmed with a timed slice test: query 820ms of 900ms total before touching anything.
+Outcome: Diagnosis in 20 minutes of reading; fix scoped to the repository layer.
+
+---
+
+Goal: Trace how tenant isolation flows from edge to database.
+Context: Gateway, users-svc, Postgres with forced RLS.
+Investigation: Read gateway auth filter (sets tenant header), service security config (maps header to context), connection initializer (SET app.tenant_id), RLS policies (orders_tenant).
+Decisions: Trust boundary is the gateway; downstream services must never accept tenant from query params or body, only from the propagated context.
+Verification: Wrote a probe test sending a forged tenant param; correctly ignored, context value used.
+Outcome: Isolation map documented in the PR; one forged-param test added permanently.
+
+---
+
+Goal: Plan the HS256 to RS256 signing migration without downtime.
+Context: Auth service, mobile clients with slow update cycles, web already rotates.
+Investigation: Read signing config, key endpoint, client version telemetry (18% of traffic on builds older than 6 months).
+Plan: 1. Publish RS256 keys alongside HS256. 2. Dual-accept with key-id header. 3. Migrate web first, mobile next release. 4. Monitor old-key rate to zero for 24h. 5. Disable HS256.
+Decisions: Dual-accept window sized by the slowest client cohort, not the fastest; rollback is re-enabling HS256 verification, which stays deployed but dormant.
+Verification: Old and new tokens accepted in staging; wrong-key tokens rejected; rotation drill timed at 11 minutes.
+Outcome: Plan approved; window metric defined before any code changed.
+
+---
+
+Goal: Implement the RS256 cutover backend slice.
+Context: Plan above approved; this block implements steps 1-2.
+Investigation: Read KeyStore interface, token filter chain order, existing HS256 verifier tests.
+Plan: 1. Add key-id to published JWKS. 2. Add RS256 verifier branch. 3. Dual-accept with metrics per alg. 4. Tests for both algs plus wrong-key rejection.
+Decisions: Verify with keyStore.currentPublicKey(keyId) resolved per request so rotation needs no restart; emit verification-failure counters labeled by alg to watch the window close.
+Verification: TokenTest boundary suite green; staging accepts both algs; dashboards show per-alg rates.
+Outcome: Steps 1-2 shipped behind existing behavior; cutover switch remains a config flag.
+
+---
+
+Goal: Add rate limiting to POST /login with a tenant-aware key.
+Context: AuthController, Redis-backed limiter keyed by IP, office NAT causing false positives.
+Investigation: Read limiter filter, key construction, peak-hour 429 logs showing shared egress IP.
+Plan: 1. Key by principal plus endpoint for authenticated routes. 2. Keep IP fallback for anonymous. 3. Contract: 429 with Retry-After plus JSON body. 4. Tests for both keys.
+Decisions: Security check first: per-principal keys stop one user burning the shared bucket but allow one authenticated abuser; the anonymous IP fallback stays strict to cover credential stuffing.
+Verification: Peak replay shows zero false positives; abusive client cut off in 40s; contract test asserts headers and body.
+Outcome: Shipped; dashboard tracks 429 rate per key type for tuning.
+
+---
+
+Goal: Fix N+1 on the orders endpoint without changing its contract.
+Context: OrderController returns orders with lines; latency 1.8s for 50 orders.
+Investigation: Read controller (serializes lines), repository (findByTenantId, no fetch), Hibernate stats (51 queries per request).
+Plan: 1. Add fetch-join repository method. 2. Swap the call site. 3. Assert query count in test.
+Decisions: Fetch join over EntityGraph because the query is hand-written JPQL already; pagination stays keyset on the order table, lines joined only for the page's ids to avoid cartesian multiplication.
+Verification: Query count 51 to 2; Hibernate statistics assertion added to the integration test so regressions fail loudly.
+Outcome: p95 1.8s to 210ms; contract byte-identical.
+
+---
+
+Goal: Migrate the users table to add a verified_at column with zero downtime.
+Context: 40M rows, Postgres 18, blue-green deploys, old code runs during rollout.
+Investigation: Read migration history (all backward-compatible so far), deploy pipeline (overlapping versions for ~10 minutes), column usage (new feature only).
+Plan: 1. Migration adds nullable column, no default rewrite. 2. Backend writes dual, reads old. 3. Backfill in batches. 4. Switch reads. 5. Add NOT NULL with check.
+Decisions: Expand-contract pattern strictly: each deploy must run against both schema versions; the backfill runs in 10k batches with sleeps to avoid WAL spikes; rollback at any point is deploying the previous image, never a down migration.
+Verification: Staging rehearsal under production-like volume; lock monitoring shows zero AccessExclusive beyond milliseconds.
+Outcome: Column live in five deploys; no downtime, no down migration ever written.
+
+---
+
+Goal: Step 3 of the pagination change-set fails: migration applied, backend test red on the count query.
+Context: Pagination plan from the first block; total-count query paginated by mistake.
+Investigation: Read the failing assertion (expected 25 rows, count returned 25 instead of total), read the count method (LIMIT leaked into it).
+Decisions: Fix forward, not revert: migration is already applied and harmless; the defect is confined to the count method. Decision rule applied: revert only when the applied step itself is wrong or blocks everything; otherwise fix the broken step in place.
+Verification: Count query corrected to unpaged aggregate; full PaginationTest green; migration untouched.
+Outcome: Change set completed without touching applied migration; rule recorded for the next plan.
+
+---
+
+Goal: Refactor UserService from field injection to constructor injection across 14 classes.
+Context: Spring Boot 4.1, tests use @MockBean, no behavior change intended.
+Investigation: Searched @Autowired field usages (14), checked test wiring (Mockito via Spring context, unaffected by injection style), confirmed no circular dependencies that field injection was masking.
+Plan: 1. Convert leaf classes first. 2. Then services. 3. Compile plus full test suite after each batch.
+Decisions: Constructor injection surfaces cycles at startup instead of hiding them; batch by layer so any cycle appears while the change set is small. If a cycle surfaces, fix the design (extract interface), never revert to field injection to hide it.
+Verification: Full suite green after each of three batches; startup-time check added to CI smoke test.
+Outcome: 14 classes converted; one latent cycle found and fixed by splitting notification logic.
+
+---
+
+Goal: Rename the tenant column tenant_id to tenant_key across backend, migrations, and frontend types.
+Context: Column referenced in 30 queries, 6 migrations history, Vue types, TanStack keys.
+Investigation: Grep shows references in repository JPQL, native SQL, RLS policies, frontend User type, two dashboards.
+Plan: 1. Add new column, dual-write. 2. Migrate readers one layer at a time. 3. Backfill. 4. Drop old. 5. Update frontend types last (they read the API contract, not the column).
+Decisions: Never rename in place on a live table; RLS policies get versioned alongside because they reference the column by name; frontend changes wait for the contract version bump.
+Verification: Expand-contract checklist signed per layer; dashboards verified against the new name before drop.
+Outcome: Rename completed over two releases; zero downtime, zero stale references.
+
+---
+
+Goal: Review a generated diff adding cursor pagination (another agent's work).
+Context: Diff touches controller, repository, frontend hook, no migration, no tests.
+Findings: HIGH: no composite index, page 400 will seq-scan; the cursor lacks the id tiebreak, duplicate created_at will skip rows. MEDIUM: count query shares the paged method, totals will be wrong. LOW: hook keeps stale pageParam default 0, refetch overlaps pages.
+Decisions: REQUEST_CHANGES on the HIGH items alone; medium and low listed as must-fix-before-merge because each corrupts results silently.
+Verification: Re-reviewed after fixes: EXPLAIN shows Index Scan, PaginationTest added with 15 cases including duplicate timestamps.
+Outcome: Merged after two rounds; review findings became the regression tests.
+
+---
+
+Goal: Review a dependency upgrade PR (Spring Boot 4.0 to 4.1, 40 files changed by a bot).
+Context: Mostly version bumps plus JSpecify nullness annotations newly required.
+Findings: HIGH: one @Nullable removal on a public API widens the contract silently; needs a minor-version note. MEDIUM: three tests weakened with lenient() to pass new strictness instead of fixing the stubbing. LOW: changelog entry missing.
+Decisions: REQUEST_CHANGES: restore strict stubbing, annotate the API change; bot PRs get the same bar as human ones because they touch the most files with the least understanding.
+Verification: Strict stubbing restored, two real stub bugs found underneath; API note added.
+Outcome: Merged; policy set that bot PRs require a human reviewer from the owning team.
+
+---
+
+Goal: Branch and commit hygiene for the ownership fix.
+Context: Fix plus regression test, main protected, CI required.
+Investigation: git status shows the two intended files plus an accidental .env edit and node_modules noise from a local experiment.
+Plan: 1. Restore .env, ignore the noise. 2. Commit fix and test together (one logical change). 3. Push branch, open PR with what/why/tested.
+Decisions: Fix and regression test ship as one commit because the fix is unverified without it; the .env change is reverted, never committed, and rotated since it touched a real secret file.
+Verification: git diff reviewed file by file before commit; CI green; PR body names the BOLA finding and the dual verification (unit plus contract test).
+Outcome: Single-commit PR merged; secret rotation logged.
+
+---
+
+Goal: Write the PR body for the RS256 cutover.
+Context: Dual-accept shipped, window metric defined.
+Investigation: Re-read the plan block: metric, rollback, client cohorts.
+Decisions: PR body leads with rollback (one flag) because reviewers of auth changes decide on reversibility first; what/why/tested follow in that order.
+Verification: Two reviewers approved noting the rollback clarity; cutover runbook linked, not pasted.
+Outcome: Merged; runbook reused verbatim during the actual window.
+
+---
+
+Goal: Explore the Kafka topology before adding the DLQ.
+Context: Three services, one shared cluster, Connect workers, schema registry.
+Investigation: Read producer configs (acks, idempotence flags), consumer groups and lag dashboards, topic list (no DLQ topics exist), Connect connector list (12 running), ACL map (per-service principals).
+Decisions: DLQ per source topic (orders.DLQ) rather than one global DLQ, because retention and reprocessing rules differ per domain; ACLs for DLQ topics mirror source topics so a compromised consumer cannot escalate via replay.
+Verification: Topology sketch confirmed against Admin API topic list; one drift found (undocumented retry topic) and recorded.
+Outcome: DLQ plan scoped to reality; drift fixed before building on it.
+
+---
+
+Goal: Implement poison-message handling for the orders consumer.
+Context: Topology mapped above; Kafka 4.3 KRaft, Avro schemas, BACKWARD compatibility mode.
+Investigation: Read deserializer config, retry loop (unbounded, same offset forever), existing error metrics (none per-record).
+Plan: 1. Bound retries at 3 with backoff. 2. Publish raw bytes plus headers to orders.DLQ. 3. Commit offset, alert on DLQ growth. 4. Runbook for replay.
+Decisions: Security check: DLQ records keep original headers but strip any credential-bearing ones before publishing, since DLQ readers have broader access; replay requires explicit approval, never auto-replays, because a poison schema version would loop.
+Verification: Poison fixture drains lag, DLQ holds 7 records with cause headers, alert fires once, replay drill on staging succeeds.
+Outcome: Consumer can no longer wedge; replay path tested, not just documented.
+
+---
+
+Goal: Investigate flaky OwnershipTest failing 1 in 8 on CI only.
+Context: Test asserts 403 for cross-tenant read; passes locally always.
+Investigation: Read the test (creates tenant B user, reads as tenant A), read CI logs of failures (all on the same runner class), read the fixture setup (parallel test execution shares one database).
+Decisions: The defect is in the test, not the code: parallel classes share sequences, and the test assumed fixed ids. Fix the test isolation (random UUIDs per run) rather than weakening the assertion or marking flaky-quarantine.
+Verification: 50 consecutive CI runs green after switching fixtures to random UUIDs; suite time unchanged.
+Outcome: Real isolation bug fixed; quarantine process untouched for genuinely timing-sensitive tests.
+
+---
+
+Goal: Plan the Vue 2 to Vue 3 migration for the admin panel (smallest frontend surface).
+Context: Options API, Vuex, no TypeScript, 40 components.
+Investigation: Read component list (12 class-style, rest options), Vuex store shape (flat, no modules), test coverage (component tests only, no E2E).
+Plan: 1. Add TypeScript with lenient flags alongside. 2. Migrate store to Pinia first (framework-agnostic). 3. Convert leaf components to script setup. 4. Then routed views. 5. Enable strict.
+Decisions: Store before components because state shape is the contract everything else depends on; strict mode last because enabling it first would drown the migration in unrelated errors.
+Verification: Each step keeps the suite green; E2E on the three critical flows added before starting (it did not exist).
+Outcome: Migration sequenced; E2E gap closed first so later steps are actually verified.
+
+---
+
+Goal: Convert a TanStack v4 infinite query to v5 semantics during the upgrade.
+Context: useInfiniteQuery with manual page merging, v5 installed.
+Investigation: Read v5 migration notes (getNextPageParam unchanged, structural sharing defaults, query key hashing of undefined), read current hook (relies on v4 keepPreviousData behavior).
+Plan: 1. Replace keepPreviousData with placeholderData keepPreviousData function. 2. Fix key hashing (strip undefined cursor). 3. Re-run flake suite.
+Decisions: Preserve user-visible behavior exactly (no skeletons change); the v5 structural-sharing default already reduces renders, so remove two manual memoizations the upgrade made redundant rather than carrying them.
+Verification: Flake suite plus new placeholder-behavior test green; render counts down 30% on scroll test.
+Outcome: Upgrade complete with fewer lines; removed compensations documented in the commit.
+
+---
+
+Goal: Step 2 of the store migration breaks 6 components: Pinia shape differs from Vuex getters.
+Context: Migration plan above; step 1 done, step 2 red.
+Investigation: Read the 6 failures (all expect namespaced getter paths), read the Pinia store (flat setup syntax).
+Decisions: Fix forward with a compatibility shim: expose the old getter paths as deprecated computed aliases for one release rather than reverting the store or rewriting all 6 components mid-migration. Rule: during migrations, shims point forward (old API over new implementation), never backward.
+Verification: Suite green with deprecation warnings asserted present; removal ticket filed with the date.
+Outcome: Migration unblocked; shim removal tracked, not forgotten.
+
+---
+
+Goal: Debug a green-local red-CI type error: tsc passes on laptop, fails in CI with a moduleResolution complaint.
+Context: TS 7 in CI image, TS 6 locally (editor still on 6 for API support).
+Investigation: Read CI log (hard error on baseUrl), read local tsconfig (inherits base with baseUrl), check versions (local 6.0 warns, CI 7.0 errors).
+Decisions: The fix is converge on 7 semantics in the shared config (remove baseUrl, bundler resolution), not pin CI to 6; local editor keeps working because 6 accepts the 7-clean config.
+Verification: Both tsc6 --noEmit and tsc --noEmit clean on the same tree.
+Outcome: Config converges forward; documented that all tsconfigs must pass under both compilers until the editor moves to 7.1.
+
+---
+
+Goal: Add structured logging with tenant correlation across users-svc.
+Context: Plaintext logs, no request ids, incident review impossible across services.
+Investigation: Read log statements (120 call sites, 4 formats), gateway (already propagates traceparent), OTel SDK present but unused.
+Plan: 1. Adopt one JSON schema (ts, level, service, route, tenant, ms, requestId). 2. Interceptor fills context from headers. 3. Migrate call sites in batches. 4. Redaction test for auth headers.
+Decisions: Security check first: schema excludes headers by default with an explicit allowlist, because the first version of "log everything as JSON" is how tokens end up in telemetry; redaction test fails the build on any credential-shaped value in log output.
+Verification: Redaction suite plus schema-conformance test on every log line in tests; incident drill joins traces across gateway and service on one key.
+Outcome: Logs queryable; redaction enforced by test, not convention.
+
+---
+
+Goal: Implement the outbox relay for order events.
+Context: Orders service, Postgres 18, Kafka 4.3, at-least-once acceptable downstream with idempotent consumers.
+Investigation: Read write path (order insert, no events published yet), outbox table (exists from earlier migration, unused), relay options (polling publisher vs logical decoding).
+Plan: 1. Write order plus outbox row in one transaction. 2. Polling relay claims PENDING rows atomically. 3. Publish, mark sent. 4. Consumer idempotency on aggregate id.
+Decisions: Polling relay over Debezium: one fewer system to operate at this scale, documented switch threshold (10k events/min sustained) for revisiting. Claim-before-publish so crash replays claim, never duplicates silently; consumers idempotent regardless.
+Verification: Kill -9 drill mid-relay over 20 runs: zero duplicates downstream; ordering per aggregate verified.
+Outcome: Events flow with drills proving the failure modes, not just the happy path.
+
+---
+
+Goal: Explore before estimating: size the effort to replace offset pagination with keyset across 5 endpoints.
+Context: Request asks for "pagination fix everywhere" with no inventory.
+Investigation: Grep OFFSET usage (5 endpoints, 2 share a helper), read each query (3 have composite-index-friendly orderings, 2 order by unindexed expressions), read frontend hooks (2 already handle cursors from another project).
+Plan: Per endpoint: index check, query rewrite, contract delta, hook update, test. Ordered by traffic (users, orders first).
+Decisions: Decline the blanket estimate: endpoints without indexable orderings need product decisions (change sort options) before engineering; estimate given per endpoint with the two blocked ones marked pending-decision. Non-goal stated: no contract removals in this change set.
+Verification: Estimate reviewed against the two prior pagination change sets for calibration; actuals landed within 20%.
+Outcome: Scoped estimate with explicit exclusions instead of a padded single number.
+
+---
+
+Goal: Claude Code session transcript pattern: implement the CORS fix using Edit and Bash tools.
+Context: Vite dev proxy exists; production needs exact-origin allowlist.
+Investigation via tools: Read nginx.conf and the Spring CORS config; reproduced preflight failure with curl.
+Edit: Changed allow-origin from wildcard-with-credentials to the exact https origin; added max-age 600.
+Run: curl preflight returns 200 with exact origin; full test suite green.
+Decisions: Exact origin over wildcard because credentials are required; dev keeps the Vite proxy so localhost never enters production config.
+Verification: Commands run recorded in the session (curl preflight, OwnershipTest, full suite); staging preflight passes from the real origin.
+Outcome: Fix plus verification transcript; no production localhost entries.
+
+---
+
+Goal: Codex-style apply_patch for the Hikari pool fix.
+Context: Pool timeouts at peak, transactions spanning downstream calls.
+Investigation: Read Hikari config (max 10), checkout flow (transaction wraps a 2s payment call), leak detection off.
+Patch: Narrowed transaction scope to the DB touch, moved payment call outside, max 25, leakDetectionThreshold 60s.
+Decisions: Scope shrink before size raise: a bigger pool on a held-connection design just delays the same timeout; metrics prove it with checkout p95 2.1s to 180ms.
+Verification: apply_patch output plus replay test at peak load, zero timeouts; pool metrics dashboard added.
+Outcome: Fix verified under load shape, not just unit shape.
+
+---
+
+Goal: OpenCode session pattern: add the CSP header to the Vue SPA serving layer.
+Context: Nginx serves the SPA, no CSP currently, inline scripts absent already.
+Investigation: Read nginx server block, scanned dist output for inline handlers (none), checked connect targets (api origin only).
+Edit: Added Content-Security-Policy header value; object-src none, base-uri self.
+Run: curl -I confirms header; E2E suite passes (no blocked resources); report-only mode first for one day, then enforcing.
+Decisions: Report-only before enforcing because a wrong CSP breaks the whole app silently for users while tests stay green; the one-day window caught one missed image domain.
+Verification: Report-uri logs reviewed, offending domain allowlisted, enforcing mode enabled with zero console errors.
+Outcome: CSP enforcing with evidence, not hope.
+
+---
+
+Goal: Plan-repair at the change-set level: the store migration shim (block above) causes a perf regression in one view.
+Context: Migration mid-flight, shim active, one product list renders 3x slower.
+Investigation: Profiled: deprecated getter alias recomputes the full derived list per row instead of once.
+Decisions: Three options weighed: revert migration (loses 2 weeks), optimize the shim (legitimizes temporary code), finish the migration for that view now (pull one component forward). Chose pull-forward: finish the one view on Pinia directly, delete its shim use, keep the shim for the rest. Rule: when a shim costs, shrink the shim's surface instead of reverting the migration or gilding the temporary.
+Verification: View back to baseline render time; shim users down from 6 components to 5; removal ticket updated.
+Outcome: Migration continues with one fewer shim user; decision rationale in the commit message.
+
+---
+
+Goal: Rollback decision during the RS256 window: old-key verification rate stuck at 4%, not declining, 48h in.
+Context: Dual-accept active, mobile cohort pinned on an old build, web fully migrated.
+Investigation: Read per-version telemetry (one enterprise MDM cohort frozen), error budget (auth change budget 60% spent), rollback cost (one flag flip, but reintroduces HS256 acceptance).
+Decisions: Extend, not rollback: the failure mode of extending is prolonged dual-accept (bounded, monitored); rollback would break already-migrated web sessions and spend the remaining budget with nothing learned. Pre-committed rule applied: rollback only on active auth failures, never on slow migration.
+Verification: Extended window with MDM-team deadline; rate hits zero on day 5; HS256 disabled with the drill-timed 11-minute procedure.
+Outcome: Cutover completed; the pre-committed rollback criteria proved their worth by preventing a panic revert.
+
+---
+
+Goal: Replace the offset pagination helper shared by two endpoints.
+Context: Assumption going in: one shared helper, one fix, both endpoints improve.
+Investigation: Read the helper's callers: users search orders by (created_at, id), but the audit endpoint orders by unindexed (action, occurred_at) with product-required sort options.
+Decisions: Assumption was wrong: no single index serves both orderings, and changing the audit sort needs a product decision, not an engineering one. Plan changed mid-flight: keyset for users search now, audit endpoint split into a separate decision ticket with the product owner.
+Verification: Users search shipped with its index; audit endpoint explicitly excluded with the reason recorded, not silently left broken.
+Outcome: Deferred in part: one endpoint fixed, one blocked on product decision. The change set shrank instead of forcing a wrong index.
+
+---
+
+Goal: Choose between extending the Postgres outbox poller and adopting Debezium at 8k events/min sustained.
+Context: Relay healthy at current 2k/min, growth forecast 4x, team of three with no Kafka Connect experience.
+Investigation: Read relay p99 (stable), Debezium operational requirements (Connect cluster, schema history topic, snapshotting), hiring outlook (no platform hire planned).
+Decisions: No obviously right answer: Debezium wins on latency and ordering guarantees past 10k/min, polling wins on operability with the current team. Judgment call: extend polling with a documented switch threshold (10k/min sustained or p99 relay lag over 30s for a week), revisit with data.
+Verification: Threshold encoded as an alert, not a comment; load test confirms headroom to 9k/min.
+Outcome: Deferred decision with a tripwire: polling extended, Debezium evaluated on paper only, revisit triggered by metric.
+
+---
+
+Goal: The keyset migration rehearsal finds a regression: backfill batches spike WAL volume 3x and threaten the replica.
+Context: Migration plan approved; staging rehearsal under production-like volume.
+Investigation: Read WAL metrics during backfill (3x baseline, replica lag 40s), batch sizing (10k rows, no sleeps), replica specs (smaller instance class than primary).
+Decisions: Assumption was wrong: the plan assumed replica headroom that does not exist. Changed plan: batches of 2k with 200ms sleeps plus replica upgrade first; migration blocked until both land.
+Verification: Re-rehearsal shows WAL at 1.2x baseline, replica lag under 2s.
+Outcome: Blocked then unblocked: migration held for one release while the replica was resized; regression caught in rehearsal, never in production.
+
+---
+
+Goal: Review a pagination PR where offset and keyset advocates disagree in comments.
+Context: Diff implements keyset; reviewer insists offset is simpler and "fast enough", cites page-1 timings only.
+Findings: Reviewer right that keyset adds contract surface (cursor opaque token, docs, client state); author right that page-400 costs 900ms under OFFSET with production data distribution.
+Decisions: Trade-off with no clean win: simplicity of review vs depth-independence at real page depths. Resolution by evidence, not seniority: benchmark demanded at page 400 on production-like volume; numbers decide.
+Verification: Benchmark run: OFFSET 900ms, keyset 3ms at depth; reviewer concedes on data, author documents the cursor contract cost honestly.
+Outcome: Merged on evidence with the tradeoff recorded; neither side fully satisfied, both informed.
+
+---
+
+Goal: Clarify the ambiguous requirement before building: "make search faster for all tenants."
+Context: Request covers 5 endpoints with no latency target, no tenant prioritization, no definition of faster.
+Investigation: Asked for the slowest tenant's p99, the contractual SLO (none exists), and whether sort options may change (unknown).
+Decisions: Refuse to plan without answers: any index choice without a target tenant and ordering constraints risks the audit-endpoint mistake again. Sent back three questions with a default proposal attached so the owner can approve rather than design.
+Verification: No code written; the clarification request itself is the artifact, with the per-endpoint traffic table attached.
+Outcome: Needs clarification: blocked on product answers, default proposal on the table. Building first would have been the failure mode.

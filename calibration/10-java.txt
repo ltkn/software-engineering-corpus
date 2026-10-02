@@ -1,0 +1,527 @@
+Concept: Records model immutable aggregates with validation in the compact constructor. Language guarantee.
+Modern form:
+record UserRef(UUID id, String email) {
+    UserRef {
+        if (id == null) throw new IllegalArgumentException("id required");
+        email = email.trim().toLowerCase();
+    }
+}
+Why: canonical constructor, equals, hashCode, and toString generated from the state description; normalization lives in one place.
+Counter-pattern: mutable DTO with getters/setters plus a separate normalize() callers forget to invoke.
+Check: unit test constructs with untrimmed email and asserts the normalized value.
+
+---
+
+Concept: Sealed hierarchies close a type for exhaustive reasoning. Language guarantee.
+Modern form:
+sealed interface ApiError permits NotFound, Conflict, Forbidden, RateLimited {}
+Why: the compiler knows every subtype, so switches over ApiError need no default and break loudly when a subtype is added.
+Counter-pattern: open interface with instanceof chains that silently miss new cases.
+Check: adding a permit without updating the switch fails compilation.
+
+---
+
+Concept: Pattern matching for instanceof binds and narrows in one step. Language guarantee.
+Modern form:
+if (o instanceof Page<?> p && !p.rows().isEmpty()) render(p.rows());
+Why: no cast, no repetition of the type, flow-scoped binding.
+Counter-pattern: cast after instanceof with a differently-named variable that drifts.
+Check: compiles without casts; review rule bans explicit casts where patterns apply.
+
+---
+
+Concept: Record patterns destructure in switch with when-guards. Language guarantee since JDK 21.
+Modern form:
+return switch (o) {
+    case Point(int x, int y) when x == y -> "diagonal";
+    case Point(int x, int y) -> "point";
+    case null -> "null";
+    default -> "other";
+};
+Why: shape, binding, and condition in one case label; null handled explicitly as a case.
+Counter-pattern: nested instanceof plus getters plus if-chains duplicating the same dispatch.
+Check: null input returns "null" rather than throwing; non-exhaustive switch over a sealed type fails compilation.
+
+---
+
+Concept: Enums carry behavior, not just constants. Language guarantee.
+Modern form:
+enum Tier {
+    FREE(100), PRO(10_000), ENTERPRISE(Integer.MAX_VALUE);
+    private final int quota;
+    Tier(int quota) { this.quota = quota; }
+    boolean allows(int usage) { return usage < quota; }
+}
+Why: the quota lives with the tier it describes; a switch expression over Tier is exhaustive by construction (a traditional switch statement may still be non-exhaustive — exhaustiveness is enforced on expressions, not statements).
+Counter-pattern: parallel String constants plus a static Map<Tier-sic-String, Integer> that drifts.
+Check: test asserts each tier's boundary (quota minus one allowed, quota denied).
+
+---
+
+Concept: Annotations declare metadata; retention and target decide where it lives. Language guarantee.
+Modern form:
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.METHOD)
+@interface Idempotent { String value() default ""; }
+Why: RUNTIME retention for reflective enforcement, CLASS-or-SOURCE for compile-time tooling; narrow targets prevent misapplication.
+Counter-pattern: RUNTIME retention on an annotation only read by an annotation processor, paying reflection costs for nothing.
+Check: annotation-processor test asserts presence at the expected retention.
+
+---
+
+Concept: Null handling is explicit: Objects.requireNonNull at boundaries, never silent nulls. Convention plus API guarantee.
+Modern form:
+UserService(UserRepository users) {
+    this.users = Objects.requireNonNull(users, "users");
+}
+Why: fail-fast at construction with a named parameter beats a NullPointerException three layers deep.
+Counter-pattern: null accepted and stored, exploding in an unrelated stack frame months later.
+Check: constructor test asserts the message names the parameter.
+
+---
+
+Concept: PECS — producer extends, consumer super. Language guarantee of the type system.
+Modern form:
+static void copyAll(List<? extends User> src, List<? super User> dst) {
+    dst.addAll(src);
+}
+Why: extends reads (every element is a User), super writes (a User fits any supertype slot); reversed bounds fail compilation.
+Counter-pattern: List<User> parameters that reject List<Admin> callers for no reason.
+Check: call with List<Admin> source and List<Object> destination compiles.
+
+---
+
+Concept: Immutable factories and unmodifiable views communicate intent. API guarantee.
+Modern form:
+var roles = List.of("member", "operator");
+var snapshot = Map.copyOf(mutable);
+Why: List.of rejects nulls and mutation structurally; copyOf snapshots against later mutation of the source.
+Counter-pattern: Collections.unmodifiableList wrapping a list the caller keeps mutating underneath.
+Check: mutation attempt throws UnsupportedOperationException in tests; null element rejected at creation.
+
+---
+
+Concept: Sequenced collections (JDK 21+) give ordered endpoints a uniform vocabulary. API guarantee.
+Modern form:
+SequencedMap<String, User> cache = new LinkedHashMap<>();
+cache.putFirst("hot", u);
+var oldest = cache.firstEntry();
+var newestFirst = cache.reversed();
+Why: first/last/putFirst/reversed work identically across List, Deque, LinkedHashSet, and LinkedHashMap instead of per-type idioms.
+Counter-pattern: NavigableSet-only code (first/last) copied onto Lists via get(0)/get(size-1) with empty-list crashes.
+Check: empty-map firstEntry returns null (not an exception) per the interface contract; test asserts the null path.
+
+---
+
+Concept: HashCode and equals form one contract. Language-adjacent API guarantee.
+Modern form: records generate both from components; for classes, equal objects must share hashCode, and hashCode must stay stable while the object is a key.
+Why: HashMap lookup depends on the contract; mutable keys corrupt buckets silently.
+Counter-pattern: equals overridden without hashCode, scattering equal objects across buckets.
+Check: contract test (equal objects, equal hashes; mutation-after-insert flagged by review, never tested as supported).
+
+---
+
+Concept: Stream.toList() returns an unmodifiable list; Collectors.toList() guarantees neither mutability nor concrete type. API guarantee plus explicit non-guarantee.
+Modern form:
+var ids = users.stream().map(User::id).toList(); // unmodifiable
+var working = users.stream().filter(Active).collect(Collectors.toCollection(ArrayList::new)); // mutable, guaranteed type
+Why: toList is the default for results; toCollection(ArrayList::new) is the form when mutation or ArrayList semantics are genuinely required.
+Counter-pattern: toList result passed to sort() — throws at runtime; or Collectors.toList relied upon as ArrayList by type.
+Check: mutation attempt on toList result asserted to throw; mutable paths use toCollection with the explicit factory.
+
+---
+
+Concept: Optional is a return-type convention for possibly-absent values, not a general Maybe type and not a language rule. Convention.
+Modern form:
+Optional<User> findById(UUID id) { ... }
+// callers: findById(id).map(User::email).orElse("unknown@acme.test");
+Why: forces the absent case into the type where callers must handle it; orElseThrow() with no argument states the invariant.
+Counter-pattern (convention, not compiler error): Optional fields (breaks serialization and equals), Optional parameters (callers wrap needlessly), Optional.get without isPresent.
+Check: review rule flags Optional in fields and parameters; orElseThrow() with no message used only where absence is a bug.
+
+---
+
+Concept: Collectors downstream shape grouped results in one pass. API guarantee.
+Modern form:
+Map<Tier, List<String>> emailsByTier =
+    users.stream().collect(Collectors.groupingBy(User::tier,
+        Collectors.mapping(User::email, Collectors.toList())));
+Why: grouping plus transformation plus collection compose without intermediate maps.
+Counter-pattern: group-then-loop-again post-processing that rewalks every group.
+Check: empty input yields empty map (not null); downstream list order matches encounter order for ordered streams.
+
+---
+
+Concept: Pipeline laziness plus short-circuiting bounds the work. Language-adjacent guarantee.
+Modern form:
+users.stream().filter(u -> u.tier() == Tier.PRO).map(User::id).findFirst();
+Why: filter and map are lazy; findFirst stops the pipeline at the first match instead of processing the list.
+Counter-pattern: collect-then-get(0) materializing everything for one element.
+Check: side-effect counter test proves only the prefix ran.
+
+---
+
+Concept: Parallel streams cost coordination and demand associativity. Heuristic plus correctness requirement.
+Modern form: parallel only for CPU-bound, order-insensitive, splittable sources (ArrayList, arrays) with associative, non-interfering functions.
+Why: encounter-order maintenance, boxing, and shared mutable accumulators erase the speedup or corrupt results.
+Counter-pattern: parallel().forEach appending to an ArrayList — data races plus wrong results faster.
+Check: associativity and non-interference asserted by running the pipeline 1000x under parallel and comparing to sequential output.
+
+---
+
+Concept: Method references and effectively-final capture keep lambdas honest. Language guarantee.
+Modern form:
+users.forEach(this::notify);
+executor.submit(() -> retry(policy));
+Why: references name existing behavior; capture is by value of effectively-final variables, so staleness is visible.
+Counter-pattern: loop-variable capture expecting per-iteration freshness in an anonymous class submitted asynchronously.
+Check: review rule prefers method refs for single-method lambdas; mutation-after-capture fails compilation by design.
+
+---
+
+Concept: Plain loops beat streams where the logic is inherently imperative. Convention.
+Modern form: early multi-exit search, in-place partition, or exception-per-element handling written as a for loop with clear invariants.
+Why: streams excel at declarative transforms; index juggling and complex exits read worse and optimize worse as pipelines.
+Counter-pattern: stream with AtomicBoolean flags smuggling loop control flow through forEach.
+Check: review asks "would a loop state its invariant more clearly here" for any pipeline containing side-channel flags.
+
+---
+
+Concept: Checked exceptions for recoverable conditions, unchecked for programming errors. Convention with API roots.
+Modern form: IOException and TaipeiBankTimeoutException checked (caller decides: retry, fallback); NullPointer-style bugs unchecked (fix the code, never catch).
+Why: the signature advertises recoverability; catching programming errors masks bugs.
+Counter-pattern: throws Exception on everything, or catching RuntimeException around business logic "to be safe".
+Check: API review asserts checked exceptions each have a documented caller action.
+
+---
+
+Concept: try-with-resources owns every acquisition. Language guarantee.
+Modern form:
+try (var in = Files.newInputStream(path); var out = Files.newOutputStream(tmp)) {
+    in.transferTo(out);
+}
+Why: closings run in reverse order on all paths including exceptions, with suppressed-exception chaining preserved.
+Counter-pattern: manual close in finally that masks the original exception when close itself throws.
+Check: fault-injection test asserts the primary exception surfaces with close failures suppressed, not vice versa.
+
+---
+
+Concept: NIO.2 Paths and Files replace File for new code. API guarantee.
+Modern form:
+var text = Files.readString(path, StandardCharsets.UTF_8);
+Files.writeString(path, text, StandardCharsets.UTF_8, StandardOpenOption.CREATE);
+Why: explicit charsets (no platform-default surprises), atomic move options, symbolic-link control, directory streams.
+Counter-pattern: new FileReader(path) silently decoding in the platform charset, differing between laptop and container.
+Check: charset-sensitive test with non-ASCII fixture passes identically in both environments.
+
+---
+
+Concept: Time lives in java.time, never Date/Calendar for new code. API guarantee.
+Modern form:
+var zoned = Instant.now().atZone(ZoneId.of("Europe/London"));
+var deadline = zoned.plus(Duration.ofMinutes(30));
+Why: instants vs local vs zoned are distinct types; arithmetic respects DST gaps instead of silently producing nonexistent times.
+Counter-pattern: new Date(y, m, d) offsets and 1900-based years corrupting every boundary.
+Check: DST-gap test (last Sunday in March) asserts the resolver behavior explicitly.
+
+---
+
+Concept: JPMS modules encapsulate packages; opens exist for reflection frameworks. Language-adjacent guarantee.
+Modern form:
+module com.acme.users {
+    requires spring.context;
+    exports com.acme.users.api;
+    opens com.acme.users.entities to org.hibernate.orm.core;
+}
+Why: exports control compile-time access, opens control reflective access; strong encapsulation fails the build on accidental deep access instead of failing at runtime.
+Counter-pattern: everything on the classpath with setAccessible workarounds that break on every JDK upgrade.
+Check: jdeps plus a modular test run fail on missing opens before production does.
+
+---
+
+Concept: Serialization boundaries use explicit formats (JSON DTOs), never native serialization across trust lines. Convention with security roots.
+Modern form: Jackson databind with default typing off, DTOs versioned, unknown properties rejected or explicitly ignored by policy.
+Why: readObject gadget chains execute during parsing, before any application check; explicit formats carry no behavior.
+Counter-pattern: Serializable domain entities cached in a store every service writes.
+Check: gadget-deserialization negative test; unknown-property policy asserted per DTO.
+
+---
+
+Concept: ExecutorService selection matches the workload shape. Heuristic.
+Modern form: fixed pool for bounded CPU work, Executors.newVirtualThreadPerTaskExecutor() for blocking I/O fan-out, scheduled pool for timers, never raw new Thread per request.
+Why: unbounded thread creation exhausts memory on the first traffic spike; virtual threads make thread-per-task cheap for blocking work specifically.
+Counter-pattern: Executors.newCachedThreadPool for CPU-bound batch jobs, spawning thousands of contending threads.
+Check: load test asserts thread count bounded while throughput meets the target.
+
+---
+
+Concept: CompletableFuture composition keeps async logic declarative; exceptionally must preserve failure. API guarantee plus convention.
+Modern form:
+authorize(id).thenCompose(this::capture).thenApply(this::receipt)
+    .exceptionally(e -> { alerts.failed(id, e); throw new CompletionException(e); });
+Why: thenCompose chains without nesting; the terminal exceptionally logs then rethrows so failure stays failure downstream.
+Counter-pattern (from 02's canonical bug): exceptionally returning a default that downstream stages read as success.
+Check: failure-injection test asserts the chain completes exceptionally with the alert fired.
+
+---
+
+Concept: synchronized, Lock, and StampedLock trade scope for control. Heuristic with guarantee roots.
+Modern form: synchronized methods for uncontended invariants; ReentrantLock with tryLock timeouts for guarded acquisition; StampedLock optimistic reads for read-mostly data with validation.
+Why: synchronized is simplest and JIT-optimized for the uncontended case; explicit locks add timeouts, fairness, and multiple conditions where needed.
+Counter-pattern: synchronized on a publicly reachable object (clients can deadlock you) or String literals (interned, global).
+Check: lock-ordering documented per subsystem; timeout tests prove acquisition fails fast instead of hanging.
+
+---
+
+Concept: Atomics and concurrent collections replace most hand-rolled locking. API guarantee.
+Modern form: LongAdder for contended counters, ConcurrentHashMap.computeIfAbsent for memoized loading, CopyOnWriteArrayList only for tiny read-mostly lists.
+Why: LongAdder stripes under contention where AtomicLong serializes; computeIfAbsent is atomic per bin.
+Counter-pattern: synchronized counter increments on the request hot path, collapsing throughput to one thread.
+Check: contention micro-test (JMH) compares counter implementations at 64 threads before choosing.
+
+---
+
+Concept: volatile plus happens-before, stated precisely. Language guarantee.
+Modern form: volatile boolean shutdown; writes to volatile establish happens-before with subsequent reads, making prior writes visible.
+Why: visibility without locking for flags and safe-publication idioms; nothing more.
+Counter-pattern: volatile long counter incremented with ++ expecting atomicity (read-modify-write is not atomic).
+Check: JCStress-style reasoning in review; compound actions always under Atomics or locks, reviewed as a rule.
+
+---
+
+Concept: Safe publication idioms. Language guarantee.
+Modern form: final fields set in the constructor (freeze at construction end), static initializers, or volatile/atomic reference handoff.
+Why: publication without happens-before lets other threads see partially constructed objects — the bug that never reproduces locally.
+Counter-pattern: passing this from a constructor to another thread, or publishing via a non-volatile field.
+Check: review rule flags this-escape and non-volatile publication; the patterns above are the only approved idioms.
+
+---
+
+Concept: Interruption and cancellation are cooperative protocols. Convention on API guarantees.
+Modern form: loops check Thread.currentThread().isInterrupted() and restore the flag on InterruptedException catch when not rethrowing.
+Why: swallowing interrupts makes shutdown hang; libraries cancel by interrupting, so ignoring it ignores cancellation.
+Counter-pattern: catch (InterruptedException e) { log and continue } — the task that cannot be stopped.
+Check: cancellation test interrupts mid-work and asserts timely termination.
+
+---
+
+Concept: Virtual threads make thread-per-task viable for blocking I/O. Runtime behavior (JDK 21+), not magic.
+Modern form:
+Thread.ofVirtual().name("checkout-", 0).start(task);
+Why: millions of cheap threads parked on blocking calls replace async-contortion for I/O-bound work; carriers stay few.
+Counter-pattern: virtual threads for CPU-bound number crunching (no benefit, scheduling overhead) or pooled like platform threads (defeats the model).
+Check: blocking-fan-out benchmark shows carrier count flat while task count scales; CPU-bound work stays on platform pools.
+
+---
+
+Concept: Pinning — synchronized blocks and native calls hold carriers. Runtime behavior to design around.
+Modern form: prefer ReentrantLock over synchronized on virtual-thread hot paths; isolate JNI calls off virtual threads.
+Why: a pinned virtual thread occupies its carrier exclusively, collapsing the many-to-few ratio back toward one-to-one.
+Counter-pattern: synchronized LRU cache on every request of a virtual-thread service (from 02's canonical incident).
+Check: JFR virtual-thread-pinned events at zero in load tests; pinning alert in production telemetry.
+
+---
+
+Concept: ScopedValue replaces ThreadLocal for request context. Final API in JDK 25 (JEP 506); note orElse(null) now throws.
+Modern form:
+private static final ScopedValue<Tenant> TENANT = ScopedValue.newInstance();
+ScopedValue.where(TENANT, tenant).run(() -> serve(request));
+Why: bounded lifetime (binding dies with the run call), cheap inheritance into structured children, immutable-by-construction sharing.
+Counter-pattern: ThreadLocal tenant holders leaking across pooled-thread reuse and copied expensively into children.
+Check: leakage test asserts unbound outside run; child-thread visibility test passes without manual copying.
+
+---
+
+Concept: StructuredTaskScope (JDK 25 preview — JEP 505 fifth preview; open via static factories; compile and run with --enable-preview). Preview API, subject to change.
+Modern form:
+try (var scope = StructuredTaskScope.open()) {
+    var users = scope.fork(() -> userRepo.page(t, cursor, limit));
+    var count = scope.fork(() -> userRepo.count(t));
+    scope.join();
+    return new Page<>(users.get(), count.get());
+}
+Why: sibling tasks share one lifetime and one failure policy; join-or-throw replaces manual latch plus error aggregation.
+Counter-pattern: raw exeuctor plus CountDownLatch with hand-rolled exception collection that drops half the failures.
+Check: child-failure test asserts the scope throws with all failures visible; preview-flag documented in the build file.
+
+---
+
+Concept: Joiner policies select failure semantics explicitly (preview API, names track JEP 505). Preview API.
+Modern form: open() default (all succeed or first failure throws); Joiner.awaitAll for best-effort collection without throwing; Joiner.anySuccessfulResultOrThrow for racing alternatives where the first success wins.
+Why: the policy is the design decision — fail-fast checkout vs best-effort recommendations differ only here.
+Counter-pattern: one hand-rolled scope wrapper per call site, each with subtly different failure semantics.
+Check: policy test per usage (fail-fast throws, best-effort degrades); policy named in the method's contract comment.
+
+---
+
+Concept: Migration from reactive complexity to virtual threads where it fits. Convention.
+Modern form: thread-per-request service code replacing Mono/Flux chains for straightforward CRUD-plus-fan-out workloads.
+Why: debuggability (real stack traces), testability (plain JUnit), and hiring (every Java developer reads it) outweigh reactive throughput where I/O waits dominate anyway.
+Counter-pattern: rewriting a backpressure-sensitive streaming pipeline into blocking calls and discovering the queue has nowhere to live.
+Check: backpressure requirement decides: bounded streams stay reactive; request/response fan-out goes virtual.
+
+---
+
+Concept: Class loading and the unnamed module in practice. Intuition-level runtime behavior.
+Modern form: application classes load lazily on first active use; unnamed-module code reads all modules but modular jars encapsulate by default.
+Why: most startup cost is class loading plus verification; understanding laziness explains both slow first requests and why modular strictness bites at deploy, not in the IDE.
+Counter-pattern: eager static initializers doing network I/O at class-load time, paid on every cold start and every test JVM.
+Check: startup profile attributes time to class loading vs application init; static initializers doing I/O flagged in review.
+
+---
+
+Concept: JIT tiers and escape analysis at intuition level. Implementation behavior, never a guarantee.
+Modern form: hot methods compile C1 then C2; short-lived objects that never escape may be scalar-replaced (no allocation at all).
+Why: warmup explains slow starts; escape explains why some allocation disappears under profiler scrutiny.
+Counter-pattern: "optimizing" by pooling everything, defeating escape analysis and adding GC pressure the JIT had already removed.
+Check: JMH with proper warmup before any allocation claim; pooling justified by measurement, never by instinct.
+
+---
+
+Concept: G1 vs ZGC selection criteria (as of 2026, OpenJDK behavior). Heuristic.
+Modern form: G1 default for balanced throughput and simplicity; ZGC for sub-millisecond-pause-sensitive services with headroom to spare (it trades memory for pause time).
+Why: collector choice moves the pause/throughput/footprint triangle; defaults are right until measured otherwise.
+Counter-pattern: switching collectors to fix a leak (collectors manage reachability timing, never retention bugs).
+Check: GC logs plus pause histograms decide; switch only on measured pause violations with headroom confirmed.
+
+---
+
+Concept: JFR plus async-profiler as the diagnostic pair. Tooling practice.
+Modern form: continuous JFR (allocation, lock, I/O events) in production at low overhead; async-profiler wall/cpu/flame sampling for deep dives.
+Why: JFR sees JVM internals (TLAB, safepoints, pinned threads); profilers see where wall time goes; together they separate "slow code" from "waiting code".
+Counter-pattern: heap-dump-first debugging for a latency problem, answering a memory question nobody asked.
+Check: incident runbook names both tools with the exact event sets; overhead budget asserted under 2%.
+
+---
+
+Concept: Heap and thread dumps as point-in-time evidence. Tooling practice.
+Modern form: jcmd GC.heap_dump plus Thread.print with virtual-thread and structured-scope sections on JDK 25.
+Why: dumps answer "what exists right now" for leaks and deadlocks; they never answer rate or trend questions.
+Counter-pattern: single heap dump "proving" a leak (need two dumps plus allocation-rate data across time).
+Check: leak diagnosis requires two dumps plus JFR allocation profile; deadlock diagnosis pairs the dump with lock-order documentation.
+
+---
+
+Concept: Allocation rate as the first performance number. Heuristic.
+Modern form: measure MB/sec allocated under load before touching anything; as a heuristic starting example (not a threshold), rates above roughly 1 GB/s per core deserve a closer look.
+Why: allocation rate predicts GC pressure directly; most Java performance work is allocation work in disguise.
+Counter-pattern: tuning GC flags while the service allocates 4 GB/s of temporary DTOs.
+Check: JFR allocation profile in the baseline; each optimization re-measures rate first, latency second.
+
+---
+
+Concept: Boxing, strings, and collections as the usual allocation suspects. Heuristic.
+Modern form: primitive streams or plain loops for numeric hot paths; StringBuilder with capacity for built strings; right-sized collections (new ArrayList<>(expected)).
+Why: boxed Optionals and Integers in a million-row loop cost more than the algorithm they serve; string plus in a loop is quadratic intent with linear syntax.
+Counter-pattern: Stream<Integer> sum over millions with boxed accumulator, then blaming the collector.
+Check: allocation-profile delta per change; micro-claims proven with JMH, never with System.nanoTime loops.
+
+---
+
+Concept: Synchronization contention measured, not assumed. Heuristic.
+Modern form: JFR lock events (contended enters, monitor inflation) decide whether a lock matters; striped or lock-free structures only where contention is measured.
+Why: uncontended synchronized costs nanoseconds after JIT bias removal; contention costs milliseconds and scheduler chaos.
+Counter-pattern: ConcurrentHashMap everywhere "for performance" in single-threaded paths, paying node overhead for zero contention gain.
+Check: contention appears in profiles before any lock redesign is approved.
+
+---
+
+Concept: Batching and backpressure at API boundaries. Design practice.
+Modern form: JDBC batch inserts, bulk Kafka sends, bounded queues with explicit overflow policy (drop-oldest, drop-newest, block with timeout, fail).
+Why: per-item overhead dominates at scale; unbounded queues convert overload into out-of-memory instead of errors.
+Counter-pattern: unbounded LinkedBlockingQueue "for safety" that guarantees OOM under the first real spike.
+Check: overload drill asserts bounded behavior (errors or shedding, never OOM); batch sizes tuned from profiles.
+
+---
+
+Concept: Latency distributions, not averages, describe services. Heuristic with math roots (see 03).
+Modern form: p50 for typical, p95/p99 for pain, max with n for context; histograms over time, never single numbers.
+Why: means hide bimodality (cache hit/miss) and tail collapse; capacity planned on means fails at the first traffic shift.
+Counter-pattern: "average 40ms" SLA that 9% of users experience as 180ms.
+Check: dashboards show p50/p95/p99 by construction; SLOs written on quantiles with the sample-size caveat from 03.
+
+---
+
+Concept: JMH methodology for microbenchmark claims. Tooling practice.
+Modern form: @Benchmark with warmup iterations, multiple forks, Blackhole consumption, and reported error bounds.
+Why: dead-code elimination, constant folding, and profile pollution make naive timing loops measure nothing.
+Counter-pattern: main() with System.currentTimeMillis around a loop, "proving" a 3x win that vanishes in production.
+Check: every microbenchmark merged into the repo carries forks, warmup, and Blackhole; production A/B confirms before any claim ships.
+
+---
+
+Concept: Anonymous classes to lambdas, preserving semantics. Migration pattern.
+Modern form: single-method anonymous Runnable/Comparator/Listener becomes a lambda or method reference.
+Why: less ceremony, same dispatch; captures stay effectively final either way.
+Counter-pattern: anonymous classes kept "for clarity" while shadowing outer variables the lambda form would have made obvious.
+Check: behavior tests unchanged across the migration; shadowing warnings enabled.
+
+---
+
+Concept: Mutable DTOs to records where the shape is fixed. Migration pattern.
+Modern form: response and event payloads as records with compact-constructor validation; builders only where construction truly varies.
+Why: immutability removes defensive copies and temporal coupling; validation at construction removes the invalid-state window.
+Counter-pattern: record with twelve components and three telescoping constructors — a builder in denial.
+Check: serialization round-trip tests survive the migration; component count over six triggers builder review.
+
+---
+
+Concept: Old collection idioms to modern APIs. Migration pattern.
+Modern form: List.of/Set.of/Map.of for constants, SequencedMap for ordered caches, Map.getOrDefault and computeIfAbsent for memoization, toList for results.
+Why: each modern form removes a bug class (nulls, mutation, ordering, races) the old idiom permitted.
+Counter-pattern: new Hashtable "because it is synchronized" — global locking with 1990s iteration semantics.
+Check: null-insertion and mutation tests flipped to assert the new guarantees.
+
+---
+
+Concept: Unsafe serialization to explicit formats. Migration pattern (security roots in 06).
+Modern form: Serializable removed from domain entities; Jackson DTOs with explicit schemas; serialVersionUID audit during transition for anything that must stay compatible.
+Why: every Serializable class is a gadget candidate; explicit formats carry data, never behavior.
+Counter-pattern: "temporary" Serializable on the session object that survives five years into the cache every service writes.
+Check: serialization-surface test fails on any new Serializable domain type.
+
+---
+
+Concept: Deprecated and legacy APIs to supported JDK 25 alternatives. Migration pattern.
+Modern form: SecurityManager-era code removed (it is gone), URL constructors replaced by URI.toURL, finalization replaced by Cleaner, Thread.stop-era patterns replaced by interruption.
+Why: removed APIs fail at runtime on upgrade day, not at compile time; each has a designed replacement with different semantics worth learning.
+Counter-pattern: --add-opens and --illegal-access flags accumulating in the launch script to keep dead APIs walking.
+Check: jdeps --jdk-internals clean; launch flags reviewed per upgrade, none unexplained.
+
+---
+
+Concept: JDK 25 finalized additions that make code specifically "25" — module imports, compact sources, instance mains. Language guarantees, final (not preview).
+Modern form:
+import module java.base;
+void main() {
+    IO.println("Hello, " + List.of("team").getFirst());
+}
+Why: import module java.base (JEP 511) replaces a dozen on-demand imports; compact source files with instance main (JEP 512) drop the class-and-static ceremony for small programs and tools; the IO class now lives in java.lang, so IO.println needs no import anywhere. Static IO methods are NOT implicitly imported — name the class.
+Counter-pattern: compact files used for services (no named class means no instantiation, no framework scanning — compact sources are programs and entry points, not components).
+Check: launcher protocol test (no-arg main chosen when present); evolution test (wrapping in an explicit class keeps behavior).
+
+---
+
+Concept: JDK 25 preview neighbors to label, never to teach as final. Preview APIs, subject to change.
+Modern form: primitive types in patterns (JEP 507, third preview — int/long patterns in instanceof and switch) and stable values (JEP 502, preview — JVM-treated constants with flexible init timing) appear in 25 only behind --enable-preview.
+Why: preview items show direction without promising stability; teaching them as final guarantees a stale file at the next LTS.
+Counter-pattern: preview syntax copied into production services, breaking the next JDK upgrade.
+Check: every preview block in this file names its JEP and the preview flag; the build separates preview sources from stable ones.
+
+---
+
+Concept: Lombok immutables migrate to records; builders, entities, and logging stay Lombok. Migration pattern with explicit exceptions.
+Modern form:
+record Page<T>(List<T> rows, String nextCursor) {}
+// replaces: @Value class Page<T> { List<T> rows; String nextCursor; }
+Why: records give canonical construction, structural equality, and compact validation without annotation processing; one less plugin in the build.
+Counter-pattern: @Data on mutable carriers shared across threads (generated equals/hashCode over mutating state) or @Value persisting "because it was already there".
+Check: migration keeps serialization round-trips green; new immutable carriers as records enforced by review.
+
+---
+
+Concept: Legitimate remaining Lombok — read-and-maintain everywhere, write where records do not fit. Convention.
+Modern form: @Builder for stepwise construction with defaults, @RequiredArgsConstructor for Spring constructor injection, @Slf4j for loggers, plain classes for JPA entities (proxies need no-arg construction plus mutable state — records are final with canonical constructors and cannot serve).
+Why: agents maintain millions of Lombok lines; illiteracy in @SuperBuilder hierarchies or required-args injection is blindness in legacy Spring code, while new code prefers records where they fit.
+Counter-pattern: @Builder on a three-field record-shaped carrier (ceremony without need) or records forced onto JPA entities (proxy and dirty-checking breakage).
+Check: entity-vs-record decision recorded per class; builder usage justified by optional/defaulted parameters.

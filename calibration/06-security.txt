@@ -1,0 +1,331 @@
+Concept: Threat modeling starts from trust boundaries, not from a checklist. For this stack the boundaries are browser to SPA, SPA to API, API to database, service to Kafka, and CI to production.
+Vulnerable pattern: A team enumerates STRIDE per component instead of per boundary, producing fifty theoretical threats on the logging library and none on the tenant-propagation path.
+Why it fails: Components are where code lives but boundaries are where attackers cross; per-component analysis diffuses effort evenly instead of concentrating it where trust changes.
+Remediation: Model each boundary with its assets, allowed flows, and one abuse case; the gateway-to-service tenant handoff gets modeled before any library.
+Regression control: Threat model reviewed on every boundary change (new webhook, new consumer); review recorded as a checklist item in the PR template.
+
+---
+
+Concept: STRIDE-per-boundary applied to the API-to-database boundary.
+Vulnerable pattern: Spoofing and tampering considered, repudiation and elevation ignored, so forged tenant context goes unmodeled.
+Why it fails: Partial STRIDE creates false confidence; the unexamined letters hide the actual findings (repudiation gaps in audit logs, elevation via shared service account).
+Remediation: Walk all six letters per boundary with a scribe; elevation findings become RLS and ownership requirements, repudiation findings become audit-log requirements.
+Regression control: Findings tracked as tickets with the boundary named; closed findings re-verified by the test that encodes them.
+
+---
+
+Concept: Security invariants are properties that must hold in every state, stated before any mechanism.
+Vulnerable pattern: "Use HTTPS and validate input" as the security section of a design doc.
+Why it fails: Mechanism lists cannot be verified and silently expire; invariants can be tested ("no query executes without tenant scope", "no secret reaches telemetry").
+Remediation: Write three to five invariants per boundary first, then choose mechanisms that enforce each one.
+Regression control: Each invariant owns at least one automated test; the invariant list is re-read at every design review.
+
+---
+
+Concept: API1:2023 Broken Object Level Authorization (OWASP API Security Top 10, 2023 revision; still the current API list as of 2026-10). Authorization must be checked per object, not per session.
+Vulnerable pattern:
+getUser(id) { return users.findById(id).orElseThrow(); }
+Why it fails: Authentication proves who calls, not what they may see; any authenticated id enumerates other tenants.
+Remediation (Spring anchor):
+@PreAuthorize("@authz.canReadUser(authentication, #id)")
+plus service-layer ownership check as defense in depth, because annotations alone are bypassed by new overloads missing them.
+Regression control: Cross-tenant read test per endpoint; new GET-by-id routes rejected in review without one. Testing technique lives in 08.
+
+---
+
+Concept: API2:2023 Broken Authentication. Credential stuffing, weak lockout, and long-lived tokens cluster here.
+Vulnerable pattern: JWT with 30-day expiry, no rotation, login rate-limited by IP behind office NAT.
+Why it fails: Stolen tokens stay valid for a month and the rate limit punishes the whole office while missing distributed guessing.
+Remediation (Spring anchor): Short-lived access tokens (minutes) plus rotated refresh in httpOnly cookies; per-principal rate limits with strict IP fallback for anonymous routes. Protocol mechanics in 07.
+Regression control: Token-lifetime assertion in config tests; contract test on 429 shape and Retry-After.
+
+---
+
+Concept: API3:2023 Broken Object Property Level Authorization (covers the 2019 excessive-data-exposure and mass-assignment entries). Authorization must cover properties, not just objects.
+Vulnerable pattern: User update endpoint binds the whole entity, so role: "admin" in the JSON silently promotes the caller.
+Why it fails: Object-level checks pass (own profile) while a writable property escapes the model.
+Remediation: Property allow-lists on write (DTOs with exactly the settable fields, never the entity) and projection DTOs on read. This file is the mechanism home; assessment technique lives in 08.
+Regression control: Mass-assignment test posts an admin flag and asserts it ignored; response-shape test asserts no sensitive fields leak.
+
+---
+
+Concept: API4:2023 Unrestricted Resource Consumption. Cost and capacity are attack surfaces.
+Vulnerable pattern: Page size unbounded (limit=1000000 accepted), image upload without size or dimension caps, no per-tenant quotas.
+Why it fails: One request can exhaust heap, disk, or downstream budget; legitimate tenants share fate with abusive ones.
+Remediation: Hard caps (page size 100, payload sizes per route), per-principal quotas, pagination always keyset-bounded. Stack anchor: Spring validation annotations plus gateway quotas as the outer ring.
+Regression control: Boundary tests at cap+1 for every capped input; load test asserts p99 under quota pressure.
+
+---
+
+Concept: API5:2023 Broken Function Level Authorization. Roles must gate actions, default deny.
+Vulnerable pattern: Admin-only export mounted at /reports/export with no role check because "the button is hidden in the UI".
+Why it fails: Hidden is not denied; direct calls execute admin functions as any authenticated user.
+Remediation (Spring anchor): @PreAuthorize("hasRole('ADMIN')") on every privileged handler, default-deny filter posture, UI hiding as usability only.
+Regression control: Forbidden-verb test per admin route as a lower-privileged principal. Depth on testing in 08.
+
+---
+
+Concept: API6:2023 Unrestricted Access to Sensitive Business Flows. Business logic abused at allowed rates.
+Vulnerable pattern: Coupon redemption, seat hold, or signup bonus callable in a loop within rate limits, each call legitimate in isolation.
+Why it fails: Rate limits count requests, not business outcomes; ten thousand individually-valid redemptions drain the campaign.
+Remediation: Business-flow controls: one-per-account semantics, velocity rules on outcomes (not requests), step-up verification past thresholds.
+Regression control: Abuse-case test replays the profitable loop and asserts the outcome cap holds.
+
+---
+
+Concept: API7:2023 Server-Side Request Forgery. The server fetches attacker-chosen URLs.
+Vulnerable pattern: Webhook registration accepts any callback URL; the fetcher follows redirects into 169.254.169.254 and reads cloud credentials.
+Why it fails: Server-side requests inherit the server's network position and credentials; user input controls the destination.
+Remediation: URL allow-lists, deny private and metadata ranges by resolved IP (re-resolve, check each redirect hop), no credential ambient to the fetcher. Spring anchor: RestClient with a validating request interceptor, never the raw URL.
+Regression control: SSRF test battery (metadata IP, redirect-to-private, DNS rebinding) runs against every URL-accepting endpoint.
+
+---
+
+Concept: API8:2023 Security Misconfiguration. Defaults ship open.
+Vulnerable pattern: Actuator endpoints exposed, stack traces in errors, CORS allow-origin star with credentials, directory listing on uploads.
+Why it fails: Each default is convenient in development and dangerous in production; misconfiguration compounds across layers.
+Remediation: Hardened baselines per layer (as of 2026-10): actuator behind admin network with auth, generic error contracts, exact-origin CORS, uploads outside web root with content-type enforcement.
+Regression control: Config audit test asserts actuator auth, error shape, and CORS headers on every deploy; headers scanned in CI.
+
+---
+
+Concept: API9:2023 Improper Inventory Management. Unknown endpoints cannot be secured.
+Vulnerable pattern: v1 and v2 serve simultaneously, three undocumented internal endpoints, one forgotten staging host with production data.
+Why it fails: Deprecation without retirement leaves the old attack surface permanently open; shadow APIs skip every control added since.
+Remediation: Generated inventory from OpenAPI plus gateway routes, version sunset dates published, staging data sanitized or isolated.
+Regression control: Inventory diff in CI fails the build on undocumented routes; sunset calendar reviewed quarterly.
+
+---
+
+Concept: API10:2023 Unsafe Consumption of APIs. Third-party responses are untrusted input.
+Vulnerable pattern: Payment provider webhook trusted by presence; JSON parsed into domain objects without validation, amounts used directly.
+Why it fails: Compromised or buggy providers become injection vectors; ambient trust in "our vendor" skips every check applied to user input.
+Remediation: Verify signatures on raw bytes first, validate schemas strictly, timeouts plus retries with backoff on all outbound calls, secrets server-side only. Stack anchor: signature verification before parsing, response DTOs with validation.
+Regression control: Contract tests with hostile fixtures (wrong types, huge numbers, extra fields); signature-bypass test asserts rejection.
+
+---
+
+Concept: OWASP Top 10 web (2025 revision current as of 2026-10; category names below, verify numbering at refresh): Broken Access Control sits at the top of the awareness list by OWASP's risk mapping, which blends prevalence, impact, and exploitability — not a pure incident-frequency ranking.
+Vulnerable pattern: Any endpoint checking authentication where it should check authorization (see API1 above for the canonical shape).
+Why it fails: Frameworks make authentication one annotation and authorization a design task; teams complete the easy half.
+Remediation: Deny by default, enforce ownership at the service layer so new routes inherit it, test as the lower-privileged principal.
+Regression control: Access-matrix test per resource: owner allowed, stranger denied, anonymous denied, admin per policy.
+
+---
+
+Concept: SQL injection (OWASP injection class). Untrusted input becomes query structure.
+Vulnerable pattern:
+db.query("SELECT * FROM users WHERE email = '" + email + "'");
+Why it fails: Quoting is not a boundary; one apostrophe escapes the string literal and the input becomes SQL.
+Remediation (Postgres anchor): Parameterized queries exclusively ($1, $2), never concatenation; ORM positional parameters audited by query-shape test.
+Regression control: Injection battery (quote, comment, union, stacked) against every text input; SAST rule bans string-built SQL.
+
+---
+
+Concept: Command injection. Untrusted input reaches a shell.
+Vulnerable pattern: Passing a filename into a shell-out for thumbnailing without an argument vector.
+Why it fails: Shells interpret metacharacters; the filename becomes commands.
+Remediation: No shell (API calls with argument arrays), strict allow-list of filenames, sandbox the converter with no network.
+Regression control: Metacharacter battery (semicolons, backticks, $()) in filename tests; SAST bans shell=True equivalents.
+
+---
+
+Concept: Stored XSS. Attacker input rendered as markup later.
+Vulnerable pattern: Comment body saved raw, rendered with v-html for "rich text".
+Why it fails: Storage preserves the payload and every viewer executes it; the writer's session is long gone when it fires.
+Remediation (Vue anchor): Interpolate with {{ }}, never v-html on untrusted content; allowlist-based sanitizer only where rich text is a real requirement, plus CSP as the backstop.
+Regression control: Stored-payload round-trip test asserts inert rendering; CSP header asserted in deploy checks.
+
+---
+
+Concept: DOM XSS. Client-side code sinks untrusted data into execution contexts.
+Vulnerable pattern: element.innerHTML = location.hash.slice(1) for "deep links".
+Why it fails: No server ever sees the payload; sink-side handling is the only defense and it is absent.
+Remediation: textContent assignment, URL parsing with allow-listed routes (safeRedirect pattern), Trusted Types where supported.
+Regression control: Client-side sink scan in review checklist; hash-payload test asserts inert handling.
+
+---
+
+Concept: CSRF. Browser ambient credentials ride forged requests.
+Vulnerable pattern: Cookie-authenticated POST /transfer with no token, justified by "SameSite=Lax default".
+Why it fails: Lax still sends cookies on top-level GETs and same-site subtleties; state-changing GETs or lax-checked POSTs execute on behalf of logged-in victims.
+Remediation: SameSite=strict plus anti-CSRF tokens on mutations, or token-in-header auth (no ambient credentials) for APIs; state changes never on GET.
+Regression control: Cross-origin forged-request test asserts rejection; cookie flags asserted (httpOnly, Secure, SameSite).
+
+---
+
+Concept: SSRF via redirect and DNS rebinding (web facet; API7 covers the API facet). Validation at input time is insufficient.
+Vulnerable pattern: Allow-list checked once against the submitted URL, then the fetcher follows three redirects to an internal address.
+Why it fails: Time-of-check differs from time-of-use twice over: redirects change the destination, DNS answers change per query.
+Remediation: Validate every hop by resolved IP against deny ranges, pin DNS for the fetch duration, disable following redirects by default.
+Regression control: Rebinding and redirect-chain fixtures in the SSRF battery; fetcher unit tests mock multi-hop chains.
+
+---
+
+Concept: Path traversal. Untrusted names escape their directory.
+Vulnerable pattern: Serving uploads by concatenating the request filename onto the storage path.
+Why it fails: Dot-dot sequences and absolute paths resolve outside the intended root on most filesystems.
+Remediation: Resolve then verify containment within the root (canonicalize and prefix-check), or serve by content id with names as metadata only.
+Regression control: Traversal battery (../, encoded variants, absolute paths) asserts containment; storage tests run on Linux and Windows semantics.
+
+---
+
+Concept: Insecure deserialization, Java facet. Byte streams become objects with behavior.
+Vulnerable pattern: readObject on session blobs from a shared cache any service can write.
+Why it fails: The deserialization gadget chain executes during parsing, before any application check runs.
+Remediation: Avoid native serialization across trust boundaries (JSON DTOs instead); where unavoidable, ObjectInputFilter allow-listing exact classes. Jackson configured with default typing off.
+Regression control: Deserialization-gadget fixture rejected in tests; SAST flags readObject on untrusted streams.
+
+---
+
+Concept: Prototype pollution, JavaScript facet. Deep merge writes __proto__.
+Vulnerable pattern: Recursive merge of request JSON into config objects without key filtering.
+Why it fails: __proto__ and constructor.prototype assignments mutate shared prototypes, affecting all subsequent objects in the process.
+Remediation: Block dangerous keys at the merge boundary, use Maps for dynamic keys, freeze shared prototypes where feasible.
+Regression control: Pollution fixture asserts prototype integrity after merging hostile JSON; merge utility unit-tested with __proto__ payloads.
+
+---
+
+Concept: HTTP request smuggling. Front and back servers disagree on message boundaries.
+Vulnerable pattern: Nginx forwards with Transfer-Encoding while the backend prefers Content-Length, desynchronizing the next request on the connection.
+Why it fails: Two parsers, one byte stream; the disagreement lets one request's tail become the next request's head, poisoning other users' sessions.
+Remediation: Normalize at the edge (HTTP/1.1 with single framing, reject ambiguous messages), keep-alive to origins with consistent parsing, reject CL+TE combinations outright.
+Regression control: Ambiguous-framing fixtures rejected in gateway tests; parser versions pinned and updated together.
+
+---
+
+Concept: Cryptographic failure, transport facet (as of 2026-10). TLS 1.2 minimum, 1.3 preferred; 1.0/1.1 and weak ciphers removed.
+Vulnerable pattern: ssl_protocols includes TLSv1 for one legacy client on the main vhost, dragging every connection down.
+Why it fails: Negotiation settles on the weakest mutually supported option; one legacy exception weakens all sessions.
+Remediation (Nginx anchor): Main vhost TLSv1.2+ with modern ciphers and HSTS; legacy isolated on a separate endpoint with logging, sunset dated.
+Regression control: Scan asserts protocol floor and cipher list per vhost on every deploy.
+
+---
+
+Concept: Cryptographic failure, storage facet (as of 2026-10). Passwords hashed with argon2id; anything weaker migrates.
+Vulnerable pattern (broken custom design, shown to forbid it):
+md5(password + salt) stored, compared in application code.
+Why it fails: Fast hashes brute-force at billions per second; unsalted or weakly-salted digests fall to rainbow tables; comparison code invites timing leaks.
+Remediation: argon2id via the platform password encoder with server-side pepper from the secret store; upgrade hashes transparently on next login.
+Regression control: Hash-identification test rejects md5/sha1/bcrypt-below-cost in storage; login test covers transparent upgrade path.
+
+---
+
+Concept: Nonce and IV misuse. Randomness requirements differ by construction.
+Vulnerable pattern: Fixed IV "for determinism" across AES-CBC encryptions of similar JSON payloads.
+Why it fails: Deterministic IV under CBC leaks equality of plaintext prefixes; nonce reuse under GCM destroys authenticity entirely and leaks the authentication key.
+Remediation: Random 96-bit nonces per GCM encryption, never reused with the same key; no custom modes, ever. Designing new crypto is out of scope for application code, full stop.
+Regression control: Nonce-uniqueness test over 100k encryptions; SAST flags constant IVs.
+
+---
+
+Concept: Broken custom JWT validation (shown as the forbidden pattern, with the standard replacement).
+Vulnerable pattern:
+if (token.split(".").length == 3) trust(claims);
+Why it fails: Structure is not authenticity; alg=none, key confusion, and missing issuer/audience checks all pass a shape test.
+Remediation (Spring anchor): Verify signature with the rotated public key, enforce alg allow-list, issuer, audience, expiry with bounded skew. Never hand-roll validation.
+Regression control: Alg-confusion, none-alg, wrong-key, expired, and wrong-audience fixtures all rejected in tests. Protocol depth in 07.
+
+---
+
+Concept: Identification and authentication failures (OWASP web). Guessing scales; lockout must too.
+Vulnerable pattern: Login returns "user not found" vs "wrong password", letting enumeration, with per-IP lockout behind NAT.
+Why it fails: Distinct messages oracle valid accounts; IP lockout punishes offices while distributed guessing stays under threshold.
+Remediation: Uniform responses ("invalid credentials"), per-account throttling with backoff, breached-password screening at registration.
+Regression control: Enumeration test asserts identical responses and timings; throttling test from distributed fixtures.
+
+---
+
+Concept: Security logging and monitoring failures (OWASP web). Attacks succeed unnoticed for months.
+Vulnerable pattern: Auth failures unlogged, logs at debug with tokens inline, no alert on 100x 401 bursts.
+Why it fails: Detection needs both records and attention; missing either stretches dwell time from minutes to quarters.
+Remediation: Log auth decisions with outcome and key id (never secrets), alert on rate and pattern anomalies, retain with tamper-evident storage.
+Regression control: Alert drill asserts the 401-burst page fires; redaction test fails the build on credential-shaped log output.
+
+---
+
+Concept: Vulnerable and outdated components. Known CVEs in the dependency tree.
+Vulnerable pattern: Jackson two years old with a published deserialization CVE, "pinned for stability".
+Why it fails: Attackers automate against published CVEs; stability pins become permanent exposure without a policy.
+Remediation: Lockfiles plus automated update PRs, severity-SLA patching (critical in days), SBOM generated per release.
+Regression control: SCA scan in CI fails on criticals past SLA; SBOM diff reviewed per release.
+
+---
+
+Concept: Software and data integrity failures (OWASP web). Updates and pipelines are trust decisions.
+Vulnerable pattern: CI pulls unsigned base images and unsigned actions by mutable tag; build artifacts overwritable.
+Why it fails: Mutable references let one compromised upstream rewrite every downstream build deterministically.
+Remediation: Pin digests, verify signatures (cosign/SLSA where available), separate build and deploy credentials, immutable release artifacts.
+Regression control: Digest-pin test fails on floating tags; provenance attestation checked at deploy.
+
+---
+
+Concept: Session management boundaries. Cookie flags are the session's seatbelts.
+Vulnerable pattern: Session cookie without httpOnly, Secure, or SameSite; session id in URLs for "mobile compatibility".
+Why it fails: Script theft via XSS, network theft on HTTP, fixation via shared links each convert a session compromise into account takeover.
+Remediation: httpOnly, Secure, SameSite=strict (or Lax with CSRF tokens), rotate id at privilege change, server-side invalidation list.
+Regression control: Cookie-flag assertion per response in tests; fixation test (pre-login id rejected after login).
+
+---
+
+Concept: CORS as an access boundary, not a convenience header. Misconfiguration opens reads, not just writes.
+Vulnerable pattern: Reflected Origin into allow-origin with credentials true ("works for all our tenants").
+Why it fails: Reflection trusts any origin the victim visits; credentials ride along, so attacker pages read API responses as the victim.
+Remediation: Exact allow-list per environment, credentials only with exact origins, preflight cache bounded; SPA dev uses a proxy so localhost never enters production config.
+Regression control: Reflected-origin test asserts rejection; credentials-with-wildcard combination banned by config test.
+
+---
+
+Concept: Mass assignment, mechanism home (assessment technique in 08). Binding is a security decision.
+Vulnerable pattern: Update endpoint binds the request body directly onto the JPA entity.
+Why it fails: The entity contains fields the requester must never write (role, tenantId, balance); binding frameworks copy them silently.
+Remediation: Dedicated DTOs with exactly the writable fields; entity never a controller parameter; read projections exclude sensitive fields.
+Regression control: Extra-field test posts role/admin/tenantId and asserts each ignored; response-shape test asserts exclusion.
+
+---
+
+Concept: Supply chain, lockfiles and provenance. Reproducibility is a security property.
+Vulnerable pattern: pnpm install without frozen lockfile in Docker; base image node:22 (floating minor).
+Why it fails: Unfrozen installs resolve differently per build, so audits describe a tree nobody runs; floating tags move underneath released artifacts.
+Remediation: Frozen lockfiles committed and enforced in CI and Docker; base images pinned by digest with scheduled bump PRs.
+Regression control: Build fails on lockfile drift; digest drift opens a ticket, not a silent upgrade.
+
+---
+
+Concept: Supply chain, dependency confusion and signatures. Internal names resolve publicly by default.
+Vulnerable pattern: Private package @acme/auth referenced without a scoped registry; public registry squat of the same name installs instead.
+Why it fails: Resolvers try registries in order; attackers publish the private name publicly with a higher version.
+Remediation: Scoped registry mapping for private names, signature and provenance verification on publish and install, namespace reservation where supported.
+Regression control: Install-dry-run test asserts private names resolve internally; new-dependency PRs require provenance review.
+
+---
+
+Concept: Detection, alerting thresholds. Alerts are contracts with on-call attention.
+Vulnerable pattern: Alert on every 500; team mutes the channel within a week.
+Why it fails: Unactionable alerts train ignoring; the real incident pages into a muted channel.
+Remediation: Alert on symptoms with runbooks (error budget burn, auth-burst rate, DLQ growth), page only on user impact, tune from drill data.
+Regression control: Alert-firing drill per rule quarterly; mute events reviewed as process failures.
+
+---
+
+Concept: Response, containment and evidence. The first hour decides the blast radius.
+Vulnerable pattern: Deleting compromised pods "to stop it" before capturing logs and images.
+Why it fails: Destruction removes the evidence needed to scope the breach; the same image redeploys the same compromise.
+Remediation: Freeze first (isolate network, snapshot volumes and images, preserve logs), then eradicate (rotate all credentials the workload could see, rebuild from known-good), then recover with heightened monitoring.
+Regression control: Tabletop exercise twice yearly; credential-rotation checklist executed, not improvised; post-incident regression tests added before closing.
+
+---
+
+Concept: Post-incident regression controls close the prevent-detect-test loop.
+Vulnerable pattern: Incident review ends with "engineers reminded to be careful".
+Why it fails: Reminders are not controls; the same path reopens within quarters because nothing in the system changed.
+Remediation: Every incident produces at minimum one automated regression test, one detection improvement, and one hardening change, each with an owner and date.
+Regression control: Incident tickets cannot close while any of the three is open; recurrence of the same class escalates the control level.
+
+---
+
+Concept: Trust-boundary failures stated as violated invariants. Each invariant below names the boundary, the violation, and the stack-anchored enforcement.
+Vulnerable pattern: Tenant context accepted from query params or body because "the gateway already checked"; authorization enforced only in the controller while a new service method bypasses it; vendor webhook JSON mapped straight into domain orders.
+Why it fails: All three move trust across a boundary without re-verification: client-supplied tenancy forges isolation, annotation-only checks evaporate on new paths, consumed API data inherits trust it never earned.
+Remediation: Invariant one, tenant context cannot be supplied by the client — gateway sets it, services read it from propagated context only, RLS re-enforces it in Postgres. Invariant two, authorization is checked at the resource boundary — ownership enforced in the service method every path funnels through, annotations as the outer ring. Invariant three, untrusted API responses never become trusted domain objects — signature verification, strict schema DTOs, and explicit mapping before any business use.
+Regression control: One test per invariant (forged-tenant ignored, direct-service-call denied, hostile-vendor-fixture rejected); all three run on every build because boundaries regress silently.

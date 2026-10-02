@@ -1,0 +1,256 @@
+The Hanseatic League bound North Sea and Baltic ports into a trading network without a central state. Member cities standardized weights, shared armed convoys, and maintained counting houses abroad, most famously the Steelyard in London. Its power faded as territorial states consolidated customs and navies in the seventeenth century.
+
+---
+
+Q: Which organelle produces most of a cell's ATP?
+Answer: The mitochondrion, through oxidative phosphorylation across its inner membrane.
+
+---
+
+Q: How many milliliters in 2.5 liters?
+Answer: 2500.
+
+---
+
+Passage: The semaphore chains of the 1790s relayed messages across hilltops using pivoting arms. Each tower read its neighbor through a telescope and repeated the position, passing a symbol down the line in minutes. Fog, night, and misread angles were the main failure modes, so important messages were acknowledged by return signal.
+Q1: What did the telescope enable that shouting could not?
+Answer: Reading a distant tower's arm positions beyond voice range, which is what made multi-hop relay possible.
+Q2: Why did fog break the chain while rain merely slowed it?
+Answer: Fog removes line of sight entirely so no symbol can be read; rain degrades visibility but leaves the arms intermittently legible, and the acknowledgment protocol catches the gaps. This infers from the stated failure modes plus the return-signal mechanism.
+
+---
+
+Q: A meeting invite shows 14:00 in Lisbon and 15:00 in Berlin in August, but 14:00 in both in January. Why?
+Answer: In August both observe summer time at different offsets (UTC+1 vs UTC+2), keeping a one-hour gap; in January neither does (both UTC+1), so the times coincide. The invite stores UTC and each client renders local time.
+
+---
+
+Q: Why do bicycle gears make hills easier but not faster overall?
+Answer: Lower gears trade distance per pedal stroke for force: each stroke moves the bike less far but requires less effort, so climbing stays within the rider's power at the cost of more strokes.
+
+---
+
+Q: A towel dries faster on a windy balcony than in a still room at the same temperature. Why?
+Answer: Wind replaces the humid boundary layer around the fabric with drier air, sustaining the vapor-pressure gradient that drives evaporation; still air saturates locally and stalls it.
+
+---
+
+Q: Two plants of the same species sit in one window; only the one near the vent thrives. The light is equal. Most likely cause?
+Answer: Airflow or temperature difference from the vent: likely cooler nights or gentle circulation hardening that one, assuming watering is equal. Light ruled out leaves climate as the remaining variable.
+
+---
+
+Q: A driver brakes hard on gravel and stops longer than on asphalt at the same speed. Why?
+Answer: Loose gravel shears under the tire, reducing effective friction and letting wheels lock and skid; ABS also performs worse on deformable surfaces.
+
+---
+
+Q: Why does a queue with one line feeding three counters move faster on average than three separate lines?
+Answer: A single line pools demand so no counter idles while another has a queue; separate lines strand capacity behind the slowest-moving line. Pooling removes the assignment gamble.
+
+---
+
+The Convenio de 1904 settled the Acre dispute by compensated transfer rather than continued fighting. Bolivia ceded the rubber-rich territory to Brazil in exchange for two million pounds sterling, border concessions elsewhere, and a railway commitment. The episode became a textbook case of resource-driven diplomacy resolved through payment plus infrastructure.
+
+---
+
+Q: Which planet has the shortest day?
+Answer: Jupiter, at just under 10 hours per rotation.
+
+---
+
+Q: What does a barometer measure, and what does a falling reading suggest?
+Answer: Atmospheric pressure; a falling reading typically suggests an approaching low-pressure system and unsettled weather.
+
+---
+
+Passage: Before refrigeration, ice was harvested in winter, packed in sawdust inside double-walled icehouses, and sold through summer. Sawdust insulated poorly by modern standards but well enough: melt rates of a few percent per week kept the trade profitable from Norway to New York.
+Q: Why was sawdust, a mediocre insulator, good enough?
+Answer: Because the economics only needed melt to stay under the margin threshold across one season, not to approach zero; cheap bulk material plus scale beat efficient material at high cost. This infers the cost-benefit tradeoff from the stated profitability.
+
+---
+
+Summarize in one sentence: Container shipping standardized the box, the crane, and the manifest, turning ports from labor-intensive bottlenecks into interchange points where vessels, trains, and trucks meet on fixed schedules.
+Summary: Standardized containers converted ports from manual bottlenecks into scheduled interchanges between ship, rail, and road.
+
+---
+
+Paraphrase without meaning shift: The patch was reverted because the migration locked the table during peak hours.
+Paraphrase: Peak-hour table locking by the migration caused its rollback.
+
+---
+
+Q: Roughly how many 5ms requests can one thread serve per second if fully utilized?
+Answer: About 200 per second; in practice fewer once scheduling, I/O waits, and tail effects intrude.
+
+---
+
+Q: A cron job runs at 02:30 Europe/London daily. What happens on the last Sunday in March?
+Answer: That day 02:30 does not exist locally because clocks spring forward from 01:00 to 02:00... precisely, 01:00 jumps to 02:00, so 02:30 occurs once normally but on that date the hour is skipped; the job either never fires or fires per the scheduler's gap policy, which must be checked, not assumed.
+
+---
+
+Q: Which weighs more, a kilogram of steel or a kilogram of feathers, and why is the question asked?
+Answer: Neither; both weigh a kilogram. The question exposes the confusion between weight and volume or heft intuition.
+
+---
+
+The printing press did not invent literacy but changed its economics. By collapsing the cost of an identical copy, it made pamphlets, then newspapers, then novels viable at scale, shifting knowledge from memorized manuscript to browsable print and creating the editor as gatekeeper.
+
+---
+
+Q: What is the function of chlorophyll?
+Answer: To absorb light energy, mainly blue and red, driving photosynthesis; green is reflected, which is why plants look green.
+
+---
+
+Q: Convert 90 km/h to m/s.
+Answer: 25 m/s.
+
+---
+
+Passage: Copyists charged by the line, so abbreviations flourished in manuscripts: suspensions dropped endings, contractions removed middles. Readers of the period parsed them fluently, but modern editors expanding them must guess, and two editions of one chronicle can differ on every tenth word.
+Q1: Why did charging by the line encourage abbreviation?
+Answer: Fewer lines per page of content meant less writing for the same text, directly raising the copyist's effective rate.
+Q2: Why do modern editions disagree?
+Answer: Because expansion requires guessing the dropped letters, and different editors guess differently where the manuscript is ambiguous. This follows from the stated need to guess.
+
+---
+
+Q: A room feels colder when the window is open a crack in winter even though the thermostat reads the same. Why?
+Answer: Moving cold air strips the warm boundary layer from skin, increasing heat loss by convection; the thermostat measures air temperature at one point, not heat loss from a body.
+
+---
+
+Q: Why do experienced cooks salt pasta water heavily but never oil it?
+Answer: Salt seasons the pasta itself during absorption, which surface salting afterward cannot replicate; oil floats, barely coats, and makes sauce slide off instead of adhering.
+
+---
+
+Q: An umbrella flips inside out in a gust but rarely breaks. What design fact saves it?
+Answer: Flexible ribs and a sliding runner tolerate inversion without exceeding material limits; the structure yields and can be pushed back, unlike a rigid frame that would snap at the joints.
+
+---
+
+Q: Why do meetings scheduled back-to-back across time zones drift into someone's dinner?
+Answer: A fixed UTC slot maps onto local hours that shift with daylight rules and participation; without periodic re-anchoring to someone's working window, the burden migrates to whoever's offset moved.
+
+---
+
+The Treaty of Tordesillas divided the non-European world between Portugal and Spain along a meridian 370 leagues west of Cape Verde. It gave Portugal the Atlantic route to the Indian Ocean and, inadvertently, Brazil, whose coast bulged east of the line. Other powers ignored the arrangement entirely.
+
+---
+
+Q: What causes tides?
+Answer: Mainly the Moon's gravity pulling ocean water into bulges on the near and far sides, plus a smaller solar contribution; Earth's rotation carries coastlines through these bulges roughly twice daily.
+
+---
+
+Q: How many seconds in 3 hours 20 minutes?
+Answer: 12000.
+
+---
+
+Passage: Lighthouse lenses grew from open flames to mirrored reflectors to Fresnel lenses, each step squeezing more range from the same oil lamp. The Fresnel design kept the refracting power of a thick lens while discarding most of its glass, so a first-order lens could throw a beam twenty miles on a few liters a night.
+Q: Why did thinner glass mean longer range, counterintuitively?
+Answer: Because the discarded glass was absorbing light, not bending it; the Fresnel profile keeps the bending surfaces while removing the absorbing bulk, so more lamp light survives to the beam. This infers absorption vs refraction roles from the stated outcome.
+
+---
+
+Compress to one sentence: The team kept two staging environments because migrations behaved differently under production-like data volumes than on small fixtures, and the second environment existed solely to rehearse the migration under load before touching the shared one.
+Summary: A second staging environment existed only to rehearse migrations under production-like volume.
+
+---
+
+Paraphrase without meaning shift: Cache invalidation was added after stale prices were shown for nine minutes.
+Paraphrase: Nine minutes of stale prices prompted the addition of cache invalidation.
+
+---
+
+Q: Estimate the bandwidth of a daily full backup of 500 GB over an 8-hour window.
+Answer: About 17.4 MB/s sustained; provision double for overhead, retries, and growth headroom.
+
+---
+
+Q: A flight leaves Tokyo at 10:00 JST and lands in San Francisco at 08:30 PST the same calendar day. How?
+Answer: Crossing the date line west-to-east subtracts a day while the flight itself takes about nine hours; local arrival reads earlier than local departure although elapsed time is positive.
+
+---
+
+Q: Why does a shower curtain billow inward?
+Answer: The hot stream entrains air and lowers pressure inside relative to the bathroom, so outside pressure pushes the curtain in; cooler bathrooms strengthen the effect.
+
+---
+
+Q: A library keeps the rare-books room at 18 degrees and 45% humidity while the lobby swings freely. Why both controls, not just temperature?
+Answer: Humidity drives mold, warping, and ink chemistry independent of temperature; stable cool air without humidity control still lets moisture swing with weather and visitors.
+
+---
+
+Q: Why do diesel engines have no spark plugs?
+Answer: Compression alone heats the charge past diesel's autoignition point, so injection timing, not a spark, starts combustion; glow plugs only preheat for cold starts.
+
+---
+
+The Code of Hammurabi inscribed graded penalties that varied by social class, making justice explicit, public, and unequal. Its importance lies less in fairness than in publicity: law visible on stone constrained arbitrary punishment even while encoding hierarchy.
+
+---
+
+Q: What is absolute zero in Celsius?
+Answer: -273.15.
+
+---
+
+Q: Which gas makes up most of Earth's atmosphere?
+Answer: Nitrogen, about 78%.
+
+---
+
+Passage: Potters in Jingdezhen divided labor by vessel stage: throwers, trimmers, painters, glazers, kiln loaders. No single artisan made a whole piece, yet imperial porcelain reached unmatched consistency because each stage had narrow tolerances enforced by specialists.
+Q: Why did dividing labor raise consistency rather than dilute responsibility?
+Answer: Because each stage's tolerance was checked by a specialist doing only that stage, so errors were caught at narrow interfaces instead of compounding inside one generalist's workflow. This infers interface-checking from the stated specialization and outcome.
+
+---
+
+Paraphrase without meaning shift: The deploy was paused because error budgets were exhausted.
+Paraphrase: Exhausted error budgets caused the deploy pause.
+
+---
+
+Q: A standup has 8 people across UTC+0 to UTC+9. Name the least-bad 30-minute slot and why.
+Answer: Around 08:00–08:30 UTC: late afternoon for UTC+9, morning for UTC+0, inconvenient for nobody beyond the edges. Least-bad means minimizing maximum pain, not pleasing everyone.
+
+---
+
+Q: Why does bread go stale faster in the refrigerator than at room temperature?
+Answer: Refrigeration temperatures accelerate starch retrogradation (recrystallization) even as they slow mold; staling is recrystallization, not drying, so the fridge speeds the dominant mechanism.
+
+---
+
+Q: A new highway lane opens and congestion returns within a year. What mechanism?
+Answer: Induced demand: freed capacity lowers the time cost of driving, attracting trips that were previously suppressed, until delay re-equilibrates near the old level.
+
+---
+
+Q: Why do mirrors reverse left and right but not up and down?
+Answer: They don't reverse at all: a mirror flips front to back along the viewing axis, and the brain interprets the facing figure as a left-right swap because it imagines rotating into the mirror's position around the vertical axis.
+
+---
+
+The Mali Empire's wealth rested on taxing trans-Saharan gold and salt flows at choke points rather than mining either commodity. Controlling Gao and Timbuktu let it levy passage on every crossing, funding administration, scholarship, and the famous hajj of Mansa Musa, whose spending distorted Cairo's gold market for years.
+
+---
+
+Q: What is the SI unit of force?
+Answer: The newton: one kilogram-meter per second squared.
+
+---
+
+Q: How many bytes in a mebibyte?
+Answer: 1048576 (2^20); megabytes (MB) in SI usage mean 1000000, so state which unit a contract means.
+
+---
+
+Passage: Clipper ships sacrificed cargo space for sail area and narrow hulls, betting speed premiums against bulk rates. For tea and wool seasons where first cargo set the price, the bet paid; for coal and guano it never could, and clippers avoided those trades entirely.
+Q: Why did the same ship win tea and lose coal?
+Answer: Because tea paid a speed premium that rewarded fast hulls while coal paid by bulk weight, where narrow fast hulls carried less per voyage at higher cost. This infers the rate-structure difference from the stated trade selection.
