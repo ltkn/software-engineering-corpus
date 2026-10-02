@@ -1,0 +1,96 @@
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# Coding agents / harnesses — local state only, never commit
+.opencode/
+.pi/
+.claude/
+.codex/
+.cursor/
+.windsurf/
+.aider*
+.cline/
+.roo/
+.gemini/
+.pi-agent/
+openhands/
+.trae/
+
+# Secrets / local config
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.conda/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+dist/
+.next/
+out/
+
+# Rust
+target/
+Cargo.lock
+
+# Go
+bin/
+
+# Java / Maven / Gradle
+*.class
+*.jar
+*.war
+target/
+.gradle/
+out/
+
+# Logs / temp / backups
+*.log
+*.tmp
+*.bak
+*.orig
+*.rej
+.cache/
+
+# Archives / large local data (uncomment when corpus data should stay out of git)
+# *.zip
+# *.tar.gz
+# *.tgz
+# *.parquet
+# data/raw/
