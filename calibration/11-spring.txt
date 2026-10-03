@@ -396,3 +396,57 @@ Wiring: burn-rate alerts from 20's SLOs into the deploy pipeline; freeze on fast
 Why: deploys during active incidents compound; the pipeline must know the service is already bleeding.
 Misconfiguration: deploy train running through a SEV with nobody connecting the two systems.
 Verification: drill asserts freeze triggers on simulated burn; deploy log shows the gate decision per release.
+
+---
+
+Legacy: Importing validation annotations from javax.validation and persistence annotations from javax.persistence after upgrading to Boot 4 (Jakarta EE 11 baseline).
+Replacement: import jakarta.validation.* and jakarta.persistence.* throughout; Security/Data use the same Jakarta namespace.
+Symptom: The build fails with package-not-found on javax.*, or the annotations silently stop applying because two namespaces coexist and only one is wired into the validator.
+
+---
+
+Legacy: Extending WebSecurityConfigurerAdapter or using the old builder DSL with .and() after Boot 4 / Security 7.
+Replacement: A SecurityFilterChain bean with a lambda DSL; method security via @PreAuthorize on a @EnableMethodSecurity class; ownership checks via the @authz bean.
+Symptom: Class cannot be resolved to a type (Spring Security 7 removed the adapter), or chained configurer methods no longer compile because the legacy DSL is gone.
+
+---
+
+Goal: Use the removal-era replacement for test mocks in slice tests.
+Context: Boot 4 removed @MockBean/@SpyBean; Framework 7 hosts the replacements.
+Fix: @MockitoBean replaces @MockBean on fields; @MockitoSpyBean replaces @SpyBean. Type-level @MockBeans has no direct replacement — use a @TestConfiguration with explicit @Bean mocks.
+example:
+@WebMvcTest(UserController.class)
+class UserControllerTest {
+    @MockitoBean UserService users;
+    @Autowired MockMvc mvc;
+}
+Verification: $ ./mvnw -Dtest=UserControllerTest test — Tests run: 6, Failures: 0
+
+---
+
+Goal: Jackson 3 is the default JSON library in Boot 4.1; write mappers against the new packages.
+Context: Boot 4 ships Jackson 3 in tools.jackson.*; annotations stay in com.fasterxml.jackson.annotation; the entry point is JsonMapper built via JsonMapperBuilderCustomizer, not a mutable ObjectMapper.
+Fix: Customize JsonMapper through a @Bean JsonMapperBuilderCustomizer; keep @JsonProperty/@JsonIgnore imports unchanged (they still live in com.fasterxml.jackson.annotation); exceptions are unchecked (JacksonException).
+example:
+@Bean
+JsonMapperBuilderCustomizer acmeJsonCustomizer() {
+    return builder -> builder.findAndAddModules();
+}
+Verification: A round-trip test through MockMvc asserts the default date format change (timestamps become ISO-8601 strings, not epoch) surfaces in your API contract.
+
+---
+
+Goal: Scheduled batch jobs need a distributed lock so two app instances do not double-run the same job.
+Context: Two replicas with the same cron fire together; without a lock both execute the import.
+Fix: Acquire a DB-level advisory lock (Postgres pg_try_advisory_lock) around the job body, or use a dedicated lock table; skip with a metric when the lock is held.
+example:
+boolean acquired = jdbcTemplate.queryForObject("SELECT pg_try_advisory_lock(?)", Boolean.class, 987654321L);
+if (acquired) { try { runImport(); } finally { jdbcTemplate.update("SELECT pg_advisory_unlock(?)", 987654321L); } }
+Verification: Two-instance deploy run: exactly one execution per cron window; the second emits a skipped-lock metric.
+
+---
+
+Goal: Harden outbound HTTP against SSRF on Boot 4.1 without writing a custom filter.
+Context: Boot 4.1 ships InetAddressFilter for the embedded HTTP client and RestClient-capable defaults; unconfigured, a service-to-service call follows redirects to the link-local metadata service.
+Fix: Enable InetAddressFilter on the client, exclude the metadata ranges at resolve time, never follow redirects across trust boundaries, and keep cloud credentials out of the JVM process.
+Verification: A fixture pointing at 169.254.169.254 fails the client call before the network; redirect to a private range returns the documented denial.

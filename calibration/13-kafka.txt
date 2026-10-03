@@ -314,3 +314,27 @@ Wiring: segment.bytes and segment.ms tuned so closed segments upload promptly wi
 Why: tiered storage uploads whole closed segments; tiny segments multiply object counts and list costs, huge segments delay remote availability.
 Misconfiguration: 1GB segments with 7-day roll on a low-volume topic — remote tier permanently days behind.
 Verification: segment-age distribution dashboarded; remote-availability lag within the topic's recovery objective.
+
+---
+
+Goal: Move a consumer fleet to the new consumer group protocol without breaking assignment semantics.
+Context: Kafka 4.3 logs a recommendation to leave the classic protocol (KIP-1274), and the broker-side protocol-list config is deprecated for removal in 5.0 (KIP-1237).
+Config:
+group.protocol=consumer
+why: the new protocol moves assignment server-side, which makes static membership and per-partition delivery consistent across rolling restarts; the classic protocol with cooperative-sticky assignor remains available for the mixed-version window.
+Canonical failure: clients still on the classic protocol join a classic-protocol group; the fleet splits into two protocol lanes and lag attribution becomes split-brain.
+Verify: `kafka-consumer-groups.sh --describe` reports the protocol column for every group; no group falls back to classic unless explicitly pinned.
+
+---
+
+Goal: Authenticate Kafka clients with OAuth client assertions on 4.3.1.
+Context: sasl.oauthbearer.assertion.algorithm/claim.iss/claim.aud/claim.sub and the assertion-file options are new in 4.3 (KIP-1258); they let the client sign a JWT assertion (RS256/ES256) instead of shipping a client secret.
+Config:
+sasl.oauthbearer.assertion.algorithm=RS256
+sasl.oauthbearer.assertion.claim.iss=broker-client
+sasl.oauthbearer.assertion.claim.aud=https://broker.oidc.example/token
+sasl.login.callback.handler.class=org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginCallbackHandler
+sasl.oauthbearer.jwt.validator.class=org.apache.kafka.common.security.oauthbearer.BrokerJwtValidator
+Why: private_key_jwt keeps the secret off the wire; BrokerJwtValidator validates signature, issuer, and audience, which is the thing CVE-2026-33557 (4.1.0–4.1.1) got wrong — the default DefaultJwtValidator accepted any well-formed JWT. Do not run 4.1.0/4.1.1 without explicitly setting the broker validator.
+Canonical failure: Kicking the client with an unsigned or wrong-audience JWT, and watching the broker accept it, means the broker is on the weak default validator.
+Verify: A signed assertion from the registered client authenticates; a self-signed or wrong-azd assertion is rejected and the validator class in the broker log is BrokerJwtValidator.

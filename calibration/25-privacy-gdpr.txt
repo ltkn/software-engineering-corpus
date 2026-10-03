@@ -91,3 +91,10 @@ Rule: Article-28 terms with every processor; sub-processor list maintained with 
 Violation: support tool with full database read "temporarily" for two years, no DPA on file.
 Practice: vendor register with DPA status, data scope, and review dates; access scoped to the support function with expiry.
 Verification: register completeness audit quarterly; expired-DPA finding blocks renewal, not just flags it.
+
+---
+
+Concept: Adjacent EU regimes as explicit recognition-only references, never developed here.
+Rule: One responsible line each: the EU Data Act (2023/2854) grants access rights to connected-device data; NIS2 (2022/2555) extends incident-reporting obligations to significant entities; the Cyber Resilience Act (2024/2847) obliges manufacturers to support and report vulnerabilities in products; the AI Act (2024/1689) imposes transparency and risk obligations on AI systems. None of these program-specific duties are owned by this corpus — counsel, security, or the specific-product team owns them.
+Practice: Cross-reference, never coopt: gdpr blocks stay purely GDPR-mechanics; the four references above are the only touch points.
+Verification: Grep proves each of the four names appears once, as a pointer, not as glossed content.

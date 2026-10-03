@@ -62,7 +62,7 @@ Tests run: 6, Failures: 0
 
 Failure:
 org.hibernate.LazyInitializationException: could not initialize proxy - no Session at UserController.getOrders
-Diagnosis: Controller serializes orders.lines outside the transaction; Spring Boot 4 keeps open-session-in-view disabled by default, so lazy collections detach.
+Diagnosis: Controller serializes orders.lines outside the transaction; the app configures open-in-view off, so lazy collections detach when Jackson walks the graph post-return.
 Fix: Fetch-join at the repository boundary so the aggregate is complete before leaving the transaction.
 @Query("select o from Order o left join fetch o.lines where o.tenantId = :t and o.id = :id")
 Optional<Order> findComplete(UUID t, UUID id);
@@ -293,7 +293,7 @@ $ docker build -t users-svc .
 Step 9/14 slow every time: npm ci re-runs from scratch, 6-minute builds.
 Diagnosis: package.json copies after source, busting the layer cache on every code change.
 Fix: Multi-stage with dependency layer first.
-FROM node:22-slim AS deps
+FROM node:24-slim AS deps
 WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
 RUN corepack enable && pnpm install --frozen-lockfile
@@ -326,12 +326,12 @@ Diagnosis: ssl_protocols includes TLSv1/1.1 for one legacy client, dragging the 
 Fix: Terminate legacy on a separate server block; main vhost TLSv1.2+ only with a modern cipher list, HSTS on.
 ssl_protocols TLSv1.2 TLSv1.3;
 Verify:
-ssllabs-style scan: A rating, legacy endpoint isolated and logged
+SSL Labs-style scan: A rating, legacy endpoint isolated and logged
 
 ---
 
 Failure:
-WebSocket /ws/orders drops every 60s behind Nginx with plenitude of 1006 close codes.
+WebSocket /ws/orders drops every 60s behind Nginx with a storm of 1006 close codes.
 Diagnosis: Missing Upgrade/Connection proxy headers plus default 60s proxy_read_timeout killing idle sockets.
 Fix:
 location /ws/ {
@@ -575,3 +575,139 @@ Diagnosis: Partition-count vs key-distribution diff across the creep window: one
 Fix: Split the hot tenant's key space (tenant plus shard suffix), raise concurrency to match partition count, add per-partition lag to the dashboard.
 Verify:
 Max per-partition lag under 30s at current volume; skew alert fires when any partition exceeds 3x the median.
+
+---
+
+Failure:
+$ ./mvnw -q test
+ERROR: cannot find symbol: class MockBean, in org.springframework.boot.test.mock.mockito
+Diagnosis: Boot 4 removed @MockBean/@SpyBean (deprecated since 3.4); replaces with Spring Framework's @MockitoBean/@MockitoSpyBean, and those annotations are field-level only — no type-level @MockBeans container.
+Fix: Swap the annotation import and use @MockitoBean on the field; for shared test config define the mock as a @Bean in a @TestConfiguration instead of the removed type-level @MockBeans.
+@WebMvcTest(UserController.class)
+class UserControllerTest {
+    @MockitoBean UserService users;
+}
+Verify:
+$ ./mvnw -q test
+Tests run: 31, Failures: 0
+
+---
+
+Failure:
+$ ./mvnw -q compile
+ERROR: package com.fasterxml.jackson.databind does not exist; com.fasterxml.jackson imports in UserMapper
+Diagnosis: Boot 4 makes Jackson 3 the default; its packages moved to tools.jackson.* and jackson-annotations stays at com.fasterxml.jackson.annotation. Also JsonProcessingException is now unchecked (JacksonException extends RuntimeException).
+Fix: Update imports to tools.jackson.databind.*, replace ObjectMapper wiring with JsonMapper via JsonMapperBuilderCustomizer, and drop the IOException catch that used to swallow Jackson failures.
+Verify:
+$ ./mvnw -q compile && ./mvnw -q -Dtest=UserMapperTest test
+BUILD SUCCESS, Tests run: 12, Failures: 0
+
+---
+
+Failure:
+$ ./mvnw verify
+ERROR: org.testcontainers.containers does not contain PostgreSQLContainer
+Diagnosis: Testcontainers 2.0 renamed the module artifact org.testcontainers:postgresql to testcontainers-postgresql and relocated the class to org.testcontainers.postgresql.PostgreSQLContainer; the old package is deprecated.
+Fix: Update the dependency to org.testcontainers:testcontainers-postgresql and change the import.
+import org.testcontainers.postgresql.PostgreSQLContainer;
+Verify:
+$ ./mvnw verify
+Tests run: 12, Failures: 0, containers reused
+
+---
+
+Failure:
+$ ./kafka-server-start.sh config/server.properties
+ERROR Invalid configuration: zookeeper.connect is not a recognized configuration
+Diagnosis: Kafka 4.x is KRaft-only (ZooKeeper mode removed in 4.0; 4.3.1 is current). ZooKeeper-era settings — zookeeper.connect, inter.broker.protocol.version, log.message.format.version, broker.id — are gone; brokers are identified by node.id and process.roles.
+Fix: Strip the removed keys, set node.id and process.roles=broker,controller, set metadata.version explicitly and manage features with bin/kafka-features.sh.
+Verify:
+$ ./kafka-metadata-quorum --command-config node.id=1 describe --status
+ClusterId: ok, NodeId: 1, Features: kraft.version=1
+
+---
+
+Failure:
+$ ./pg_upgrade --old-datadir /var/lib/postgresql/17/data --new-datadir /var/lib/postgresql/18/data
+ERROR: checksum mismatch between old and new cluster
+Diagnosis: PG 18 enables data checksums by default at initdb; pg_upgrade requires matching checksum settings on both clusters, so upgrading a non-checksum old cluster into a checksum-default new one fails.
+Fix: Initialize the new cluster with initdb --no-data-checksums to mirror the old setting, run pg_upgrade, or use the offline pg_enable_data_checksums path plus a dump/restore; never mix settings silently.
+Verify:
+$ pg_upgrade --check ... && psql -c 'SHOW data_checksums;'
+check ok, show matches the old cluster
+
+---
+
+Failure:
+Agent harness: sandbox egress denial on npm registry during a dependency-install step. The agent retried the same registry three times, which never succeeds.
+Diagnosis: Sandbox egress is allow-listed; the registry host is not on it. Retrying the blocked path cannot work — the recovery must narrow the request, not replay it.
+Fix: Stop retrying. Report the denial with the exact host, ask for either an egress-allowlist entry or a pre-vendored lockfile, and offer to proceed once one arrives. Never attempt to bypass the egress control.
+Verify:
+Next run: agent emits the denial report and waits; no bypass attempt in the transcript.
+
+---
+
+Failure:
+Agent harness: tool-permission refusal — the agent proposed running `terraform destroy` against a shared account. The approval gate refused; the agent asked the user to confirm instead of resubmitting.
+Diagnosis: Irreversible action on a shared environment; the gate doing its job. The correct move is an explicit confirmation with the exact command and blast radius, not a narrower rewrite of the same command.
+Fix: Present the exact command and affected resources, ask for typed confirmation, and on refusal record the decision and do not retry.
+Verify:
+Transcript shows one explicit request and a logged refusal; no auto-retry of a denied destructive command.
+
+---
+
+Failure:
+Agent harness: MCP transport auth handshake fails with a 401 from the docs server; the agent's plan stalled mid-investigation.
+Diagnosis: The MCP server expects OAuth but the client sent a static bearer token from an old .env. The recovery is to fix the credential, not to bypass the docs server by guessing.
+Fix: Re-run the MCP OAuth flow for that server, update the per-server credential entry, verify with one low-risk docs query, then resume the plan.
+Verify:
+One 401 -> re-auth -> 200 on the verification query; plan resumes with the fetched docs.
+
+---
+
+Failure:
+Agent harness: tool output came back truncated (marked `[truncated]` after 20k chars of test log), and the agent risked summarizing only the visible head.
+Diagnosis: Truncated tool output is a signal, not a whole. The agent must not conclude from an incomplete transcript.
+Fix: Re-request the relevant slice (grep for failures, tail of the log), state plainly that the full output was truncated, and base conclusions only on retrieved slices.
+Verify:
+Summary cites the grep slice for the actual failing tests, never the truncated head.
+
+---
+
+Failure:
+$ sudo certbot renew
+Renewal failed: challenge (http-01) returned 404 for the broken app path; the vhost gained an auth location that swallowed /.well-known.
+Diagnosis: Cert lifetimes keep shrinking and renewal runs unattended; a vhost change silently broke the ACME path, and nobody watches expiry.
+Fix: Route /.well-known/acme-challenge/ to the webroot outside the auth-gated block, enable the systemd timer, and alert on expiry < 21 days.
+Verify:
+$ certbot renew --dry-run
+Congratulations, all simulated renewals succeeded
+
+---
+
+Failure:
+kubectl: Gateway has no attached listener after migrating off the retired ingress-nginx controller.
+Diagnosis: Ingress2Gateway converted the Ingress object but the Gateway lacks a listener for the host:port pair, so the routes attach nowhere.
+Fix: Add the missing listener (hostnames + protocol) to the Gateway, verify attachment with the listener status, then delete the old Ingress only after routes are programmed.
+Verify:
+$ kubectl get gateway ... (Programmed=True); routes report Accepted/Programmed
+
+---
+
+Failure:
+$ ./mvnw -q -Dtest=UserControllerTest test
+ERROR: @WebMvcTest failed to bootstrap; MockWebServer bean missing in a slice that excludes WebClient config.
+Diagnosis: The slice narrows the context; a bean the test implicitly relied on is now excluded, and the error surfaces at load time, not at the assertion.
+Fix: Import the exact configuration slice with @Import or @TestConfiguration for the missing bean, or convert the test to assert through MockMvc against a locally registered stub.
+Verify:
+Slice test boots, 6 assertions pass
+
+---
+
+Failure:
+Repo-wide inconsistency: OwnershipTest passes alone but a different user id range bleeds in when parallel with SeedDataIT, three tests fail.
+Diagnosis: Shared fixture state — SeedDataIT seeds rows that OwnershipTest asserts against when run in the same JVM; isolation was by execution order, and parallelism broke the accident.
+Fix: Give every integration test its own tenant/database or a transactional rollback, seed within the test, and assert on tenant-scoped queries only.
+Verify:
+50 consecutive parallel runs green, no inter-test leakage
+

@@ -288,3 +288,44 @@ Wiring: CSS custom properties for surfaces/text/accents, data-theme switch, comp
 Why: tokens centralize contrast and theming decisions; scattered conditionals guarantee inconsistency.
 Pitfall: 200 hardcoded hex values with a "dark mode later" ticket aging untouched.
 Verification: hardcoded-color lint on component styles; contrast audit per theme.
+
+---
+
+Goal: Score the provide/inject and Suspense seams correctly in an async setup.
+Why: An async setup must resolve inside a Suspense boundary; without it, the parent renders before the composable has data. provide/inject scoping then determines which descendants see the resolved data — the default is the app root, which silently leaks state across routes. Lazy hydration pairs with this: defer hydration of below-fold widgets to an intersection observer.
+snippet:
+<script setup lang="ts">
+const session = await useSession(); // needs a parent <Suspense>
+provide('session', session);
+</script>
+<template>
+  <Suspense>
+    <Dashboard />
+    <template #fallback><Spinner /></template>
+  </Suspense>
+</template>
+pitfall: provide() called at app root and a sibling route reads a stale session because inject() walked to the wrong scope.
+verification: A hydration assertion runs: server HTML contains the fallback, client patches it once; inject() in a nested route returns the same reactive object, not a snapshot from the setup call.
+
+---
+
+Goal: React to prop changes without losing reactivity.
+Why: Destructuring a reactive prop object (e.g. const { filter } = props) tears the binding — the child sees the setup-time value forever. Use a computed or toRef on the prop field instead.
+snippet:
+const model = defineModel<string>({ default: '' }); // two-way, reactive by design
+const props = defineProps<{ filter: string }>();
+const activeFilter = computed(() => props.filter);
+pitfall: const { filter } = props breaks the reactivity link; the child never re-renders when the parent updates.
+verification: A parent-driven update increments the child count by one; the component test asserts the re-render count exact and that the model emitted event carries the new value.
+
+---
+
+Goal: Block token exfiltration even when a stored-XSS hole gets through.
+Why: Access tokens in localStorage ride every XSS hook; an httpOnly refresh cookie plus in-memory access token cannot be exfiltrated by a script payload. CSP and Trusted Types close the injection side and coordinate the token side.
+snippet:
+// server
+res.setHeader('Set-Cookie', 'refresh=...; HttpOnly; Secure; SameSite=Strict');
+// client bootstrap: POST /api/refresh returns { accessToken } held in a module ref
+// index.html: <meta http-equiv="Content-Security-Policy" content="default-src 'self'; ...">
+pitfall: localStorage for the refresh token or an inline script that prints __INITIAL_STATE__ into the page — XSS reaches a readable cache or a rendered <script>.
+verification: A probe that reads document.cookie is denied; localStorage has no token keys; the CSP probe asserts no inline script executes and connect-src is locked to the API origin.

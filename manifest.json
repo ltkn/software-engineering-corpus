@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "tokenizer": {
+    "name": "pin at implementation",
+    "version": "pin at implementation",
+    "command": "llama-tokenize -m <model.gguf> --ids",
+    "rule": "all token counts in this manifest come from the one pinned tokenizer"
+  },
+  "counting": {
+    "precheck": "bytes / 5.5 (corpus-wide chars-per-token from the 12 recorded files), marked est",
+    "actual": "llama-tokenize with the pinned tokenizer, replacing the est values"
+  },
+  "bundle": {
+    "target_tokens": "200k-250k weighted",
+    "blocks_counted": 1074,
+    "unweighted_estimate": "~106k (2.3k recorded + ~104k est incl. 01-25 patches)",
+    "eval": ["eval/heldout-se.txt", "eval/heldout-general.txt"]
+  },
+  "weights_rule": "bundle tokens = sum(file tokens x weight); weights move +/-25% per iteration, logged, never by editing sources",
+  "files": [
+    {"id": "01-instruction-following", "blocks": 97, "tokens": "est ~8.5k (post 2026-10 POC patch)", "share": 4.5, "code_forward_target": null},
+    {"id": "02-repair-loops", "blocks": 65, "tokens": "est ~6k (post 2026-10 patch)", "share": 4.5, "code_forward_target": null},
+    {"id": "03-math-logic-cot", "blocks": 55, "tokens": "est ~6.3k (post 2026-10 patch)", "share": 5.5, "code_forward_target": null},
+    {"id": "04-general-reasoning", "blocks": 56, "tokens": "est ~3.4k (post 2026-10 patch)", "share": 2.0, "code_forward_target": null},
+    {"id": "05-agentic-coding", "blocks": 43, "tokens": "est ~6.7k (post 2026-10 patch)", "share": 5.0, "code_forward_target": null},
+    {"id": "06-security", "blocks": 51, "tokens": "est ~5.7k (post 2026-10 patch)", "share": 4.5, "code_forward_target": null},
+    {"id": "07-auth-oidc-oauth", "blocks": 46, "tokens": "est ~8.3k (post 2026-10 patch)", "share": 5.5, "code_forward_target": null},
+    {"id": "08-api-pentest", "blocks": 48, "tokens": "est ~7.2k (post 2026-10 patch)", "share": 4.5, "code_forward_target": null},
+    {"id": "09-opsec", "blocks": 32, "tokens": "est ~3.5k (post 2026-10 patch)", "share": 3.5, "code_forward_target": null},
+    {"id": "10-java", "blocks": 61, "tokens": "est ~6.5k (post 2026-10 patch)", "share": 7.5, "code_forward_target": ">=40%"},
+    {"id": "11-spring", "blocks": 53, "tokens": "est ~5.1k (post 2026-10 patch)", "share": 7.0, "code_forward_target": ">=40%"},
+    {"id": "12-postgresql", "blocks": 52, "tokens": "est ~5.5k (post 2026-10 patch)", "share": 6.0, "code_forward_target": ">=40%"},
+    {"id": "13-kafka", "blocks": 42, "tokens": "est ~4.6k (post 2026-10 patch)", "share": 4.5, "code_forward_target": ">=35%"},
+    {"id": "14-http-api", "blocks": 39, "tokens": "est ~4.2k (post 2026-10 patch)", "share": 3.5, "code_forward_target": ">=30%"},
+    {"id": "15-typescript", "blocks": 37, "tokens": "est ~3.6k (post 2026-10 patch)", "share": 4.0, "code_forward_target": ">=45%"},
+    {"id": "16-vue", "blocks": 37, "tokens": "est ~3.5k (post 2026-10 patch)", "share": 3.5, "code_forward_target": ">=40%"},
+    {"id": "17-tanstack", "blocks": 31, "tokens": "est ~3.3k (post 2026-10 patch)", "share": 3.0, "code_forward_target": ">=35%"},
+    {"id": "18-testing", "blocks": 35, "tokens": "est ~3.2k (post 2026-10 patch)", "share": 3.0, "code_forward_target": ">=25%"},
+    {"id": "19-architecture", "blocks": 41, "tokens": "est ~4.3k (post 2026-10 patch)", "share": 3.0, "code_forward_target": "<20% (prose-first by design)"},
+    {"id": "20-observability", "blocks": 26, "tokens": "est ~2.6k (post 2026-10 patch)", "share": 2.5, "code_forward_target": ">=25%"},
+    {"id": "21-linux-infra", "blocks": 33, "tokens": "est ~3.1k (post 2026-10 patch)", "share": 3.5, "code_forward_target": ">=45%"},
+    {"id": "22-python", "blocks": 25, "tokens": "est ~2.4k (post 2026-10 patch)", "share": 2.5, "code_forward_target": ">=40%"},
+    {"id": "23-finance-quant", "blocks": 25, "tokens": "est ~2.3k", "share": 2.5, "code_forward_target": null},
+    {"id": "24-react", "blocks": 18, "tokens": "est ~1.9k (post 2026-10 patch)", "share": 1.0, "code_forward_target": null},
+    {"id": "25-privacy-gdpr", "blocks": 13, "tokens": "est ~1.4k (post 2026-10 patch)", "share": 1.5, "code_forward_target": null},
+    {"id": "26-ecommerce", "blocks": 23, "tokens": "recorded ~2.3k", "share": 2.0, "code_forward_target": null}
+  ],
+  "ledger": "populate at implementation: one entry per baseline {name, version, status, as-of, source}",
+  "license": "TBD, must be permissive before first release"
+}

@@ -27,8 +27,9 @@ Agreed scope per calibration file. Implementation must match this file; change t
 - No secrets, no employer code, no StackOverflow copies, no GPL text, no verbatim RFC/JEP/vendor-doc text (paraphrase and cite the identifier). 04 prose is original or public-domain, not a Wikipedia/WikiText copy.
 - Version-verification rule: version-sensitive claims checked against current releases before writing; preview APIs carry JEP/RFC number, preview status, and compiler-flag notes; open disputes recorded with sources rather than silently resolved.
 - Time-hygiene rule: avoid facts that rot (current office-holders, live version numbers outside pinned baselines, "recently announced"); prefer stable knowledge, and date-stamp the rest.
-- Measurement: counts use the target model's tokenizer; chars/4 is a pre-check only. The tokenizer name is recorded in `manifest.json`. Planning bands: instruction blocks 60–250 tokens, repair loops 250–800, derivations 150–500, reference blocks 150–450, passages 50–200 words. Recorded actuals imply 59–178 tokens per block (01: ~66, 02: ~87, 04: ~59). Re-measure 01 and 02 with the named tokenizer before trusting those lines.
-- Bundle arithmetic: bundle tokens = Σ(file tokens × manifest weight). Σ recorded actuals for the 12 recorded files is ≈55.3k, and 11–24 are unrecorded. At recorded density the ~980 spec'd blocks total ≈100k unweighted, so a 200–250k bundle needs 2–2.5× from weights. Grow block density toward the shape-implied 200–300 tokens only where worked examples need it (derivations, protocol traces); keep short blocks where they suffice (QA, rules, runbooks) — iMatrix chunks concatenate, so short diverse blocks are statistically fine. Do not repeat blocks to gain length, because repetition overweights exact n-grams in calibration.
+- Measurement: counts use the target model's tokenizer; chars/4 is a pre-check only. The tokenizer name + version + command are pinned in `manifest.json` at implementation; all actuals in a table come from that one tokenizer. Planning bands (revised to measured reality): instruction blocks 50–200 tokens, repair loops 60–180, derivations 80–180, reference blocks 60–250, passages 50–200 words. Recorded actuals imply ~96 tokens per block (01: ~66, 02: ~87, 04: ~59). Pre-check for unmeasured files: bytes÷5.5 (corpus-wide ≈5.5 chars/token from the recorded files), marked `est.` until the pinned tokenizer run.
+- Bundle arithmetic: bundle tokens = Σ(file tokens × manifest weight). Σ recorded actuals for the 1 still-recorded file ≈2.3k; the 25 pre-check/patched files add ≈104k (est.), so the 1074 counted blocks total ≈106k unweighted. A 200–250k bundle therefore leans ~2–2.5× on weights. Grow block density only where worked examples need it (derivations, protocol traces); keep short blocks where they suffice (QA, rules, runbooks) — iMatrix chunks concatenate, so short diverse blocks are statistically fine. Do not repeat blocks to gain length, because repetition overweights exact n-grams in calibration.
+- Block taxonomy: `trace` (Failure→Diagnosis→Fix→Verify shape), `narrative` (prose, QA, ADR, runbook), `reference` (code/config first, then rationale and verification). A block is code-forward when ≥60% of its tokens are code or configuration.
 - Weighting (default bundle ~200–250k tokens). Shares sum to 100%, tilted toward the reasoning and code signal (01–03, 05, 10, 11, 12, 15) away from fenced and low-leverage files (04, 23, 24, 25, 26):
   - Thinking 01–05: 21.5% (01 4.5, 02 4.5, 03 5.5, 04 2, 05 5)
   - Security 06–09: 18% (06 4.5, 07 5.5, 08 4.5, 09 3.5)
@@ -72,12 +73,12 @@ Content, 7 kinds:
 3. Tool-call format — function name plus args in exact syntax, no prose leakage. JSON-schema-typed arguments (required fields, `additionalProperties: false`, enums), parallel vs sequential calls, arguments never copied from untrusted data without the stated check.
 4. Negative constraints — "don't do X", scope boundaries, refusals with a safe alternative named.
 5. Precedence — system over user, explicit conflict resolution, distraction resistance.
-6. Long-context adherence — constraints stated early and tested late in the same brief (buried requirements, needle-in-spec). The response must satisfy constraints pages apart, not just adjacent ones. Three briefs sized at ½×, 1×, and 2× the declared chunk length, on their own budget line.
+6. Long-context adherence — constraints stated early and tested late in the same brief (buried requirements, needle-in-spec). The response must satisfy constraints pages apart, not just adjacent ones. Three briefs sized at ½×, 1×, and 2× the declared chunk length, on their own budget line. POC declaration: chunk = 1024, briefs land at ~415/~660/~1098 tokens (loose ladder); exact sizing deferred to implementation.
 7. Adversarial instruction handling — injection in source code, SQL comments, README, commit messages, tool output, fetched external content, and also tool descriptions (tool poisoning), issue and PR bodies, dependency metadata, instruction files from an untrusted clone, and hidden Unicode (bidi or zero-width characters quoted as escaped code points). Each quoted as data, legitimate task completed, injected directive refused.
 
 Shape per block: instruction, then compliant response. About 20% violation→correction pairs labeled exactly `Draft:` / `Correction:`.
 
-Budget: dense. Recorded actual ~5.8k tokens, 88 blocks (incl. three long-context adherence briefs). Re-measure per the Measurement convention. Bundle share 4.5%. Target ~96 blocks.
+Budget: dense. Recorded actual ~5.8k tokens, 88 blocks (incl. three long-context adherence briefs), before the 2026-10 POC patch; post-patch est ~8.5k tokens, 97 blocks (postgres:18 fix, +3 tool-call blocks, +6 injection-vector blocks, briefs resized to ~415/~660/~1098 tokens). Re-measure per the Measurement convention. Bundle share 4.5%.
 
 Boundaries: repo exploration is 05; failure diagnosis is 02; derivations are 03; general QA is 04. If a block needs more than one turn to verify, it belongs in 02.
 
@@ -103,7 +104,7 @@ Shape per block: `Failure:` (unedited tool output, secrets redacted) → `Diagno
 
 PG slow-pagination repairs use keyset on `(tenant_id, created_at, id)` — the failure half of 01's pagination block.
 
-Budget: dense, transcripts are token-heavy by nature. Recorded actual ~4.5k tokens, 52 loops (incl. three silent-regression bisections); the figure is too low for the shape. Bundle share 4.5%. Target ~66 loops.
+Budget: dense, transcripts are token-heavy by nature. Recorded actual ~4.5k tokens, 52 loops (incl. three silent-regression bisections) before the 2026-10 patch; post-patch 65 loops, est ~6k tokens. Node 24 / post:18 in-place fixes applied; missing kind-8, kind-9, ACME, Gateway API, slice-test, and fixture-isolation loops added. Re-measure per Measurement before trusting the figure. Bundle share 4.5%.
 
 Boundaries: single-turn compliance is 01; abstract derivations are 03; multi-file change ownership is 05. If the fix needs architecture discussion, two sentences max — full ADRs live in 19.
 
@@ -125,7 +126,7 @@ Content, 7 kinds:
 
 Rigor rule (binding): no point estimates as conclusions. n=40 cannot support a p95 (~2 tail observations); paired claims need paired repeats with a CI on the differences — worked reference t = −5.63, df = 11, CI (−90.4, −39.6)ms. p is P(data|H0), never P(effect|data). Fit is not causation; check leakage first. Post-hoc power is circular.
 
-Budget: among the largest thinking files (01 and 05 record equal or higher); traces are long by design. Recorded actual ~5.7k tokens, 51 derivations (incl. information-theoretic intuition with the quantization example). Bundle share 5.5%. Every number is recomputed by the build gate.
+Budget: among the largest thinking files (01 and 05 record equal or higher); traces are long by design. Recorded actual ~5.7k tokens, 51 derivations, before the 2026-10 patch; post-patch est ~6.3k, 55 blocks. Bundle share 5.5%. Every number is recomputed by the build gate.
 
 Boundaries: instruction compliance is 01; failure transcripts are 02; general QA is 04; greeks, GEX, and backtests are 23, which consumes this file's stats and never re-teaches them. If a trace needs domain context beyond one sentence, it belongs in the domain file.
 
@@ -146,7 +147,7 @@ Content, 6 kinds:
 
 Shape per block: either a 50–200-word prose paragraph, or Q with a 1–3-sentence answer. No `Step` chains (those are 03), no constraint drills (01), no transcripts (02).
 
-Budget: lightest file by design. Recorded actual ~3k tokens, 51 blocks. Bundle share 2%. Breadth regularizes; volume lives in the stack files.
+Budget: lightest file by design. Recorded actual ~3k tokens, 51 blocks, before the 2026-10 patch; post-patch est ~3.4k, 56 blocks. Bundle share 2%. Breadth regularizes; volume lives in the stack files.
 
 Boundaries: derivations are 03; stack specifics are their domain files — any named stack technology (Spring, PG, Kafka, Vue, TS, Docker, …) moves the block out; finance is 23; instruction-format drills are 01. If a QA needs more than 3 sentences, split it: length belongs to passages, not answers. Time-sensitive facts obey the global time-hygiene rule; passage lengths vary (50–200 words) so the file never learns one shape.
 
@@ -176,7 +177,7 @@ Security quota (binding): at least 1 in 4 blocks carries an explicit security, c
 
 Boundary test: if the block's hardest sentence is a design tradeoff it belongs in 19; if it is sequencing or verification it belongs here.
 
-Budget: ~30 blocks, dense. Recorded actual ~5.8k tokens, 37 blocks (incl. requirement-change replan and session-handoff note). Bundle share 5%. Target ~42 blocks.
+Budget: ~30 blocks, dense. Recorded actual ~5.8k tokens, 37 blocks, before the 2026-10 patch; post-patch est ~6.7k, 43 blocks (added the three required supply-chain/tool-trust blocks, instruction-file discipline, worktree parallelism, red-green proof). Bundle share 5%. Target: keep the security quota reading ≥1 in 4.
 
 Boundaries: single-turn compliance is 01; isolated failure→fix is 02 (05 references 02-style loops as one plan step, never replays them); derivations are 03. If a block needs no repo context, it belongs in 01–04.
 
@@ -204,7 +205,7 @@ Trust-boundary rule (binding): the three invariants stated as named violations w
 Shape per block: Concept (2–3 sentences) → vulnerable pattern → why it fails → remediation (with stack anchor) → regression control.
 Defensive only; no weaponized exploit instructions, payloads, or offensive tooling.
 
-Budget: ~40 blocks. Recorded actual ~5.1k tokens, 44 blocks (incl. agent-system security: tool-grant scoping, output trust tiers, transcript minimization). Bundle share 4.5%. Target ~54 blocks.
+Budget: ~40 blocks. Recorded actual ~5.1k tokens, 44 blocks, before the 2026-10 patch; post-patch est ~5.7k, 51 blocks (added OWASP-2025 A-code map, BOLA/BFLA mechanism, PQ crypto posture, lethal trifecta, MCP third-party-code, trust-boundary invariant, passkeys). Bundle share 4.5%.
 
 Boundaries: identity and authentication protocols are 07; security assessment and testing are 08; hygiene practice is 09; framework, database, message-bus, and frontend implementations are their stack files; failure transcripts are 02.
 
@@ -233,7 +234,7 @@ Shape per block: Concept (with spec cite and 2026-10 review stamp) → participa
 
 Refresh policy: per-block spec/version/date stamps; finalized standards preferred; active drafts labeled, re-verified on publication via manifest reminder.
 
-Budget: ~40 blocks. Recorded actual ~7.3k tokens, 41 blocks (incl. RFC 8693 exchange and delegation semantics). Bundle share 5.5%. Target ~47 blocks.
+Budget: ~40 blocks. Recorded actual ~7.3k tokens, 41 blocks, before the 2026-10 patch; post-patch est ~8.3k, 46 blocks (added iss-parameter binding, dynamic-registration vs metadata-doc, RFC 9470 step-up, RFC 8725 two-checkpoint JWT rule, agents emerging profile). Bundle share 5.5%. Target: keep every requirement labeled RFC MUST/SHOULD or deployment policy.
 
 Boundaries: vulnerability classes are 06; assessment technique is 08; hygiene is 09; Spring wiring is 11; stack patterns are their files. No RFC text reproduced — durable rules and failure modes only.
 
@@ -258,7 +259,7 @@ Content, 10 kinds:
 
 Shape per block: Target → preconditions → probes in order → pass bar → failing evidence → impact → remediation pointer → regression test. Deterministic fixtures and matrices; bounded non-destructive probes; no exploit payloads or offensive tooling.
 
-Budget: ~40 blocks. Recorded actual ~5.7k tokens, 42 blocks (incl. GraphQL operation analysis and subscription boundaries). Bundle share 4.5%. Target ~48 blocks.
+Budget: ~40 blocks. Recorded actual ~5.7k tokens, 42 blocks, before the 2026-10 patch; post-patch est ~7.2k, 48 blocks (added concurrency/state-transition battery, LLM/agent endpoint battery, GraphQL depth/cost, JWT-JOSE fixture battery, SSRF six-case battery, contract-fuzzing and business-flow loops; gRPC remains explicitly out of scope). Bundle share 4.5%. Target: every block starts with "Target:" and ends with a cite-able regression test.
 
 Boundaries: mechanisms are 06 (referenced, never re-taught); protocol semantics are 07; hygiene is 09; Spring/PG/Vue test implementations are their stack files; single-defect transcripts are 02. If the core question is "how do I determine whether X is vulnerable?", it belongs here.
 
@@ -282,7 +283,7 @@ Wording rules (binding): history controls are detection, never prevention — th
 
 Shape per block: Rule (one sentence) → realistic redacted violation → correct practice → automated or detective control → recovery action where relevant.
 
-Budget: ~25–30 compact blocks. Recorded actual ~3k tokens, 29 blocks (incl. phishing-resistant MFA rule). Bundle share 3.5%. Target ~34 blocks.
+Budget: ~25–30 compact blocks. Recorded actual ~3k tokens, 29 blocks, before the 2026-10 patch; post-patch est ~3.5k, 32 blocks (added forked-PR secret policy, JIT elevation, history-remediation order). Bundle share 3.5%.
 
 Boundaries: vulnerability mechanisms are 06; protocol credential handling is 07; assessment technique is 08; Spring/Kafka secret wiring instances are their stack files. No protocol mechanics or vulnerability theory repeated here.
 
@@ -310,7 +311,7 @@ Preview rule (binding): preview APIs carry JEP number, preview status, and compi
 
 Shape per block: Concept (with status label) → modern JDK 25 example → semantics/invariant → why this form → counter-pattern or migration case → verification (compilation, unit test, JFR/JMH result, or review rule). Build-tool exposure (not a main topic): Maven wrapper with .mvn config and toolchain pins, Gradle wrapper with version catalogs and configuration cache — each as calibration context where builds are invoked, detailed treatment lives in 21.
 
-Budget: primary file, dense. Recorded actual ~5.9k tokens, 59 blocks (incl. two Lombok blocks and two JPMS migration-pitfall blocks). Bundle share 7.5%. Target ~68 blocks.
+Budget: primary file, dense. Recorded actual ~5.9k tokens, 59 blocks, before the 2026-10 patch; post-patch est ~6.5k, 61 blocks (added the missing JDK 25 additions + preview-neighbor chain). Bundle share 7.5%. Target: every preview API carries its JEP number and status.
 
 Boundaries: algorithms and complexity analysis are 03; Spring usage is 11; Kafka usage is 13; failure transcripts are 02. Examples self-contained; Spring, SQL, Kafka, or Vue appear only as tiny cross-references.
 
@@ -333,7 +334,9 @@ Content, 8 kinds:
 
 Shape per block: Goal → minimal wiring (config plus code) → why this form → common misconfiguration with its symptom → verification (test slice or actuator evidence).
 
-Budget: co-primary stack file with 10. ~50 blocks, dense. Bundle share 7%. Target ~58 blocks.
+Mix target: ≥40% code-forward reference blocks (config, wiring, annotations).
+
+Budget: co-primary stack file with 10. Bundle share 7%. Post-patch: est ~5.1k tokens, 53 blocks (added Jackson 3, @MockitoBean, Security 7 lambda-DSL era, scheduled-job locking, SSRF hardening, and two Legacy blocks).
 
 Boundaries: language semantics are 10; protocol rules are 07 (referenced); assessment is 08; failure transcripts are 02. If a block works without Spring on the classpath, it belongs in 10.
 
@@ -356,7 +359,9 @@ Content, 8 kinds:
 
 Shape per block: Task → SQL (parameterized, EXPLAIN-attached where performance matters) → planner or behavior reading → pitfall (the wrong-but-common form) → verification (plan output, test, or monitoring assertion).
 
-Budget: ~45 blocks, dense. Bundle share 6%. Target ~52 blocks. The keyset-pagination evidence pattern from 01/02 recurs here as first-class technique.
+Mix target: ≥40% code-forward reference blocks (SQL, EXPLAIN output, DDL).
+
+Budget: dense. Bundle share 6%. Post-patch: est ~5.5k tokens, 52 blocks (added the PG 18 delta set — uuidv7, virtual generated columns, temporal constraints, skip scan, checksum/pg_upgrade, async I/O, EXPLAIN BUFFERS, GIN parallelism — plus deadlock triage, forced RLS, MD5 retirement; JSONB operators and expand-contract migration still thin, queued for the next sourcing pass). Tokenizer actual pending at implementation. The keyset-pagination evidence pattern from 01/02 recurs here as first-class technique.
 
 Boundaries: Java/ORM usage is 11; failure transcripts are 02; general transaction theory stays practical and Postgres-flavored (no abstract isolation essays — those resolve to lock/monitoring evidence here).
 
@@ -378,7 +383,9 @@ Content, 7 kinds:
 
 Shape per block: Goal → configuration plus minimal code → why these values → canonical failure with its log signature → verification (lag, drill, or alert evidence).
 
-Budget: ~40 blocks, dense. Bundle share 4.5%. Target ~44 blocks.
+Mix target: ≥35% code-forward reference blocks (config, producer/consumer snippets).
+
+Budget: dense. Bundle share 4.5%. Post-patch: est ~4.6k tokens, 42 blocks (added the new consumer group protocol/KIP-1237 posture and the 4.3 OAUTHBEARER assertion + BrokerJwtValidator/CVE-2026-33557 note).
 
 Boundaries: Java client mechanics stay minimal here (language in 10); failure transcripts are 02; outbox pattern mechanism is shared with 19 (each file states its own side: relay here, pattern rationale there).
 
@@ -400,7 +407,9 @@ Content, 7 kinds:
 
 Shape per block: Design decision → contract or config fragment → why (with the failure it prevents) → versioning/compat note → verification (contract test or header assertion).
 
-Budget: ~35 blocks, dense. Bundle share 3.5%. Target ~38 blocks.
+Mix target: ≥30% code-forward reference blocks (OpenAPI fragments, header contracts).
+
+Budget: dense. Bundle share 3.5%. Post-patch: est ~4.2k tokens, 39 blocks (added H/3 fallback + per-hop timeouts, RFC 9421 message signatures, IETF RateLimit draft note, explicit cache tiers with stale-while-revalidate boundaries).
 
 Boundaries: protocol auth mechanics are 07; testing technique is 08; Spring wiring is 11; TanStack consumption is 17. If a block's core is "how to test X", it belongs in 08.
 
@@ -421,7 +430,9 @@ Content, 6 kinds:
 
 Shape per block: Goal → snippet compiling under both compilers (or marked 7-only) → why this form → legacy/counter form with its failure → verification (tsc clean both versions, or runtime test).
 
-Budget: ~35 blocks, dense. Bundle share 4%. Target ~38 blocks.
+Mix target: ≥45% code-forward reference blocks (dual-compiler snippets).
+
+Budget: dense. Bundle share 4%. Post-patch: est ~3.6k tokens, 37 blocks (added baseUrl/moduleResolution-bundler migration, native type-stripping + erasableSyntaxOnly rationale, project-reference build + 7.x parallelism).
 
 Boundaries: Vue and TanStack usage are 16/17 (plain TS here); failure transcripts are 02; Node backend patterns stay minimal (this is a frontend-support file, not a Node server file).
 
@@ -443,7 +454,9 @@ Content, 7 kinds:
 
 Shape per block: Goal → component/composable snippet → reactivity or design reasoning → pitfall with its symptom → verification (type-check, test, or hydration assertion).
 
-Budget: ~35 blocks, dense. Bundle share 3.5%. Target ~38 blocks.
+Mix target: ≥40% code-forward reference blocks (SFC snippets, composables).
+
+Budget: dense. Bundle share 3.5%. Post-patch: est ~3.5k tokens, 37 blocks (added Suspense + provide/inject + lazy hydration, reactive-prop destructure pitfall, and CSP/Trusted-Types/token-storage security block).
 
 Boundaries: TS mechanics are 15; Query/Router/Table server-state is 17; failure transcripts are 02. If a block works in plain TS without Vue, it belongs in 15.
 
@@ -464,7 +477,9 @@ Content, 6 kinds:
 
 Shape per block: Goal → key plus hook snippet → caching/behavior reasoning → misconfiguration with its symptom (stale forever, duplicate pages, lost mutations) → verification (test with fake timers/server, render-count or network assertion).
 
-Budget: ~30 blocks, dense. Bundle share 3%. Target ~32 blocks.
+Mix target: ≥35% code-forward reference blocks (queryOptions, mutation setups).
+
+Budget: dense. Bundle share 3%. Post-patch: est ~3.3k tokens, 31 blocks (added the missing v4→v5 migration renames block and queryOptions/optimistic-mutation reconciliation block; inert sibling slots — infinite query, persistence, and TanStack Table ownership — noted for the sourcing pass).
 
 Boundaries: Vue reactivity is 16; API contract design is 14; failure transcripts are 02. Version-pinned to v5 semantics (vue-query 5.104.x) with a v4→v5 migration block: `cacheTime`→`gcTime`, `isLoading`→`isPending` (and `isLoading` now means pending-and-fetching), status `loading`→`pending`, `keepPreviousData`→`placeholderData`, object-only call signatures, `useErrorBoundary`→`throwOnError`, `onSuccess`/`onError`/`onSettled` removed from `useQuery` (kept on mutations). v6 lines exist on neighboring adapters (Svelte 6.x, Solid 6.0 pre-release) while core/react/vue remain v5; when they re-sync at v6 stable this file gets a migration pass, same posture as the TS dual-compiler rule.
 
@@ -487,7 +502,9 @@ Content, 8 kinds:
 
 Shape per block: What to test → minimal example → why this level/technique → common anti-pattern with its cost → verification (the test itself, or suite-health metric).
 
-Budget: ~30 blocks, dense. Bundle share 3%. Target ~34 blocks.
+Mix target: ≥25% code-forward reference blocks (test bodies, fixtures).
+
+Budget: dense. Bundle share 3%. Post-patch: est ~3.2k tokens, 35 blocks (added contract tests, property-test invariant, determinism/quarantine discipline, SLO-gated load, relay fault drill, agent red-green proof).
 
 Boundaries: failure transcripts are 02 (which shows failures; 18 shows the testing that prevents and catches them); observability of production is 20; architecture decision records are 19. Tool-version specifics stay out — techniques, not CLI flags; test-framework majors (JUnit 6, Testcontainers 2.x) live in the ledger and in 02 upgrade-delta loops.
 
@@ -509,7 +526,9 @@ Content, 7 kinds:
 
 Shape per block: Decision context → options with honest tradeoffs → recommendation with conditions → reversibility note → verification (metric, review gate, or revisit trigger).
 
-Budget: ~35 blocks, dense. Bundle share 3%. Target ~38 blocks.
+Mix target: prose-first by design — narrative/ADR blocks dominate; code-forward reference blocks stay under 20% (instances home in 13/12, which carry the code). Rationale: the block's hardest sentence here is a tradeoff, not a snippet.
+
+Budget: dense. Bundle share 3%. Post-patch: est ~4.3k tokens, 41 blocks (added the five SPEC-mandated ADR worked records — tenancy model, polling-vs-Debezium, saga-vs-2PC, virtual-vs-reactive, LLM-behind-a-port — plus expand-contract; bounded-context/hexagonal instances queued for the sourcing pass).
 
 Boundaries: hardest-sentence test with 05 (tradeoff here, sequencing there); mechanism details live in stack files (13 relay, 12 RLS, 14 contracts); math foundations stay in 03. No ivory-tower patterns without a stack instantiation.
 
@@ -530,7 +549,9 @@ Content, 6 kinds:
 
 Shape per block: Signal needed → schema or config fragment → how it reads during an incident → leak or noise anti-pattern → verification (drill, scan, or dashboard assertion).
 
-Budget: ~25 blocks, dense. Bundle share 2.5%. Target ~28 blocks.
+Mix target: ≥25% code-forward reference blocks (JSON log schemas, OTel config, alert rules).
+
+Budget: dense. Bundle share 2.5%. Post-patch: est ~2.6k tokens, 26 blocks (added the Boot OTel starter 4.1 anchor block and the tenant/baggage trust-boundary block).
 
 Boundaries: testing is 18 (which verifies behavior pre-prod); Java tooling mechanics are 10; incident containment is 06/09. If a block debugs code rather than production, it belongs in 02.
 
@@ -552,7 +573,9 @@ Content, 7 kinds:
 
 Shape per block: Goal → config or command fragment → why these values → canonical failure with its log signature → verification (probe, scan, or drill evidence).
 
-Budget: ~30 blocks, dense. Bundle share 3.5%. Target ~34 blocks.
+Mix target: ≥45% code-forward reference blocks (unit files, compose/k8s manifests, workflow YAML).
+
+Budget: dense. Bundle share 3.5%. Post-patch: est ~3.1k tokens, 33 blocks (added Gateway API default, TLS-1.3/no-OCSP posture, OpenSSH post-quantum hybrid). Tokenizer actual pending at implementation.
 
 Boundaries: failure transcripts are 02 (which replays failures; 21 states the correct configuration); app wiring is 11; secrets lifecycle theory is 09. Version-sensitive flags verified before writing.
 
@@ -573,7 +596,9 @@ Content, 6 kinds:
 
 Shape per block: Goal → snippet → why this form → pitfall → verification (type-check, test, or repro evidence).
 
-Budget: ~25 blocks, compact. Bundle share 2.5%. Supporting file; breadth over depth.
+Mix target: ≥40% code-forward reference blocks.
+
+Budget: compact. Bundle share 2.5%. Supporting file; breadth over depth. Post-patch: est ~2.4k tokens, 25 blocks (added the PEP 723/735/751 packaging block — no "---" markers inside the snippet, per the delimiter rule).
 
 Boundaries: Java equivalents stay in 10 (no language comparisons beyond one line); failure transcripts are 02; finance math is 23 (which may show Python snippets only as worked calculations, never as tooling advice).
 
@@ -594,7 +619,7 @@ Content, 6 kinds:
 
 Shape per block: Concept → worked micro-example with numbers → assumption stated → common misuse with its cost → verification (recomputed figure or checklist assertion; the recompute gate runs on every number).
 
-Budget: ~20 blocks, compact and fenced. Bundle share 2.5%. Weight tunes via manifest without touching SE files.
+Budget: compact and fenced. Bundle share 2.5%. Weight tunes via manifest without touching SE files. Counted: 25 blocks, pre-check ≈2.3k tokens (est.).
 
 Boundaries: pure statistics and derivations are 03 (23 applies, never re-teaches); no proprietary strategies, no live signals, no account-specific content — textbook mechanics only.
 
@@ -613,7 +638,7 @@ Content, 4 kinds:
 
 Shape per block: Concept → short snippet → Vue parallel where one exists → translator pitfall → check.
 
-Budget: ~15 blocks, compact. Bundle share 1%. Retention weight only.
+Budget: compact. Bundle share 1%. Retention weight only. Post-patch: est ~1.9k tokens, 18 blocks (added React Compiler memoization model, useEffectEvent, and the RSC/Flight boundary note including the React2Shell CVE).
 
 Boundaries: depth lives in 16/17 (Vue/Query); no React ecosystem depth (no Next.js, no React Server Components beyond a boundary note). If a block has no Vue parallel or migration value, it does not belong here.
 
@@ -634,7 +659,7 @@ Content, 6 kinds:
 
 Shape per block: Concept → rule → practice → verification (drill, matrix review, or audit evidence).
 
-Budget: ~12 blocks, compact and fenced. Recorded actual ~1.2k tokens, 12 blocks. Bundle share 1.5%. Target ~13 blocks.
+Budget: ~12 blocks, compact and fenced. Recorded actual ~1.2k tokens, 12 blocks; post-patch 13 blocks, est ~1.4k. Bundle share 1.5%. The six SPEC kinds all map to a topic; the adjacent-regime pointer block completes the spec.
 
 Boundaries: vulnerability classes are 06; hygiene habits are 09; telemetry specifics are 20; backup mechanics are 12. No jurisdiction-specific legal advice beyond GDPR mechanics — counsel owns interpretation. Neighboring EU regimes (Data Act, NIS2, CRA, AI Act) get one cross-reference line each and no content.
 
