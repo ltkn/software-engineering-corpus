@@ -1,0 +1,276 @@
+Decision context: single deployable growing past 200k lines with three teams stepping on each release.
+Options: split to microservices now; enforce module boundaries inside the monolith; do nothing and coordinate harder.
+Recommendation: modular monolith with compiler-enforced boundaries (Spring Modulith), extraction only where a module shows independent scaling or team-ownership pressure.
+Reversibility: high — modules extract cleanly when boundaries hold; premature services rarely re-merge.
+Verification: boundary-violation test in CI; extraction criteria reviewed quarterly against module metrics.
+
+---
+
+Decision context: frontend, API, and workers sharing one database "for simplicity".
+Options: shared database; per-service databases with composition; per-service with event-carried replication.
+Recommendation: per-service ownership from the start; cross-service reads via explicit composition or replicated read models, never joins across owners.
+Reversibility: low once shared — splitting shared tables under load is a migration project; decide early.
+Verification: schema-ownership registry; cross-owner join detected by review query audit.
+
+---
+
+Decision context: checkout spanning orders, payment, and inventory across services.
+Options: distributed transaction (2PC/XA); saga with compensations; orchestrate synchronously and accept coupling.
+Recommendation: saga with explicit compensations per step and idempotent actions throughout.
+Reversibility: medium — saga steps already idempotent, so consolidation later is safe.
+Verification: step-failure drill asserting compensation completeness; no-2PC policy documented with the rationale.
+
+---
+
+Decision context: order events must reach Kafka exactly when orders commit.
+Options: dual-write (DB then Kafka) hoping both succeed; transactional outbox with relay; change-data-capture with Debezium from day one.
+Recommendation: outbox with polling relay now (one fewer system), Debezium revisit at the documented tripwire (10k events/min sustained or relay p99 breach for a week).
+Reversibility: high — relay-to-CDC migration keeps the outbox table as the source.
+Verification: kill-9 drill shows zero duplicates over 20 runs; tripwire metric alerting, not commented.
+
+---
+
+Decision context: read model for the admin dashboard joining five services.
+Options: synchronous composition per request; replicated read model via events; CQRS with separate read store.
+Recommendation: composition while fan-out stays under three calls and p95 holds; replicated read model when composition breaches the budget twice.
+Reversibility: medium — composition code becomes the projector logic, mostly reusable.
+Verification: fan-out budget test (call count plus p95) per dashboard; breach triggers the replication decision, not another optimization round.
+
+---
+
+Decision context: caching strategy across HTTP, application, and read models.
+Options: cache everywhere opportunistically; cache by layer with ownership; no cache until measured pain.
+Recommendation: no cache until the planner and profiles name the pain; then layer-specific with invalidation owned by the writer of the underlying data.
+Verification: each cache carries its invalidation test and bound (size plus TTL); unowned caches banned in review.
+
+---
+
+Decision context: cache invalidation for tenant-scoped reference data.
+Options: TTL-only; write-through invalidation; version-stamped keys.
+Recommendation: write-through invalidation owned by the writer plus short TTL as backstop; version stamps where deploys must flip atomically.
+Reversibility: high — TTL bounds any mistake.
+Verification: stale-read window test asserts the documented bound; invalidation missing on any writer fails review.
+
+---
+
+Decision context: retry policy across service boundaries.
+Options: retry everything 3x; retry idempotent reads only; per-dependency policies with budgets.
+Recommendation: per-dependency policies — idempotent reads retried with backoff/jitter, writes retried only with idempotency keys, charges never auto-retried.
+Reversibility: high — policy is config with drill evidence.
+Verification: fault-injection suite per dependency asserting bounded attempts; POST-retry absence in review checklist.
+
+---
+
+Decision context: timeouts and circuit breaking for the payment gateway.
+Options: global 30s timeout; per-dependency timeouts with breaker; no breaker ("the gateway is reliable").
+Recommendation: per-dependency timeouts sized from measured p99 plus headroom, breaker tuned from drill data (failure-rate trip, half-open probe volume).
+Reversibility: high.
+Verification: slow-dependency drill asserts bounded 503s; breaker transition drill (closed/open/half-open) green.
+
+---
+
+Decision context: backpressure for the event-ingest endpoint.
+Options: unbounded queue (accept then OOM); bounded queue with drop-oldest; reactive backpressure end to end; load shedding with 429.
+Recommendation: bounded queue with explicit overflow policy per endpoint class plus 429-with-Retry-After shedding at the edge.
+Reversibility: medium — overflow policy changes client-visible behavior and needs announcement.
+Verification: overload drill asserts bounded memory with documented shedding; OOM under load fails the release.
+
+---
+
+Decision context: bulkheads between tenant classes and workload kinds.
+Options: shared pools; partitioned pools (admin vs interactive vs batch); full bulkhead per tenant tier.
+Recommendation: partitioned pools for batch vs interactive vs admin now; per-tenant bulkheads only when noisy-neighbor incidents demand.
+Reversibility: medium — pool splits change capacity math and need re-tuning.
+Verification: noisy-neighbor drill (batch flood) shows interactive p95 flat; pool saturation dashboarded per partition.
+
+---
+
+Decision context: graceful degradation tiers for partial outages.
+Options: all-or-nothing availability; tiered degradation (core checkout always, recommendations best-effort, analytics droppable).
+Recommendation: explicit tiers with per-tier SLOs; best-effort features degrade first by design, never by accident.
+Reversibility: high — tiers are configuration plus feature flags.
+Verification: dependency-outage drill asserts tier behavior (core 200, rail empty, analytics dark); tier list reviewed per new feature.
+
+---
+
+Decision context: data migration strategy for the 40M-row users change.
+Options: big-bang rewrite with downtime; expand-contract over five deploys; blue-green with dual-write.
+Recommendation: expand-contract (nullable add, dual-write, batched backfill, read switch, constraint) — each step deployable against both schema versions.
+Reversibility: inherent — every step rolls back to the previous image, down migrations never written.
+Verification: rehearsal metrics (lock time, bloat delta) per migration; bound violations block release.
+
+---
+
+Decision context: backward compatibility budget for the public API.
+Options: unlimited support; N-2 versions with sunset dates; break freely with changelogs.
+Recommendation: N-2 with published sunsets and Sunset headers from each version's launch; compatibility suite enforces the promise.
+Reversibility: low once promised — budgets are contracts; changing the budget is itself a breaking change.
+Verification: compatibility suite per supported version; sunset flip to 410 rehearsed in staging.
+
+---
+
+Decision context: strangler approach for the legacy billing module.
+Options: big rewrite; strangler facade routing incrementally; freeze and rebuild beside.
+Recommendation: strangler with the facade owning routing percentages, migrated capability by capability with dual-run comparison.
+Reversibility: high — facade routes back instantly.
+Verification: dual-run diff (legacy vs new outputs compared on live traffic shadow) clean before each cutover percentage step.
+
+---
+
+Decision context: contentious choice — polling outbox relay vs Debezium, revisited with fresh data.
+Options: stay polling (simple, proven to 9k/min); move to Debezium now (richer semantics, new system to operate).
+Recommendation: stay polling with the tripwire armed (10k/min sustained or relay p99 breach for a week); the earlier ADR's revisit trigger decides, not seniority.
+Reversibility: high — outbox table remains the source either way.
+Verification: tripwire metric reviewed monthly; load test confirms headroom to 9k/min currently.
+
+---
+
+Decision context: saga vs 2PC for the payout flow, with real money at stake.
+Options: 2PC across payment provider and ledger; saga with compensating reversals; manual reconciliation queue.
+Recommendation: saga — providers do not participate in 2PC, so "distributed transaction" would be a lock around hope; compensations explicit and tested.
+Reversibility: low for the money path by design — compensations audited, never silently changed.
+Verification: provider-outage drill asserts compensated consistency; reconciliation queue drains to zero post-incident.
+
+---
+
+Decision context: virtual threads vs reactive for the new API services.
+Options: WebFlux throughout; virtual-thread request handling; platform threads as before.
+Recommendation: virtual threads for request/response fan-out (debuggable, testable, hireable); reactive retained only where backpressure-sensitive streaming demands it.
+Reversibility: medium — the reactive islands stay isolated behind interfaces.
+Verification: backpressure requirement documented per reactive endpoint; blocking alternative benchmarked before approval.
+
+---
+
+Decision context: modular boundaries enforcement mechanism.
+Options: package conventions with wiki; ArchUnit tests; Spring Modulith with runtime module registry.
+Recommendation: Modulith structural tests in CI (compiler plus test enforcement); ArchUnit where Modulith's model does not reach (frontend-adjacent Java, shared libraries).
+Reversibility: high — enforcement tooling swaps without touching module structure.
+Verification: violation test fails builds; boundary map generated per release for review.
+
+---
+
+Decision context: shared kernel vs duplication for tenant-context plumbing.
+Options: shared library with tenant context, RLS helpers, and error contracts; copy-paste per service for independence.
+Recommendation: thin shared kernel (context propagation, error shape, RLS session setup) versioned strictly; domain logic never shared.
+Reversibility: medium — kernel changes ripple, so the kernel stays minimal by policy.
+Verification: kernel surface review per change (additions need two-service demand); version-pinning per service, never floating.
+
+---
+
+Decision context: API gateway responsibilities vs service responsibilities.
+Options: fat gateway (auth, rate limiting, transformation, aggregation); thin gateway (routing, TLS, coarse limits) with smart services.
+Recommendation: thin gateway — routing, edge TLS, coarse quotas, and WAF; authz, validation, and aggregation in services that own the domain knowledge.
+Verifiability note: gateway behavior contract-tested like any API.
+Verification: gateway-config audit (no business logic in routes); authz-matrix tests live in services, never in gateway config.
+
+---
+
+Decision context: event schema governance across teams.
+Options: free-form JSON with wiki docs; central schema registry with compatibility enforcement; code-generated schemas per service.
+Recommendation: registry with BACKWARD/FULL compatibility enforced server-side, subject naming per domain, breaking changes as versioned subjects.
+Reversibility: low once consumers depend — governance only tightens deliberately.
+Verification: compatibility CI on every schema change; consumer dual-version handling tests.
+
+---
+
+Decision context: multi-tenancy model — silo, pool, or bridge.
+Options: database per tenant (silo); shared schema with RLS (pool); pool with premium silos for large tenants (bridge).
+Recommendation: pool with RLS for the standard tier (operational sanity), silo option for regulated or giant tenants with the same application code path.
+Reversibility: low — migration between models is a data-movement project; decide with growth and compliance inputs, documented.
+Verification: RLS test per table; silo-provisioning drill timed; tenant-placement registry reviewed quarterly.
+
+---
+
+Decision context: secrets and configuration architecture.
+Options: config files per environment in git; secret manager with runtime injection; hybrid (non-secret config in git, secrets injected).
+Recommendation: hybrid — versioned non-secret config beside code, secrets exclusively from the manager with rotation and audit.
+Reversibility: high — injection points stable, backends swappable.
+Verification: secret scanner covers repos and artifacts; rotation drill per secret class.
+
+---
+
+Decision context: frontend architecture — SPA with BFF vs direct API consumption.
+Options: SPA calling domain APIs directly; backend-for-frontend aggregating per view; GraphQL gateway.
+Recommendation: direct consumption with TanStack-managed server state while views map 1:1 to domain resources; BFF introduced per view only when aggregation pain is measured (fan-out counts, waterfall budgets).
+Reversibility: medium — BFFs accumulate logic that resists removal; each BFF carries a revisit trigger.
+Verification: fan-out budget per view; BFF justification reviewed with measurements attached.
+
+---
+
+Decision context: data ownership for reporting and analytics.
+Options: analytics queries against production replicas; dedicated warehouse with ETL; event-sourced projections.
+Recommendation: warehouse fed by CDC/event relay for analytics; production replicas serve operational reads only; dashboards never touch primaries.
+Verification: production-query audit (no analytics principals on primaries); warehouse freshness SLA monitored.
+
+---
+
+Decision context: test strategy economics at scale.
+Options: test pyramid enforced with ratios; risk-based allocation (auth, money, migrations over-covered; CRUD views thin); coverage gates.
+Recommendation: risk-based with pyramid shape as the outcome, not the rule; auth/money/migration paths carry matrix, property, and chaos tests; generated CRUD carries contract tests only.
+Reversibility: high — strategy reallocates per incident learning.
+Verification: incident-to-test traceability (each incident adds tests at the right level); coverage map reviewed, never targeted.
+
+---
+
+Decision context: dependency and platform upgrade cadence.
+Options: upgrade continuously with automation; freeze on LTS with periodic jumps; upgrade on CVE pressure only.
+Recommendation: continuous minor upgrades via automated PRs with the test suite as gate; majors planned with dual-run periods; CVE SLA (critical in days) non-negotiable.
+Reversibility: medium — upgrades roll back via images, data migrations do not; separate the two in planning.
+Verification: upgrade lag dashboard (majors behind current); CVE SLA clock measured per advisory.
+
+---
+
+Decision context: observability investment order for a growing system.
+Options: logs first; metrics first; traces first; SLOs first.
+Recommendation: structured logs plus RED metrics first (incidents need both immediately), tracing when cross-service calls exceed single-service reasoning, SLOs once traffic patterns stabilize enough to promise.
+Reversibility: high — additive layers, each justified by an incident class it would have shortened.
+Verification: incident reviews name the missing signal; each funds the next layer with evidence.
+
+---
+
+Decision context: team topologies around the modular monolith.
+Options: one team owning everything; stream-aligned teams per module with platform support; full component teams per layer.
+Recommendation: stream-aligned teams per bounded context plus a thin platform capability (CI, observability, environments); no layer teams (frontend/backend splits) that recreate handoff queues.
+Reversibility: medium — re-teaming is disruptive but the module boundaries survive it.
+Verification: handoff-count metric per change (code-to-prod touches); module ownership registry with exactly one owner each.
+
+---
+
+Decision context: build vs buy for the identity provider.
+Options: self-built auth service; managed IdP (Keycloak self-hosted vs cloud IdP); brokered hybrid.
+Recommendation: managed IdP (never self-built crypto-adjacent login); broker behind the internal contract from 07 so the vendor stays swappable.
+Reversibility: medium with the broker, near-zero without it (services parsing vendor claims directly).
+Verification: broker-contract tests; vendor-switch drill (staging against a second IdP) annually.
+
+---
+
+Decision context: disaster recovery posture for Postgres plus Kafka plus stateless services.
+Options: backup-and-pray; rehearsed PITR plus consumer-position recovery runbooks; multi-region active-active.
+Recommendation: rehearsed single-region recovery (PITR drills, offset-position runbooks, image rebuilds) before any multi-region ambition; active-active only when downtime math demands it.
+Reversibility: low once multi-region (data residency, conflict resolution); earn it through single-region excellence first.
+Verification: recovery drill timed against RTO/RPO quarterly; runbook updated from every drill.
+
+---
+
+Decision context: cost architecture — where the infrastructure money goes and who decides.
+Options: centralized FinOps approvals; team budgets with showback; no cost controls until pain.
+Recommendation: team-visible costs (per-service dashboards) with showback immediately, budgets with teeth only on the top-3 spenders; architectural decisions (tiered storage, cache sizing, partition counts) reviewed with cost deltas attached.
+Reversibility: high — budgets adjust; the visibility habit is the durable part.
+Verification: cost-per-request trended; top-spender review monthly with engineering (not finance-only) ownership.
+
+---
+
+Decision context: fitness function selection for the five most-violated invariants.
+Options: ADRs as documents; executable fitness functions in CI; periodic manual reviews.
+Recommendation: the five load-bearing invariants (tenant isolation, ownership enforcement, contract compatibility, migration safety, secret hygiene) as CI tests; documents for the rest.
+Reversibility: high — functions evolve with the invariants.
+Verification: invariant-violation drill (deliberately break one in staging) fails the pipeline as designed.
+
+---
+
+Decision context: example ADR — polling relay retained over Debezium (worked record).
+Context: 2k/min current, 9k/min headroom proven, team of three, no Connect experience.
+Options: Debezium now; polling with tripwire.
+Decision: polling retained; tripwire armed (10k/min sustained or relay p99 breach for a week).
+Consequences: simpler operations accepted; latency ceiling acknowledged; revisit automatic on tripwire.
+Revisit trigger: tripwire metric, reviewed monthly in the architecture log.

@@ -1,0 +1,239 @@
+Goal: systemd units with hardening for service processes.
+Wiring:
+[Service]
+ExecStart=/opt/users-svc/bin/app
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+Why: hardening flags shrink what a compromised process can touch; restart policy survives crashes without masking them.
+Misconfiguration: root service with full filesystem write, compromised once, host rewritten.
+Verification: systemd-analyze security score reviewed per unit; restart drill (kill -9) recovers within the SLO.
+
+---
+
+Goal: Journald as the structured log sink with retention bounds.
+Wiring: ForwardToSyslog no, Storage persistent, SystemMaxUse 2G, MaxRetentionSec 14day, JSON field passthrough from the app.
+Why: bounded local buffer survives forwarder outages; structured fields flow into aggregation unparsed.
+Misconfiguration: unbounded journal filling the root partition, crashing the host the logs were meant to protect.
+Verification: disk-full drill (forwarder down 24h) stays bounded; field-presence test on aggregated logs.
+
+---
+
+Goal: DNS resolution order understood and controlled.
+Wiring: /etc/nsswitch.conf hosts line explicit (files before dns where local overrides matter), resolv.conf with ndots and timeout tuned, search domains minimal.
+Why: ndots and search-domain expansion turn single-label lookups into multi-query storms and wrong-host hits.
+Misconfiguration: postgres resolving to a search-domain wildcard in another namespace.
+Verification: getent hosts assertions per critical name in CI environment checks; resolution-time dashboarded.
+
+---
+
+Goal: SSH discipline with keys, bastion, and no forwarding.
+Wiring: ed25519 keys per engineer, bastion-only ingress, AllowAgentForwarding no, session recording on the bastion.
+Why: agent forwarding lends the key to every hop; bastion concentrates audit where humans enter.
+Misconfiguration: shared deploy key on ten laptops plus agent forwarding through three hops.
+Verification: forwarding-attempt probe refused; key inventory per engineer with rotation dates.
+
+---
+
+Goal: Docker multi-stage builds with cache-ordered layers.
+Wiring: deps layer (lockfiles only) first, source copy second, build third, runtime image from a minimal base copying only artifacts.
+Why: dependency layers cache across code changes; rebuilds take seconds, not minutes.
+Misconfiguration: source copied before install, every keystroke invalidating the dependency layer for 6-minute builds.
+Verification: no-op and code-only rebuild timings asserted in CI; layer inspection shows deps cached.
+
+---
+
+Goal: Distroless or minimal base images running as non-root.
+Wiring: FROM gcr.io/distroless/java25-debian (or minimal equivalent), USER 65532, no shell, no package manager in the final image.
+Why: no shell means no shell escapes; non-root bounds breakout impact; minimal surface means fewer CVEs to triage.
+Misconfiguration: full Ubuntu base as root with curl and git "for debugging", 400 known CVEs per image.
+Verification: image scan (zero criticals past SLA); root-probe (whoami returns non-root); shell-absence probe fails closed.
+
+---
+
+Goal: Frozen lockfiles enforced in every image build.
+Wiring: pnpm --frozen-lockfile, Maven --strict-checksums with wrapper-pinned distribution, Gradle --write-locks-once-committed with dependency locking.
+Why: unfrozen installs resolve differently per build; audits describe a tree nobody runs.
+Misconfiguration: npm install in Docker resolving fresh minors per build, "works on my machine" as a service.
+Verification: lockfile-drift fails the build; dependency-layer cache hits on code-only changes.
+
+---
+
+Goal: Secrets mounted, never copied, in Docker builds and runs.
+Wiring: BuildKit secret mounts (--mount=type=secret) for build-time credentials; runtime secrets via mounted files or env-from-manager, never image layers.
+Why: copied secrets persist in layer history forever, readable by anyone pulling the image.
+Misconfiguration: COPY .env into the image "temporarily", pushed to the registry, cached on every node.
+Verification: image-history scan for secret paths; layer-diff audit per release; secret-shape scan on pushed images.
+
+---
+
+Goal: Image scanning and digest pinning in the deploy chain.
+Wiring: scan on build (fail past critical SLA), pin by digest in manifests (image@sha256:...), scheduled base-image bump PRs.
+Why: tags move; digests do not. Scanning at build catches CVEs before they deploy.
+Misconfiguration: node:22 floating tag moving underneath released manifests without review.
+Verification: floating-tag lint fails manifests; scan gate blocks criticals past SLA.
+
+---
+
+Goal: Compose networking with explicit networks and DNS.
+Wiring: user-defined network per project, service names as hostnames, no default-bridge reliance, healthcheck-gated depends_on.
+Why: service-name DNS exists only on user-defined networks; health gating prevents app-boot-before-db races.
+Misconfiguration: default bridge with hardcoded IPs, breaking on every compose recreate.
+Verification: getent-based DNS test per service pair; boot-order drill (db slow to start) still converges.
+
+---
+
+Goal: Nginx reverse proxy with correct forwarding headers.
+Wiring: proxy_set_header Host, X-Forwarded-For, X-Forwarded-Proto, X-Request-ID (or pass-through); proxy_pass to the service name and port.
+Why: apps build URLs, audit trails, and scheme decisions from these headers; wrong values corrupt redirects and logs.
+Misconfiguration: missing X-Forwarded-Proto causing redirect loops (app thinks HTTP behind HTTPS termination).
+Verification: header-echo test per proxied route; redirect-loop probe green.
+
+---
+
+Goal: TLS 1.2+ with modern ciphers, HSTS, legacy isolated.
+Wiring: ssl_protocols TLSv1.2 TLSv1.3; curated cipher list; HSTS with preload-readiness; legacy clients on a separate audited endpoint.
+Why: negotiation settles on the weakest mutual option; one legacy exception on the main vhost weakens every session.
+Misconfiguration: TLSv1.0 enabled for one scanner, dragging the whole vhost down.
+Verification: scan asserts protocol floor and cipher list per vhost; legacy endpoint logged and sunset-dated.
+
+---
+
+Goal: WebSocket proxying with upgrade headers and long timeouts.
+Wiring: proxy_http_version 1.1, Upgrade and Connection upgrade headers, proxy_read_timeout 3600s on /ws/ locations.
+Why: missing upgrade headers downgrade to polling or fail; default 60s timeouts kill idle sockets hourly.
+Verification: idle-socket 10-minute survival test; order-event stream continuity asserted.
+
+---
+
+Goal: SSE with buffering disabled end to end.
+Wiring: proxy_buffering off plus proxy_cache off on event locations; upstream sends X-Accel-Buffering: no.
+Why: buffered proxies deliver events in bursts when buffers fill, destroying real-time semantics.
+Verification: event-latency test asserts sub-200ms end to end; burst-pattern detector in the synthetic probe.
+
+---
+
+Goal: Nginx rate limiting and connection caps per route class.
+Wiring: limit_req_zone per client-principal key (not just IP behind NAT), limit_conn for slow endpoints, tuned burst with nodelay for interactive paths.
+Why: edge limits protect pools behind them; NAT-shared IPs need principal-aware keys to avoid office-wide false positives.
+Misconfiguration: per-IP limits only — whole office throttled at 9am while distributed abuse passes.
+Verification: burst test per route class; false-positive drill from a shared egress IP stays green.
+
+---
+
+Goal: Ambiguous-request rejection at the edge.
+Wiring: reject CL+TE combinations, normalize framing before proxying, parser versions pinned with the origin servers.
+Why: edge-origin parser disagreement enables request smuggling; rejection at the edge costs nothing legitimate.
+Verification: ambiguous-framing battery rejected; parser-pair upgrade performed atomically.
+
+---
+
+Goal: GitHub Actions with pinned actions and secretless forks.
+Wiring: actions pinned by hash (not tag), fork PR jobs without secrets and read-only tokens, required-secret jobs gated on maintainer approval.
+Why: tags move (including maliciously); fork code runs untrusted and must not observe secrets.
+Misconfiguration: actions/checkout@v4 floating plus secrets shared into fork runs.
+Verification: pin-lint on workflow files; fork-job secret audit (zero secrets resolvable).
+
+---
+
+Goal: OIDC-to-cloud credentialless deploys.
+Wiring: workload identity federation (GitHub OIDC subject to cloud role), per-environment roles with minimal permissions, minutes-long tokens.
+Why: no static cloud keys to leak, rotate, or audit; each run mints exactly the access it needs.
+Misconfiguration: three-year-old static key in repo variables, used by every workflow.
+Verification: static-key absence test on repos; token-lifetime assertion (minutes, not months).
+
+---
+
+Goal: Environment protection gating production deploys.
+Wiring: environment rules with required reviewers, staging auto-deploy with production manual, deployment windows recorded.
+Why: velocity in staging, deliberation in prod; the pipeline encodes the difference.
+Misconfiguration: every merge auto-deploying to prod at 2am with no approver.
+Verification: bypass-attempt alert; deploy log shows gate decisions per release.
+
+---
+
+Goal: Build matrices with cache keys on lockfile hashes.
+Wiring: matrix over Java/Node versions with cache keys including lockfile plus config hashes; cache restore falling back gracefully.
+Why: matrices multiply build minutes; precise keys keep hits high without serving stale dependencies.
+Misconfiguration: cache keyed by branch name only, serving last month's dependencies to this week's build.
+Verification: cache-hit rate dashboarded; stale-dependency drill (lockfile bump) misses cache exactly once, then hits.
+
+---
+
+Goal: Build-tool exposure — Maven wrapper and Gradle discipline in CI.
+Wiring: ./mvnw and ./gradlew only (wrappers committed, distributions pinned); Maven .mvn config with strict checksums; Gradle version catalogs plus configuration cache enabled; daemon/parallel tuned per runner size.
+Why: unwrapped builds depend on ambient tool versions that differ per machine; catalogs centralize versions; configuration cache cuts configuration time on large builds.
+Misconfiguration: system mvn of unknown version on CI, versions scattered across thirty build files.
+Verification: unwrapped-build lint fails direct mvn/gradle invocations; catalog-vs-hardcoded-version audit; configuration-cache hit rate trended.
+
+---
+
+Goal: Kubernetes probes separated by purpose.
+Wiring: startupProbe (slow boot incl. migrations and pool warm), livenessProbe (process alive, cheap), readinessProbe (pool plus dependencies ready).
+Why: one probe for three purposes restarts healthy-but-slow containers (CrashLoopBackOff theater) or routes to unready pods.
+Misconfiguration: single readiness probe hitting /health before the pool warms, restart-looping every deploy.
+Verification: slow-boot drill (no restarts, traffic held until ready); probe-separation lint on manifests.
+
+---
+
+Goal: Resource requests/limits with understood OOM behavior.
+Wiring: requests reflecting steady state, limits with headroom, JVM -Xmx at ~75% of the limit, OOM events alerting (not just restarting).
+Why: limits without JVM sizing OOM inside the container while the node looks fine; silent restarts hide the leak for months.
+Misconfiguration: no limits ("burst capacity") with one leaky pod evicting neighbors.
+Verification: OOM-drill asserts alert plus bounded restart; heap-sizing ratio asserted per deployment.
+
+---
+
+Goal: PodDisruptionBudgets for voluntary-disruption safety.
+Wiring: PDBs per critical deployment (minAvailable tuned to quorum math), respected by cluster autoscaler and node upgrades.
+Why: upgrades and scaling drain nodes; without PDBs they evict the last replica of the metadata quorum mid-write.
+Misconfiguration: node upgrade taking all three KRaft controllers at once.
+Verification: drain drill asserts quorum preserved; PDB absence fails the manifest lint for stateful workloads.
+
+---
+
+Goal: Secrets from the manager, never literals, in manifests.
+Wiring: external-secrets or CSI driver syncing to env/files; SealedSecrets only where the manager pattern cannot reach; no plaintext in git.
+Why: manifests live in git forever; literals there are published secrets with version history.
+Misconfiguration: base64 "encrypted" (encoding, not encryption) password in the repo, decodable by anyone.
+Verification: literal-secret scan on manifests (including base64-shaped values decoded and matched); sync-failure alert per secret.
+
+---
+
+Goal: Network policies default-denying pod traffic.
+Wiring: default deny-all ingress/egress per namespace with explicit allows (DNS, service dependencies, manager endpoints).
+Why: compromised pods phone home and laterally by default; policies contain the blast radius to declared flows.
+Misconfiguration: flat network where the frontend pod reaches the Kafka controllers directly.
+Verification: unexpected-flow probe denied in staging; policy change reviewed like code.
+
+---
+
+Goal: HPA on sane signals, not CPU alone.
+Wiring: scale on request latency/queue depth/custom business metric with CPU as a guardrail; scale-down stabilization windows preventing flapping.
+Why: CPU lags the real saturation (pools, queues); scaling on it arrives after the outage.
+Verification: load drill asserts scaling precedes SLO breach; flapping test (oscillating load) shows stable replica counts.
+
+---
+
+Goal: Rollout strategy with automatic rollback criteria.
+Wiring: rolling updates with maxUnavailable/maxSurge tuned, canary analysis on error rate and p95 for the first 5% before full rollout.
+Why: bad releases must stop themselves at 5%, not at 100% plus a page.
+Misconfiguration: Recreate strategy on stateful services, full outage per deploy "to keep it simple".
+Verification: bad-canary drill halts at 5% with automatic rollback; rollout metrics recorded per release.
+
+---
+
+Goal: WireGuard mesh for private service traffic.
+Wiring: per-host keys, peer allow-listing by public key, DNS inside the mesh, key rotation scheduled.
+Why: mTLS-grade confidentiality without PKI toil for service-to-service paths outside the cluster.
+Misconfiguration: plaintext inter-region traffic "inside our VPC" readable by any network tap.
+Verification: plaintext probe on mesh interfaces fails; peer-audit quarterly with stale-peer removal.
+
+---
+
+Goal: Migration-aware deploy sequencing.
+Wiring: migrations run before code rollout (expand steps), app versions tolerate both schema versions during the window, smoke checks assert both paths.
+Why: code-first deploys crash on missing columns; migration-first with backward compatibility never strands either version.
+Misconfiguration: code and migration in one atomic deploy, rollback impossible without data surgery.
+Verification: mixed-version drill (old code on new schema and vice versa) green before rollout proceeds.

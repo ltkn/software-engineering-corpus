@@ -1,0 +1,190 @@
+Signal needed: request-scoped debugability across gateway and services.
+Schema:
+{"ts": "2026-10-02T21:00:00Z", "level": "info", "service": "users", "route": "GET /users", "tenant": "acme", "ms": 41, "requestId": "req_9f2"}
+Incident reading: filter by requestId to replay one user's failing journey across all services in time order.
+Anti-pattern: plaintext multi-format logs where the request id appears in four spellings (reqId, request_id, rid, none).
+Verification: schema-conformance test on every log line in tests; incident drill joins traces across gateway and service on one key.
+
+---
+
+Signal needed: field allow-listing that keeps secrets out of telemetry by construction.
+Schema: ts, level, service, route, tenant, ms, requestId — plus per-endpoint allow-listed business fields, nothing else.
+Incident reading: every line safe to show on a screen share; no redaction scramble during incidents.
+Anti-pattern: "log everything as JSON" first version carrying Authorization headers and tokens into Splunk for a year.
+Verification: redaction test fails the build on credential-shaped values; sampled production logs scanned nightly.
+
+---
+
+Signal needed: RED metrics per service out of the box.
+Schema: rate (requests/s), errors (fraction 5xx plus business-error codes), duration (histogram with p50/p95/p99) — labeled by service, route template (never raw ids), and version.
+Incident reading: rate drop plus error spike plus duration shift triangulate deploy faults vs dependency faults vs traffic shifts in one glance.
+Anti-pattern: per-userId and per-URL labels exploding cardinality to millions of series, metrics backend falling over during the incident it should illuminate.
+Verification: cardinality budget test on label sets; route-template (not raw-path) assertion per metric.
+
+---
+
+Signal needed: USE metrics per resource (pools, queues, disks, brokers).
+Schema: utilization (percent saturation), saturation (queue depth/wait time), errors (timeout/exhaustion counts) for Hikari pools, Kafka consumer lag, disk volumes, connection counts.
+Incident reading: saturation rising while utilization looks fine names the queue as the bottleneck before latency alarms fire.
+Anti-pattern: CPU-only dashboards declaring "all green" during a pool-exhaustion outage.
+Verification: saturation alert per resource with runbook; pool-exhaustion drill fires the right alert, not a generic page.
+
+---
+
+Signal needed: histogram discipline replacing averaged latencies.
+Schema: Prometheus-style histograms (or DDSketch) with p50/p95/p99 computed at query time; never pre-averaged means.
+Incident reading: bimodal distributions (cache hit/miss) visible as two humps; means would report a valley nobody experiences.
+Anti-pattern: "average 40ms" SLA that 9% of users experience as 180ms.
+Verification: dashboard review bans mean-latency panels; bimodality drill (cache outage) shows the split explicitly.
+
+---
+
+Signal needed: traceparent propagation across HTTP and Kafka boundaries.
+Schema: W3C traceparent plus tenant-scoped correlation id on inbound headers, outbound calls, and record headers.
+Incident reading: one trace shows gateway → service → database → Kafka → consumer as a single timeline with the slow span highlighted.
+Anti-pattern: per-service trace ids that cannot join, incident response as five separate timelines narrated over a call.
+Verification: propagation test per boundary (header present and valid downstream); incident drill joins the full path on one key.
+
+---
+
+Signal needed: span naming that survives aggregation.
+Schema: low-cardinality operation names (GET /users, orders.consume, db.query.users_by_tenant) with high-cardinality data as attributes, never in names.
+Incident reading: slow-operation ranking meaningful across thousands of distinct parameter values.
+Anti-pattern: span per URL with raw ids — million-span cardinality, aggregation useless.
+Verification: span-name audit (template, not raw); cardinality budget on span names like metrics.
+
+---
+
+Signal needed: sampling strategy with head rules plus tail retention.
+Schema: head sampling at a sustainable base rate; tail-based retention keeping all errors, slow traces, and sampled successes.
+Why this shape: head-only sampling drops the exact traces incidents need; tail rules keep errors and outliers while bounding cost.
+Anti-pattern: 100% retention "temporarily" producing a telemetry bill larger than production.
+Verification: error-trace completeness test (every error id traceable); cost-per-trace trended with a budget.
+
+---
+
+Signal needed: exemplars linking metrics to traces.
+Schema: histogram buckets carrying exemplar trace ids for slow observations.
+Incident reading: click the p99 bucket, land on the exact slow trace — metric-to-trace in one hop instead of time-range guessing.
+Anti-pattern: metrics and traces as parallel universes joined by timestamps and hope.
+Verification: exemplar presence test on histogram metrics; drill measures metric-to-trace time under a minute.
+
+---
+
+Signal needed: SLI selection that reflects user pain.
+Schema: availability (valid responses over total per route class), latency (p95 under threshold per class), freshness (data age for read models).
+Incident reading: SLI burn names what users feel; raw error counts name what operators see — related but different.
+Anti-pattern: SLI on CPU utilization ("99% available compute") while checkout fails for an hour.
+Verification: SLI-to-incident mapping review (each past incident would have burned the SLI); user-report correlation spot-checked.
+
+---
+
+Signal needed: error-budget policy gating deploys.
+Schema: burn-rate alerts (fast burn pages, slow burn tickets) wired into the deploy pipeline; freeze on fast burn.
+Why: deploys during active incidents compound; the pipeline must know the service is already bleeding.
+Anti-pattern: deploy train running through a SEV with nobody connecting the two systems.
+Verification: simulated-burn drill asserts the freeze triggers; deploy log shows the gate decision per release.
+
+---
+
+Signal needed: symptom-based alerts with runbooks attached.
+Schema: alert on checkout-error-rate and p95-latency (symptoms), not on CPU or disk alone (causes); every alert links its runbook with the first three steps.
+Why: symptom alerts fire when users hurt; cause alerts fire constantly about things that do not matter yet.
+Anti-pattern: 40 cause-based alerts muted within a week, the real incident paging into a muted channel.
+Verification: alert-firing drill per rule quarterly; mute events reviewed as process failures; runbook step-one executable by any on-call.
+
+---
+
+Signal needed: page-vs-ticket routing tuned from drill data.
+Schema: user-impacting symptom breaches page; degradation trends and capacity warnings ticket; everything else logs.
+Why: paging is a scarce resource spent from on-call attention; misrouted pages train ignoring.
+Anti-pattern: disk-70%-full pages at 3am for a volume that fills in three weeks.
+Verification: routing review per alert with past-page analysis (was a page warranted?); paging volume trended per service.
+
+---
+
+Signal needed: continuous JFR in production at bounded overhead.
+Schema: always-on recording (allocation, lock contention, I/O, pinned virtual threads) with 24h retention, under 2% overhead budget.
+Incident reading: the profile for last Tuesday's incident already exists — no reproduction needed, analysis starts immediately.
+Anti-pattern: "enable profiling and wait for it to happen again" as the incident strategy.
+Verification: overhead budget asserted in load tests; event-set review (allocation/lock/IO/pinning present); retention drill retrieves a week-old incident profile.
+
+---
+
+Signal needed: flame-graph reading discipline for CPU and wall time.
+Schema: wall-clock graphs for latency ("where does time go"), CPU graphs for efficiency ("what burns cycles"), kept distinct and labeled.
+Why: CPU graphs hide waiting (locks, I/O, GC); wall graphs hide burn granularity; incidents need the right one first.
+Anti-pattern: CPU flame graph "proving" no bottleneck during a lock-contention outage.
+Verification: graph-type labeled per investigation runbook step; lock-contention drill resolved from the wall graph, not CPU.
+
+---
+
+Signal needed: heap and thread dumps paired, never alone.
+Schema: two heap dumps plus JFR allocation profile for leaks; thread dump plus lock-order documentation for deadlocks; virtual-thread sections included on JDK 25.
+Why: single dumps answer "what exists now", never rate or trend; pairs plus profiles answer "what grows" and "who waits on whom".
+Anti-pattern: one heap dump "proving" a leak, followed by a restart that destroys the evidence.
+Verification: leak-diagnosis runbook requires the pair plus profile; deadlock runbook pairs the dump with lock-order docs.
+
+---
+
+Signal needed: secret-shaped value scanning across telemetry.
+Schema: nightly scan of logs, trace attributes, metric labels, and APM custom fields for credential, token, and key patterns.
+Why: telemetry aggregates secrets from every service; one unredacted field upstream contaminates every downstream store.
+Anti-pattern: redaction tested at the logger while APM attributes carry the same token unexamined.
+Verification: scan findings routed by exposure tier; attribute-schema allow-list reviewed per new instrumented field.
+
+---
+
+Signal needed: PII minimization with purpose-bound retention.
+Schema: user identifiers hashed or truncated in telemetry by default; raw values only in explicitly approved debug scopes with expiry.
+Why: telemetry becomes a PII store subject to erasure requests and breach scope; minimization shrinks both.
+Anti-pattern: full emails and IPs in every log line "for debugging", retained for a year.
+Verification: PII-field audit per schema; retention policy per data class with automatic expiry asserted.
+
+---
+
+Signal needed: tenant-scoped access to telemetry itself.
+Schema: dashboard and log-query permissions partitioned by tenant for multi-tenant operations teams; support views masked by default.
+Why: telemetry contains tenant data; unscoped access lets support read any tenant's records without a trace.
+Anti-pattern: one shared Grafana with all tenants' logs queryable by everyone with the link.
+Verification: cross-tenant telemetry probe denied; support-access audit log reviewed.
+
+---
+
+Signal needed: audit of who viewed telemetry and when.
+Schema: access log on sensitive dashboards and log queries (who, what filter, when), retained per compliance policy.
+Why: telemetry access is itself a privileged action on customer data; unaudited access is unscoped access with extra steps.
+Anti-pattern: "read-only, so no audit needed" while support browses payment logs freely.
+Verification: audit-log presence test on sensitive views; quarterly access review against ticket references.
+
+---
+
+Signal needed: deployment markers on every dashboard and trace view.
+Schema: deploy events (version, time, author, change link) overlaid on metrics and available as trace attributes.
+Why: most regressions start at a deploy; markers turn "when did it break" from archaeology into glancing.
+Anti-pattern: correlating incident start with deploy times from chat history.
+Verification: marker presence test per deploy pipeline; drill measures time-to-suspect-deploy under two minutes.
+
+---
+
+Signal needed: synthetic probes for user-visible availability.
+Schema: scripted critical flows (login, search, checkout-read) running every minute from two regions, asserting outcomes plus contract shapes.
+Why: internal metrics stay green while the CDN, DNS, or edge config breaks real users; probes see what users see.
+Anti-pattern: "all dashboards green" during a DNS outage nobody internal notices for an hour.
+Verification: probe failures page with the failing step named; probe maintenance (selector updates) owned per flow.
+
+---
+
+Signal needed: capacity headroom visibility before it matters.
+Schema: headroom panels (peak-to-ceiling ratios for pools, partitions, disks, quotas) with trend slopes, not just current values.
+Why: exhaustion incidents announce themselves weeks early in slopes; point values hide the trajectory.
+Anti-pattern: disk-at-90% discovered Friday evening with Monday's growth unplanned.
+Verification: headroom review weekly with slope annotations; ceiling-approach alerts fire with weeks of lead, not hours.
+
+---
+
+Signal needed: error-budget consumption attribution per change.
+Schema: deploy-linked burn attribution (which release consumed how much budget) in the release record.
+Why: accountability without blame — the data shows which changes cost reliability, informing the next design.
+Anti-pattern: budgets burning with no link to causes, reviewed as weather rather than feedback.
+Verification: release record carries burn delta; repeated burners trigger design review, not just rollback.

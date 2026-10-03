@@ -1,0 +1,226 @@
+What to test: one behavior per unit, with the seam at the port boundary.
+Example: ownership check as a pure function of (principal, resource) returning allow/deny.
+Why this level: unit tests run in milliseconds and name the exact rule broken; seams at ports keep business rules free of framework types.
+Anti-pattern: unit test booting the Spring context to assert string equality — 40s per file, skipped by everyone.
+Verification: unit suite under 10s; context-booting test flagged in review unless it touches the container.
+
+---
+
+What to test: controller contracts without the database.
+Example: MockMvc POST /users with an admin flag in the body asserts 201 plus the flag ignored, services mocked.
+Why this level: slice tests prove the HTTP boundary (validation, security annotations, error shapes) at unit speed.
+Anti-pattern: full-context test for a validation rule, failing on database state instead of the contract.
+Verification: slice suite under 30s; full-context reserved for wiring paths.
+
+---
+
+What to test: repository behavior including planner and policies.
+Example: @DataJpaTest against Testcontainers Postgres asserting the keyset query plan plus RLS denial without tenant set.
+Why this level: repositories own SQL behavior; H2 or mocks prove nothing about the planner, the dialect, or the policies.
+Anti-pattern: H2 repository tests green while production Postgres seq-scans and leaks across tenants.
+Verification: planner assertions on hot queries; RLS fixtures green; dialect-specific SQL banned from H2-tested paths.
+
+---
+
+What to test: ownership and role matrices as parameterized cases.
+Example: five principals times three actions on the profile resource, each cell asserting the exact status.
+Why this level: matrices turn authorization policy into executable specification; new routes extend the matrix or review fails.
+Anti-pattern: one happy-path test per endpoint ("owner can read own profile") leaving stranger, cross-tenant, and anonymous paths untested.
+Verification: matrix coverage per resource; uncovered cell fails the build via parameterized completeness check.
+
+---
+
+What to test: concurrency behavior, not just sequential correctness.
+Example: 200 concurrent checkout pairs asserting zero oversell and zero deadlocks.
+Why this level: sequential tests pass on code that corrupts under load; concurrency tests encode the isolation contract.
+Anti-pattern: synchronized keyword added "for safety" with no test proving the race existed or the fix holds.
+Verification: race battery per shared mutation; deadlock count asserted zero, not merely "no exception".
+
+---
+
+What to test: component behavior, not implementation.
+Example: user table test asserting rendered rows and working pagination controls after mocked fetch, never internal ref values.
+Why this level: behavior tests survive refactors; implementation tests break on every cleanup and teach nothing about the user.
+Anti-pattern: asserting component data() internals, rewriting tests on each refactor.
+Verification: refactor drill (rewrite internals, keep behavior) leaves the suite green.
+
+---
+
+What to test: composables and hooks at the fetch seam.
+Example: useUserSearch tested against a mock server asserting keys, concatenation, error mapping, and abort behavior.
+Why this level: data logic without DOM, router, or store; fast and precise about cache behavior.
+Anti-pattern: mounting full pages to test a hook, slow and brittle to layout changes.
+Verification: suite under 10s; layout refactor leaves hook tests untouched.
+
+---
+
+What to test: E2E on critical flows only.
+Example: login-to-checkout, search-with-pagination, admin-denied — each asserting visible outcomes plus the network contract.
+Why this level: E2E sees routing, hydration, and cross-layer wiring that no unit test can; scarcity keeps them fast and trusted.
+Anti-pattern: 200 E2E tests covering tooltips while checkout breaks silently between them.
+Verification: critical-flow suite required per PR; flake rate dashboarded with quarantine expiry.
+
+---
+
+What to test: OpenAPI conformance on every endpoint.
+Example: response-shape tests asserting fields present, sensitive fields absent, error shapes exact — generated from the spec, run against staging.
+Why this level: contracts drift silently; conformance tests make drift a build failure instead of a production discovery.
+Anti-pattern: frontend types updated by hand months after the API changed, undefined reads in between.
+Verification: CI conformance job green; spec change without test update fails the build.
+
+---
+
+What to test: consumer-driven contracts for internal APIs.
+Example: frontend team publishes expected users-search shapes; provider CI verifies them before merge.
+Why this level: internal APIs evolve under multiple consumers; consumer contracts catch breaking intent before it ships.
+Anti-pattern: provider "minor cleanup" removing a field three frontends read.
+Verification: consumer contract suite in provider CI; breaking change requires consumer sign-off recorded.
+
+---
+
+What to test: error contracts as first-class behavior.
+Example: each domain error asserted for shape (type, title, status, code, requestId), sensitive-field absence, and docs-URI resolvability.
+Why this level: clients program against error shapes; untested shapes rot into ad-hoc maps.
+Anti-pattern: status-only assertions missing the leaking stack trace in the body.
+Verification: shape snapshot per error code; negative test asserting no stack bytes in any error response.
+
+---
+
+What to test: backward compatibility gates on contract change.
+Example: v1 response fixtures replayed against v2 handlers asserting unchanged fields intact; sunset headers asserted from v2 launch.
+Why this level: compatibility is a property to test, not a hope to hold; gates make removal deliberate.
+Anti-pattern: "additive" change that tightens validation, breaking old clients passing extra fields.
+Verification: compatibility suite per supported version; gate blocks unversioned breaks.
+
+---
+
+What to test: property invariants that examples miss.
+Example: pagination concatenation equals the full ordered query for arbitrary tenants, page sizes, and interleaved inserts (property-based, generated cases).
+Why this level: examples cover known cases; properties cover the case space, finding the duplicate-timestamp skip no example thought of.
+Anti-pattern: three hand-picked pagination examples, all on distinct timestamps.
+Verification: property suite with shrinking (minimal failing case reported); example suite kept for documentation, not assurance.
+
+---
+
+What to test: mutation score as a suite-quality signal, targeted.
+Example: mutation run on the ownership module asserting killed mutants above the agreed bar; survivors triaged (equivalent vs missing test).
+Why this level: coverage measures execution, mutation measures assertion; surviving mutants name untested behavior precisely.
+Anti-pattern: blanket mutation runs on the whole repo weekly, 6-hour jobs everyone ignores.
+Verification: targeted mutation on changed modules per PR; survivor review recorded, not waived.
+
+---
+
+What to test: load shapes modeled on production traffic, not round numbers.
+Example: k6 shape replaying the measured mix (70% reads, 20% writes, 10% admin) with the observed burst profile, asserting SLO-based pass bars.
+Why this level: round-number load (1000 rps flat) proves nothing about the 9am burst that actually kills services.
+Anti-pattern: load test passing at steady state while the burst profile OOMs the pool in week one.
+Verification: traffic-shape refresh quarterly from production histograms; SLO breach fails the release gate.
+
+---
+
+What to test: fault injection on every dependency.
+Example: slow database, dead Kafka broker, 500-prone provider — each injected while asserting bounded degradation (503 with contract, no pool exhaustion, no duplicate effects).
+Why this level: resilience is a behavior under faults, not a configuration value; injection proves the behavior.
+Anti-pattern: timeouts configured and never tested, expiring the first time they matter.
+Verification: fault matrix per dependency in the nightly job; untested timeout fails the release checklist.
+
+---
+
+What to test: game-day drills with timed runbooks.
+Example: KRaft quorum loss drill: detect (alert fires), diagnose (runbook step 1-3), recover (re-election confirmed), all timed against the budget.
+Why this level: runbooks rot; timed drills keep them honest and train the responders, not just the systems.
+Verification: drill log with timings vs budget; runbook updated from every drill finding before closing.
+
+---
+
+What to test: red-green triage order in a failing suite.
+Example: isolate first (which test, which commit via bisect), theorize second; quarantine only after isolation proves flakiness vs real breakage.
+Why this level: theorizing before isolating wastes hours on the wrong subsystem; bisection is mechanical and fast.
+Verification: triage runbook posted in the contributing guide; bisect time measured (target under 15 minutes to the commit).
+
+---
+
+What to test: determinism controls before quarantine.
+Example: fake timers, seeded RNGs, fixed ports, and serialized shared fixtures applied first; quarantine only for genuinely timing-sensitive tests with expiry dates.
+Why this level: most flakes are controllable nondeterminism, not cosmic rays; quarantine without determinism hides real bugs.
+Verification: quarantine entries carry expiry plus owner; expired quarantine fails the build until renewed or fixed.
+
+---
+
+What to test: coverage as a map for review, never a target.
+Example: coverage diff on the PR highlighting untested new branches; reviewer asks about the branch, not the percentage.
+Why this level: targets incentivize trivial assertions; maps direct attention to untested decisions.
+Anti-pattern: 80% gate met with 200 assertion-free tests.
+Verification: assertion-density spot checks; gate on uncovered critical paths (auth, money, migrations), not on totals.
+
+---
+
+What to test: visual and hydration assertions on server-rendered routes.
+Example: first-paint HTML equality (server vs client), zero hydration warnings, screenshot comparison on gated stable markup.
+Why this level: hydration mismatches flash in production while unit tests stay green; only render-level tests see them.
+Anti-pattern: snapshot tests on rapidly changing marketing pages, updated blindly every week.
+Verification: hydration suite on the three critical pages; snapshot scope limited to stable components with deliberate updates.
+
+---
+
+What to test: security regression per fixed finding.
+Example: every closed security finding owns a test reproducing it (cross-tenant read, mass-assignment post, SSRF probe) running per build.
+Why this level: fixed findings regress silently without locks; the test is the lock.
+Anti-pattern: "fixed, verified manually" with no test, reopened by the next refactor.
+Verification: finding-to-test traceability in the tracker; untracked security fix fails review.
+
+---
+
+What to test: data migration correctness with production-like volume.
+Example: backfill rehearsal asserting row counts, checksums per batch, lock durations under the bound, rollback image ready.
+Why this level: migrations fail on volume and locking, never on the three-row dev fixture.
+Anti-pattern: migration tested on empty local database, locking 40M rows in production.
+Verification: rehearsal metrics (duration, locks, bloat delta) recorded per migration; bound violations block the release.
+
+---
+
+What to test: idempotency under retry storms.
+Example: double-submit, broker redelivery, and client-retry drills asserting single effects with identical replay bodies.
+Why this level: at-least-once delivery plus retries make second execution certain; only tests prove singularity of effects.
+Anti-pattern: "the client won't retry" as the idempotency strategy.
+Verification: storm drill per mutating path; effect-count assertions, not just status assertions.
+
+---
+
+What to test: contract tests for event schemas.
+Example: producer CI asserting emitted events validate against the registered schema version; consumer CI asserting handling of the oldest supported version.
+Why this level: schema evolution breaks silently across service boundaries; contract tests pin both ends.
+Pitfall avoided: field renamed "harmlessly", three consumers crash-looping.
+Verification: compatibility check in schema CI; dual-version handling test per consumer.
+
+---
+
+What to test: accessibility on interactive components.
+Example: axe-style audit on critical pages, keyboard-only walkthrough per new control, focus management on dialogs and route changes.
+Why this level: a11y failures are correctness failures for a share of users; automation catches the mechanical half.
+Anti-pattern: audit run once, 200 violations filed as tech debt, never triaged.
+Verification: audit job per PR on critical pages with zero-new-violations gate; walkthrough checklist per component.
+
+---
+
+What to test: performance budgets as release gates.
+Example: bundle-size per route, interaction-timing budgets, API p95 budgets — each failing the PR that breaches them.
+Why this level: performance regresses by accumulation; per-PR gates make each addition accountable.
+Anti-pattern: quarterly perf panic after six months of unbudgeted growth.
+Verification: budget job required; breach investigates as an incident with slope data attached.
+
+---
+
+What to test: chaos on stateful paths (outbox relay, saga steps).
+Example: kill -9 mid-relay 20 times asserting zero duplicates; saga step failure asserting compensation completeness.
+Why this level: stateful distributed paths fail partially by nature; only crash testing proves the recovery logic.
+Anti-pattern: happy-path integration tests on exactly-once claims.
+Verification: crash-drill suite in nightly; duplicate/compensation assertions, never status-only.
+
+---
+
+What to test: documentation examples as executable tests.
+Example: README curl sequences, OpenAPI examples, and runbook commands executed in CI against staging.
+Why this level: docs rot faster than code; executable docs cannot lie for long.
+Anti-pattern: README showing v1 endpoints removed two years ago.
+Verification: docs-test job runs examples; failing example blocks the docs change that caused it.

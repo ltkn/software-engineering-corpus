@@ -1,0 +1,247 @@
+Goal: Query key factories as the single source of cache identity.
+Wiring:
+export const userKeys = {
+  all: ["users"] as const,
+  list: (tenant: string, cursor: string | null, limit: number) =>
+    [...userKeys.all, tenant, cursor, limit] as const,
+};
+Why: factories make keys structural and greppable; inline literals diverge across components and invalidations miss half the views.
+Pitfall: ["users", tenantId] in one component and ["users", tenant] in another — same data, two caches, stale forever.
+Verification: key-equality test (same inputs, identical keys); key-literal lint bans inline arrays outside factories.
+
+---
+
+Goal: Query functions with AbortSignal plumbed end to end.
+Wiring:
+queryFn: ({ pageParam, signal }) => fetchUsers(tenant, pageParam ?? null, 25, signal),
+Why: cancellation on unmount and refetch races prevents stale writes from slow responses arriving late.
+Pitfall: fetch without signal — unmounted component state updates plus wasted bandwidth on every keystroke search.
+Verification: unmount-mid-fetch test asserts abortion; race fixture (slow-then-fast) resolves to latest only.
+
+---
+
+Goal: Stale and GC time selection per data volatility.
+Wiring: staleTime 30s with gcTime 5min for user lists; staleTime 0 for checkout totals; gcTime longer than the longest reasonable background return.
+Why: staleTime decides refetch-on-mount behavior; gcTime decides cache survival; reference data and transactional data want opposite settings.
+Pitfall: defaults everywhere — checkout totals served stale for minutes, reference lists refetched per navigation.
+Verification: volatility matrix per query (stale/GC values with rationale); staleness test asserts refetch behavior per class.
+
+---
+
+Goal: Structural sharing awareness for render performance.
+Wiring: rely on v5 structural sharing default (unchanged data keeps referential stability); select() to subscribe components to slices.
+Why: stable references skip re-renders; select narrows subscriptions so list rows do not rerender on unrelated cache updates.
+Pitfall: spreading query data into new objects per render, defeating sharing and rerendering everything always.
+Verification: render-count test on scroll/update scenarios; select-slice test asserts isolated rerenders.
+
+---
+
+Goal: Mutation lifecycle with rollback context.
+Wiring:
+useMutation({
+  mutationFn: updateUser,
+  onMutate: async (next) => { await queryClient.cancelQueries({ queryKey: userKeys.list(...) }); const prev = snapshot(); applyOptimistic(next); return { prev }; },
+  onError: (_e, _v, ctx) => restore(ctx.prev),
+  onSettled: () => invalidate(),
+});
+Why: cancel-then-snapshot-then-apply makes optimism safe; error path restores exact prior state; settled invalidation reconciles with the server.
+Pitfall: optimistic apply without snapshot — failed mutations leave invented data in the cache permanently.
+Verification: failure-injection test asserts cache equals pre-mutation state; settled-invalidation asserted via network log.
+
+---
+
+Goal: Retry policy per mutation kind, never global.
+Wiring: idempotent updates retried twice with backoff; payments and charges never retried automatically (manual retry with idempotency key instead).
+Why: retrying a charge duplicates money; never retrying a profile update fails users on transient blips.
+Pitfall: global retry 3 on the mutation defaults — safe for reads-shaped writes, catastrophic for charges.
+Verification: retry-policy matrix per mutation; charge-mutation test asserts single execution under fault injection.
+
+---
+
+Goal: Cancellation coordination between mutations and in-flight queries.
+Wiring: cancel affected queries in onMutate, restore-then-invalidate in onError/onSettled, single-flight on the manual retry button.
+Why: overlapping mutation and refetch interleave into lost updates or duplicated effects.
+Pitfall: retry button spammable during flight, stacking three identical mutations.
+Verification: double-click drill asserts single effect; in-flight overlap test asserts serialized outcomes.
+
+---
+
+Goal: Cursor-based infinite queries with pageParam discipline.
+Wiring:
+useInfiniteQuery({
+  queryKey: userKeys.list(tenant),
+  queryFn: ({ pageParam }) => fetchUsers(tenant, pageParam ?? null, 25),
+  getNextPageParam: (last) => last.nextCursor,
+  initialPageParam: null,
+});
+Why: opaque server cursors thread through pageParam untouched; null terminates; the hook never invents pagination state.
+Pitfall: pageParam defaulting to 0 (offset thinking) while the backend speaks cursors — overlapping pages after invalidation.
+Verification: concatenation test (pages equal full ordered query); refetch-overlap test asserts zero duplicates.
+
+---
+
+Goal: Placeholder data vs suspense boundaries chosen per view.
+Wiring: placeholderData: keepPreviousData for paginated tables (stable UI during page turns); Suspense boundaries for route-level loading states.
+Why: keepPreviousData preserves context during navigation; Suspense coordinates full-view loading with error boundaries.
+Pitfall: suspense everywhere including filters — whole page flashes loading on every keystroke.
+Verification: keystroke test asserts table stability during filter changes; suspense fallback asserted only at route level.
+
+---
+
+Goal: Prefetching and preloading for predictable navigation.
+Wiring: prefetchQuery on link hover/focus for the top-3 next routes with staleTime-aware guards (skip when fresh).
+Why: navigation feels instant when data precedes it; guards prevent prefetch storms on every mouse pass.
+Pitfall: prefetch-all-on-mount tripling initial load for routes never visited.
+Verification: navigation-timing test with and without prefetch; prefetch-guard test asserts no fetch when cache fresh.
+
+---
+
+Goal: Dehydrate the exact first page for SSR.
+Wiring: server prefetches with the identical key, cursor, and limit the client resumes, dehydrates the cache into the HTML payload.
+Why: identical key plus identical data equals identical HTML; any divergence flashes and warns.
+Pitfall: server prefetch without cursor while the client resumes page two.
+Verification: first-paint HTML equality test; hydration warnings asserted zero on covered routes.
+
+---
+
+Goal: Persister boundaries excluding auth material.
+Wiring: persistQueryClient with a persist allow-list of reference queries only; tokens, sessions, and user data never persisted.
+Why: persisted caches outlive sessions and leak across profiles on shared machines.
+Pitfall: whole-cache persistence including the session query, readable from disk by any script.
+Verification: persisted-keys test asserts the allow-list exactly; disk snapshot probe finds no auth material.
+
+---
+
+Goal: Focus and reconnect refetch policy tuned per query class.
+Wiring: refetchOnWindowFocus true for dashboards and totals, false for forms-in-progress and paginated research views.
+Why: dashboards must refresh on return; refetching a half-filled research view destroys user state.
+Pitfall: global refetch-on-focus invalidating a 20-minute filter session every alt-tab.
+Verification: focus-behavior matrix per query class; form-state preservation test across focus events.
+
+---
+
+Goal: Router loaders with search-param validation.
+Wiring: route loaders reading validated search params (zod/valibot schema) and prefetching the matching queries before render.
+Why: validation at the route boundary turns malformed URLs into handled states; loaders make data precede paint.
+Pitfall: raw search params into fetch calls — injection-shaped values reaching the API from shared links.
+Verification: hostile-param battery per validated route; loader-data test asserts prefetch keys match component keys.
+
+---
+
+Goal: Route guards separating UX from enforcement.
+Wiring: beforeLoad checking store roles for redirects and breadcrumb context; every API enforcing independently.
+Why: guards shape navigation; authorization lives server-side where attackers meet it.
+Pitfall: guard-only admin routes with open APIs behind them.
+Verification: guard redirect tests; API matrix tests assert denial regardless of navigation state.
+
+---
+
+Goal: Table state owned explicitly (sorting/filtering/pagination).
+Wiring: TanStack Table with controlled state (sorting, columnFilters, pagination) lifted to the URL search params where shareable, local state where ephemeral.
+Why: URL-owned state makes views linkable and back-button safe; ephemeral state avoids polluting history per keystroke.
+Pitfall: all state in the URL including scroll position and expanded rows — unshareable links and history spam.
+Verification: shareability test (URL reproduces the view); history-length test on typing interactions.
+
+---
+
+Goal: Sorting and filtering wired to server contracts.
+Wiring: table sorting state mapped to allow-listed API sort params; filters debounced into validated query keys.
+Why: client sorting on server-paginated data sorts one page misleadingly; server owns ordering, table owns display.
+Pitfall: client-side sort of page one labeled as sorted results.
+Verification: sort test asserts API params (not client order); filter-debounce test asserts single request per pause.
+
+---
+
+Goal: End-to-end typed keys, loaders, and mutations.
+Wiring: shared types package feeding key factories, loader validators, and mutation payloads; tsc clean across app and library configs.
+Why: one type change propagates from key to loader to mutation; drift becomes a compile error instead of a cache miss.
+Pitfall: hand-duplicated key shapes in router, hooks, and prefetch — diverging within a quarter.
+Verification: type-flow test (change the cursor type, watch every consumer fail); dual-compiler clean required.
+
+---
+
+Goal: Error-type narrowing on mutations and queries.
+Wiring: error mapped to a domain union (timeout/auth/validation/unknown) at the API-client seam; UI branches on the union, never on message strings.
+Why: message matching breaks on rewording; union branches survive copy changes.
+Pitfall: if (message.includes("not found")) branching in five components.
+Verification: message-reword fixture leaves behavior green; new error kind fails compilation at unhandled branches via assertNever.
+
+---
+
+Goal: Contract drift detection between frontend keys and API shapes.
+Wiring: response-shape tests per query (fields present, sensitive fields absent) running against the real contract in CI.
+Why: API evolution breaks typed assumptions silently; shape tests catch drift at the seam.
+Pitfall: frontend types updated by hand months after the API changed, with undefined reads in between.
+Verification: contract test per query key; API-change PRs require frontend shape-test updates or explicit exemption.
+
+---
+
+Goal: Dependent queries sequenced without waterfalls where avoidable.
+Wiring: enabled flags chaining genuinely dependent queries (user then their orders); parallel useQueries for independent ones; preload where the dependency is known upfront.
+Why: enabled-chains express real dependencies; waterfalls from lazy sequencing waste round trips.
+Pitfall: sequential awaits for three independent resources, tripling load time.
+Verification: network-waterfall test asserts parallel fetching for independent queries; dependent chain asserted in order.
+
+---
+
+Goal: Optimistic list updates (add/remove) with exact rollback.
+Wiring: onMutate splices the item into cached pages with the previous pages snapshotted; onError restores snapshot byte-identical.
+Why: lists feel instant while staying truthful; rollback precision prevents ghost rows.
+Pitfall: optimistic add without snapshot — failed creation leaves a phantom row that 404s on click.
+Verification: failure drill asserts cache equality with pre-mutation state; phantom-row probe fails the test.
+
+---
+
+Goal: Cache invalidation scoped by key prefix, never blanket.
+Wiring: invalidateQueries({ queryKey: userKeys.all }) after user mutations; never invalidateQueries() root-wide.
+Why: prefix invalidation refreshes the affected domain; root invalidation refetches the world on every mutation.
+Pitfall: blanket invalidation on each keystroke-saved field, DDoSing the API from the frontend.
+Verification: invalidation-scope test asserts only the domain refetches (network log); root-invalidate lint bans bare calls.
+
+---
+
+Goal: GC time longer than the longest reasonable background return.
+Wiring: gcTime 10min on research views users background for meetings; gcTime 1min on ephemeral search-as-you-type.
+Why: returning users expect their state; garbage-collecting it mid-meeting forces full refetch and lost scroll.
+Pitfall: default GC evicting a 20-minute analysis session on every tab switch.
+Verification: background-return drill asserts state preserved within the window; memory-budget test caps total cache size.
+
+---
+
+Goal: Mutation context passing request metadata for audit.
+Wiring: onMutate records actor, reason, and idempotency key into the mutation context; error paths attach context to reports.
+Why: failed mutations need actor-plus-intent for diagnosis; context travels with the attempt, not the developer's memory.
+Pitfall: "mutation failed" with no actor, no payload shape, no key — undiagnosable in production logs.
+Verification: failure-report test asserts context fields present; idempotency-key presence asserted per mutating call.
+
+---
+
+Goal: Prefetching on intent signals, not on mount.
+Wiring: hover/focus prefetch for adjacent rows, viewport-proximity prefetch for infinite lists, never prefetch-all.
+Why: intent signals predict navigation with high precision; mount prefetching pays for predictions never used.
+Pitfall: prefetching all detail pages on list mount, 50 requests for 2 viewed rows.
+Verification: intent test asserts fetch on hover only; unused-prefetch ratio dashboarded with a budget.
+
+---
+
+Goal: Devtools discipline: Query devtools in development, never in production builds.
+Wiring: devtools package conditionally included by environment, excluded from production bundles by build config.
+Why: devtools expose cache contents (including sensitive query data) to anyone opening them.
+Pitfall: devtools shipped to production, cache inspector readable on customer machines.
+Verification: production-bundle probe asserts devtools absent; cache-content audit on the inspector in dev.
+
+---
+
+Goal: v4-to-v5 migration notes honored where behavior changed.
+Wiring: keepPreviousData replaced by placeholderData keepPreviousData function; onlineManager and focusManager defaults reviewed; structural sharing relied upon instead of manual memoization.
+Why: v5 changed defaults that v4 code compensated for; carrying compensations forward doubles the logic.
+Pitfall: v4 workarounds preserved alongside v5 defaults, producing double-caching bugs neither version documents.
+Verification: migration checklist per hook (placeholder form, sharing reliance, removed workarounds); render-count comparison before/after.
+
+---
+
+Goal: Error boundaries coordinated with query error states.
+Wiring: query error states render inline retry UI; error boundaries catch only unexpected render failures, with resetKeys tied to the query key.
+Why: expected API errors are UI states (retryable, informative); boundaries are for bugs. Mixing them retries bugs and crashes on errors.
+Pitfall: every query error thrown to the boundary, resetting whole routes on 404s.
+Verification: 404-fixture renders inline retry without boundary activation; render-bug fixture activates the boundary with reset working.

@@ -1,0 +1,398 @@
+Goal: Bind typed configuration with validation instead of scattered @Value strings.
+Wiring:
+@ConfigurationProperties(prefix = "acme.auth")
+@Validated
+record AuthProps(@NotBlank String issuer, @NotBlank String audience, Duration skew) {}
+Why: one validated record replaces a dozen string lookups; startup fails on missing or malformed values instead of NullPointer deep in a request.
+Misconfiguration: @Value("${auth.issuer}") with a typo in one controller silently injects null and fails at 2am.
+Verification: ApplicationContext test with a bad property asserts startup failure naming the field.
+
+---
+
+Goal: Null-safety contracts across the codebase with JSpecify.
+Wiring: package-info with @NullMarked on domain packages; @Nullable only where absence is legitimate.
+Why: the type system carries the non-null default, so reviewers stop auditing every dereference; frameworks (Boot 4 null-safety portfolio) honor the same markers.
+Misconfiguration: @NullMarked everywhere including DTO mappers that legitimately produce nulls, drowning real warnings.
+Verification: NullAway/Checker-style analysis in CI; zero new warnings gate.
+
+---
+
+Goal: Serve blocking I/O workloads on virtual threads where it fits.
+Wiring:
+spring.threads.virtual.enabled=true
+Why: Tomcat request handling moves to per-task virtual threads, lifting throughput on I/O-bound endpoints without code changes.
+Misconfiguration: enabling globally while a backpressure-sensitive streaming endpoint shares the runtime — unbounded task creation with nowhere to queue.
+Verification: load test compares carrier count flat against task growth; streaming endpoints excluded by measurement, documented per route.
+
+---
+
+Goal: Replace hand-rolled RestTemplate calls with declarative HTTP service clients.
+Wiring:
+@HttpExchange("/users")
+interface UserClient {
+    @GetExchange("/{id}")
+    User get(@PathVariable UUID id);
+}
+Why: interface plus annotations generate the client; base URL, timeouts, and codecs configured once in the builder.
+Misconfiguration: new RestTemplate() per call site with default infinite timeouts, each tuned differently or not at all.
+Verification: contract test against a stub server asserts timeouts and error mapping per method.
+
+---
+
+Goal: Version the users API without breaking existing clients.
+Wiring: media-type versioning (application/vnd.acme.v2+json) for breaking shapes, additive fields without versions, sunset headers with dates on deprecated versions.
+Why: URI-version sprawl doubles every route; additive-first keeps one implementation serving both cohorts during migration.
+Misconfiguration: v1 and v2 controllers duplicating logic with divergent bug fixes.
+Verification: contract tests per version plus a sunset-calendar test asserting deprecated versions still serve until their date, then 410.
+
+---
+
+Goal: Structure the monolith with enforced module boundaries.
+Wiring: Spring Modulith modules per bounded context with package-private internals, published events for cross-module communication, modulith test asserting no illegal access.
+Why: package boundaries become compiler-enforced architecture; the modular monolith stays modular instead of decaying into a ball of mud.
+Misconfiguration: public-everything packages with a wiki page asking developers not to cross boundaries.
+Verification: Modulith structural test fails the build on boundary violations; event-published test per cross-module flow.
+
+---
+
+Goal: Constructor injection as the only injection style.
+Wiring:
+@RestController
+class UserController {
+    private final UserService users;
+    UserController(UserService users) { this.users = users; }
+}
+Why: required dependencies explicit, immutability by default, cycles surface at startup instead of hiding behind proxies.
+Misconfiguration: field injection masking a circular dependency that field order accidentally resolved.
+Verification: startup test with the full context; architecture test bans field injection.
+
+---
+
+Goal: AOP transaction boundaries that survive self-invocation.
+Wiring: @Transactional on public service methods called through the proxy; internal calls extracted to a separate bean when they need their own transaction.
+Why: proxies intercept external calls only; self-invocation silently skips transaction, caching, and security aspects.
+Misconfiguration: this.inner() expecting a new transaction — runs in the caller's transaction, rollback semantics wrong.
+Verification: transaction-boundary test asserts rollback scope per method; self-invocation static analysis in review checklist.
+
+---
+
+Goal: MVC controllers that validate at the edge and speak contracts.
+Wiring:
+@PostMapping("/users")
+ResponseEntity<User> create(@Valid @RequestBody CreateUser body) { ... }
+Why: @Valid rejects malformed input before business logic; DTOs (never entities) define the writable shape, closing mass assignment structurally.
+Misconfiguration: entity as @RequestBody — role and tenantId writable by any caller.
+Verification: MockMvc test posts an admin flag and asserts it ignored; invalid bodies return 400 with the error contract.
+
+---
+
+Goal: Exceptions mapped to RFC 9457 problem details, uniformly.
+Wiring: @ControllerAdvice producing ProblemDetail with type, title, status, requestId; domain exceptions mapped per code; stack traces never leave the process.
+Why: clients program against stable shapes instead of parsing messages; operators correlate via requestId across logs.
+Misconfiguration: per-controller try/catch returning ad-hoc maps with different field names.
+Verification: contract test per error code asserts shape; negative test asserts no stack-trace bytes in any error response.
+
+---
+
+Goal: WebFlux only where backpressure is real.
+Wiring: reactive chain for the event-ingest endpoint with bounded buffers and overflow strategy; MVC everywhere else.
+Why: reactive pays complexity tax (debugging, testing, hiring) that backpressure-free CRUD never recoups.
+Misconfiguration: WebFlux for simple request/response endpoints, doubling incident-debug time for zero throughput gain.
+Verification: backpressure requirement documented per reactive endpoint; blocking alternative benchmarked before any new reactive code is approved.
+
+---
+
+Goal: Validation groups separating create vs update rules.
+Wiring: @Validated(OnCreate.class) vs @Validated(OnUpdate.class) on the same DTO with group-scoped constraints.
+Why: creation requires fields that updates must not change (and vice versa); one DTO serves both without weakening either.
+Misconfiguration: single constraint set forcing updates to resubmit immutable fields, or creation skipping required ones.
+Verification: group-matrix test (create-valid, update-valid, cross-rejected) per grouped DTO.
+
+---
+
+Goal: Filter chain with explicit order and default deny.
+Wiring:
+@Bean
+SecurityFilterChain chain(HttpSecurity http) {
+    return http.authorizeHttpRequests(a -> a
+            .requestMatchers("/actuator/health").permitAll()
+            .anyRequest().authenticated())
+        .oauth2ResourceServer(o -> o.jwt(Customizer.withDefaults()))
+        .build();
+}
+Why: permitAll enumerated first, everything else authenticated; the chain reads as the policy.
+Misconfiguration: anyRequest().permitAll() copied from a tutorial and left in production.
+Verification: anonymous-probe test per route asserts 401 except the documented public set.
+
+---
+
+Goal: Method security enforcing ownership at the resource.
+Wiring:
+@PreAuthorize("@authz.canReadUser(authentication, #id)")
+Why: annotations at the handler plus service-layer checks as defense in depth; new overloads missing the annotation still hit the service check.
+Misconfiguration: annotation on the old method only while the new /profile overload ships open (from 02's canonical incident).
+Verification: ownership matrix test per route including overloads; direct-service-call test denies without annotation.
+
+---
+
+Goal: OAuth2 login for the admin console plus OIDC claims mapping.
+Wiring: oauth2Login with the provider registration, success handler mapping claims to internal roles through an explicit table, session fixation protection on.
+Why: login delegated to the IdP; internal roles derived from mapped claims, never from raw profile fields.
+Misconfiguration: is_admin claim copied straight from the provider profile into the session.
+Verification: hostile-profile test maps to base role only; session-fixation fixture passes.
+
+---
+
+Goal: Resource-server JWT validation with rotated keys.
+Wiring: JwtDecoder backed by the provider JWKS with cache bounds, issuer and audience enforced, clock skew from the shared constant.
+Why: validation in one configured decoder instead of scattered checks; rotation handled by JWKS refresh, never by redeploys.
+Misconfiguration: hand-rolled signature check accepting alg=none (from 06's forbidden pattern).
+Verification: nine-fixture JWT battery (alg, kid, iss, aud, exp, skew, claims) green against the decoder.
+
+---
+
+Goal: CORS and CSRF posture for the SPA plus API.
+Wiring: exact-origin CORS configuration per environment, CSRF tokens on cookie-authenticated mutations, SameSite=strict cookies.
+Why: reflected origins and ambient-credential mutations are closed by configuration, not by developer memory.
+Misconfiguration: allow-origin star with credentials true (from 08's canonical finding).
+Verification: origin-battery test plus forged-mutation test per deployment; cookie flags asserted.
+
+---
+
+Goal: JdbcTemplate batch paths for bulk writes.
+Wiring:
+jdbc.batchUpdate("INSERT INTO events(tenant_id, payload) VALUES (?, ?::jsonb)", batch);
+Why: one round trip per batch instead of per row; explicit SQL keeps the planner visible.
+Misconfiguration: saveAll in a loop with flush per entity, 2M rows at 2k/sec.
+Verification: throughput test asserts flat 19k rows/s across the full file; batch size tuned from profiles.
+
+---
+
+Goal: JPA fetch planning that prevents N+1 structurally.
+Wiring: @Query with left join fetch for aggregate reads; @EntityGraph where dynamic; pagination on the root with join only for page ids.
+Why: the repository method declares its fetch shape, so callers cannot accidentally lazy-load in a loop.
+Misconfiguration: findAll plus template access to lazy collections — 51 queries per request.
+Verification: Hibernate statistics assertion (query count) in the integration test; count regressions fail loudly.
+
+---
+
+Goal: Transaction propagation and isolation chosen per use case.
+Wiring: REQUIRED default for single-unit writes; REQUIRES_NEW only for audit/outbox side records that must survive outer rollback; READ_COMMITTED default with SERIALIZABLE only where the anomaly analysis demands it.
+Why: each choice names its anomaly tolerance; defaults stay boring.
+Misconfiguration: REQUIRES_NEW everywhere "for safety", splitting atomic units into independently committing pieces.
+Verification: rollback-scope test per transactional method; isolation choice documented with the anomaly it permits.
+
+---
+
+Goal: Optimistic locking with @Version for concurrent edits.
+Wiring: @Version long field on profile and order aggregates; conflict mapped to 409 with current state for merge.
+Why: lost updates become explicit conflicts instead of silent overwrites.
+Misconfiguration: last-write-wins with no version, users overwriting each other daily.
+Verification: concurrent-edit test asserts 409 with mergeable state, zero 500s.
+
+---
+
+Goal: Outbox writes inside the business transaction.
+Wiring: order insert plus outbox row in one @Transactional method; relay claims PENDING rows atomically, publishes, marks sent.
+Why: atomicity between state and event without distributed transactions; crash replays the claim, never duplicates silently.
+Verification: kill-9 drill mid-relay over 20 runs shows zero duplicates; ordering per aggregate asserted.
+
+---
+
+Goal: Chunk-oriented batch import with flush discipline.
+Wiring: Spring Batch chunk 500 with clear, stateless JdbcTemplate inserts on the hot path, skip/retry policy for poison rows to a quarantine file.
+Why: bounded persistence context keeps throughput flat; poison rows quarantine instead of killing 2M-row runs.
+Misconfiguration: JPA persist without clear — throughput decays from 20k to 2k rows/s across the file.
+Verification: flat-throughput assertion across the full file; quarantine file asserted non-empty on poison fixtures.
+
+---
+
+Goal: Scheduled jobs with distributed locking.
+Wiring: @Scheduled plus a lock (ShedLock-style with Postgres advisory-lock backend); lock held only for the run duration.
+Why: three replicas must not triple-run nightly reconciliation.
+Misconfiguration: fixed-rate job with no lock, triple charges on every deploy with overlapping instances.
+Verification: multi-instance drill asserts single execution; lock-expiry test asserts a crashed holder releases.
+
+---
+
+Goal: Idempotent reruns for every job and consumer.
+Wiring: natural keys plus processed-marker table; rerun replays markers, never re-executes effects.
+Why: at-least-once delivery plus retries make second execution certain, not exceptional.
+Misconfiguration: nightly job re-sending yesterday's emails after a restart.
+Verification: double-run test asserts single effects; marker table audited.
+
+---
+
+Goal: Slice tests for the web layer.
+Wiring: @WebMvcTest with mocked services asserting contracts, validation, security annotations, and error shapes without booting the database.
+Why: fast feedback on the layer controllers own; failures name the contract, not the container.
+Misconfiguration: full-context tests for validation rules, 4-minute suite that nobody runs.
+Verification: slice suite under 30s; full-context reserved for integration paths.
+
+---
+
+Goal: Data slice tests with real Postgres.
+Wiring: @DataJpaTest against Testcontainers with planner assertions (EXPLAIN on the hot queries) and RLS tests setting app.tenant_id.
+Why: repository behavior includes the planner and the policies, not just the mapping.
+Misconfiguration: H2 for repository tests — dialect, planner, and RLS differences make greens meaningless.
+Verification: planner-assertion tests on hot queries; RLS denial fixtures green.
+
+---
+
+Goal: Security test slice per endpoint.
+Wiring: ownership matrix plus role matrix as parameterized MockMvc tests running against the filter chain with mocked services.
+Why: authorization verified at the HTTP boundary where attackers meet it, fast enough to run per commit.
+Misconfiguration: security tested only in staging by hand, quarterly.
+Verification: matrix tests in the per-commit suite; new routes must extend the matrix or review fails.
+
+---
+
+Goal: MockMvc contract assertions on shapes, not just statuses.
+Wiring: jsonPath assertions on every field of success and error bodies, including requestId presence and sensitive-field absence.
+Why: contracts are shapes; status-only tests miss the leaking field and the missing cursor.
+Misconfiguration: andExpect(status().isOk()) as the entire contract suite.
+Verification: shape snapshots per endpoint and role; drift fails with a field-level diff.
+
+---
+
+Goal: Integration tests spanning controller to database.
+Wiring: full context with Testcontainers, real transactions, real RLS, real outbox relay to a test Kafka container.
+Why: slices prove layers; integration proves the wiring between them (tenant propagation, transaction scope, event emission).
+Misconfiguration: mocked repository in the "integration" test proving nothing about the SQL.
+Verification: tenant-propagation test end to end; outbox emission asserted per business operation.
+
+---
+
+Goal: Actuator exposure discipline.
+Wiring: health and info public behind the load balancer; metrics, env, and mappings on the admin port with authentication; shutdown endpoint disabled.
+Why: operators need liveness; attackers must not get the bean inventory.
+Misconfiguration: full actuator on the public port justifying "we have auth on the app anyway".
+Verification: anonymous-probe test asserts 404/401 per actuator path; config audit in CI.
+
+---
+
+Goal: Graceful shutdown with in-flight draining.
+Wiring: server.shutdown=graceful plus a grace period sized to p99, outbox relay quiesced before context close.
+Why: rolling deploys must not kill the request or event they were processing.
+Misconfiguration: SIGKILL-fast deploys producing half-written orders on every release.
+Verification: rolling-restart drill asserts zero failed requests and zero duplicate events.
+
+---
+
+Goal: Externalized configuration with validated startup.
+Wiring: config tree per environment from the secret manager and files, @ConfigurationProperties records validated at boot, unknown-property failure on.
+Why: misconfiguration fails at startup with a field name, not at 2am with a NullPointer.
+Misconfiguration: lenient binding hiding a misspelled property for months.
+Verification: boot test per environment with the real property files; unknown-property probe fails fast.
+
+---
+
+Goal: Observability hooks via Micrometer and OTel.
+Wiring: timers on handlers with tenant-free low-cardinality tags, OTel trace propagation through RestClient and Kafka headers, health indicators per dependency.
+Why: RED per service out of the box; traces join logs on the correlation id from 20's schema.
+Misconfiguration: per-userId metric tags exploding cardinality to millions of series.
+Verification: cardinality budget test on metric names; trace-to-log join asserted in the incident drill.
+
+---
+
+Goal: Startup-time checks as deploy gates.
+Wiring: ApplicationRunner validating миграции applied, required keys reachable, JWKS fetchable, feature flags parsed — failing fast with named causes.
+Why: deploys that cannot work must not receive traffic.
+Misconfiguration: lazy failures discovered by the first real user after the deploy "succeeded".
+Verification: startup-check suite runs in staging deploys; readiness gate blocks traffic until green.
+
+---
+
+Goal: Password and session management server-side.
+Wiring: Argon2id hashing via the platform encoder with transparent upgrade, session fixation protection, concurrent-session policy, logout revoking the refresh chain.
+Why: credential storage and session lifecycle are framework-solved; hand solutions lag years behind.
+Misconfiguration: MD5 hashes "temporarily" plus sessions that survive logout (both from 06's forbidden list).
+Verification: hash-identification test rejects weak algorithms; post-logout refresh rejected.
+
+---
+
+Goal: Testcontainers reuse across the suite for speed.
+Wiring: singleton containers with reuse enabled, one Postgres and one Kafka for the whole run, per-class schemas for isolation.
+Why: container startup dominates suite time; reuse plus schema isolation keeps both speed and independence.
+Misconfiguration: container per test class, 25-minute suite everyone skips.
+Verification: suite time budget enforced in CI; isolation test proves no cross-class leakage.
+
+---
+
+Goal: Cache abstraction with explicit eviction ownership.
+Wiring: @Cacheable on read paths with named caches, @CacheEvict owned by the writer of the underlying data, caffeine backend with size plus TTL bounds.
+Why: every cached value names its invalidator; unbounded caches become the heap incident from 02.
+Misconfiguration: @Cacheable without eviction anywhere, stale prices for nine minutes then heap death.
+Verification: eviction test per cached reader; bound test asserts max size and TTL on every cache.
+
+---
+
+Goal: Async request handling only where the client waits on fan-out.
+Wiring: DeferredResult or WebFlux controller for the aggregated dashboard call; MVC elsewhere.
+Why: async releases the request thread during multi-service fan-out; synchronous code stays readable where nothing fans out.
+Misconfiguration: async wrappers on single-query endpoints adding thread hops for negative benefit.
+Verification: thread-dump test under load shows request threads unblocked during fan-out; simple endpoints stay synchronous by review rule.
+
+---
+
+Goal: ProblemDetail extension for domain errors with machine-readable codes.
+Wiring: ProblemDetail with custom properties (code, tenant-safe detail, docs URI) produced by the single @ControllerAdvice.
+Why: clients branch on stable codes while humans read titles; docs URI teaches without support tickets.
+Misconfiguration: message-string matching on the client ("if message contains 'not found'").
+Verification: code-assertion test per domain error; docs URIs resolve in CI link check.
+
+---
+
+Goal: HTTP client resilience defaults on every service client.
+Wiring: RestClient builder with connect/read timeouts, retry-once for idempotent GETs only, no hedging, problem-detail error mapping to domain exceptions.
+Why: downstream slowness must not become our thread-pool exhaustion; retries only where safe by method semantics.
+Misconfiguration: unbounded client calls with retries on POST, amplifying the outage threefold.
+Verification: fault-injection test (slow stub) asserts bounded failure; POST-retry absence asserted in review checklist.
+
+---
+
+Goal: Multipart and file-upload handling with boundaries.
+Wiring: size caps per endpoint, content-type verification by magic bytes (not extension), virus-scan hook where policy demands, storage outside web root.
+Why: uploads are attacker-controlled bytes aimed at parsers, storage, and downstream viewers.
+Misconfiguration: original filenames concatenated onto storage paths with no cap (traversal plus disk exhaustion in one feature).
+Verification: traversal battery plus oversize rejection per upload endpoint; served files carry safe content types.
+
+---
+
+Goal: API versioning mechanics in Spring (headers and media types).
+Wiring: versioned DTOs with converters between versions, versioned routing via headers, deprecation headers with sunset dates, v1/v2 coexistence tests.
+Why: additive evolution needs mechanical support, not just policy; converters keep one domain model serving two contracts.
+Misconfiguration: copy-pasted v2 controllers diverging silently from v1 behavior.
+Verification: cross-version equivalence test on unchanged fields; sunset test flips v1 to 410 after its date.
+
+---
+
+Goal: Scheduling with cron discipline and observability.
+Wiring: @Scheduled with explicit zones (never server-local), misfire policy documented, job outcome metrics with success/latency/error dimensions.
+Why: cron without zones fires twice or never across DST; jobs without metrics fail silently for months.
+Misconfiguration: server-local midnight job double-firing on the fall-back Sunday.
+Verification: DST-transition unit test on the schedule; job metrics asserted present per scheduled method.
+
+---
+
+Goal: Validation of nested and collection payloads.
+Wiring: @Valid cascading into nested DTOs and List elements, size caps on collections, custom class-level constraints for cross-field rules.
+Why: unvalidated nesting is where mass assignment and billion-laughs payloads hide.
+Misconfiguration: @Valid on the top object only, nested admin object bound raw.
+Verification: nesting battery (deep, wide, hostile) per complex endpoint; violation paths asserted in messages without leaking data.
+
+---
+
+Goal: Transactional outbox relay scheduling with backpressure awareness.
+Wiring: @Scheduled relay with batch claims, lag metric driving frequency, pause on downstream pressure via circuit state.
+Why: fixed-rate relay either lags forever or hammers a sick broker; adaptive pacing matches reality.
+Misconfiguration: every-100ms fixed relay tripping broker throttles during incidents.
+Verification: lag-driven pacing test (fast when lagged, idle when drained); broker-pressure test pauses publishes.
+
+---
+
+Goal: Error budget burn alerts wired to deploy gating.
+Wiring: burn-rate alerts from 20's SLOs into the deploy pipeline; freeze on fast burn, advisory on slow burn.
+Why: deploys during active incidents compound; the pipeline must know the service is already bleeding.
+Misconfiguration: deploy train running through a SEV with nobody connecting the two systems.
+Verification: drill asserts freeze triggers on simulated burn; deploy log shows the gate decision per release.

@@ -6,7 +6,7 @@ Goal: Q4–Q8 quants that keep our stack (Java/Spring, TS 6→7, Vue/TanStack, P
 
 ## Corpus
 
-24 UTF-8 `.txt` files ordered by criticality. `01`–`10` filled; `11`–`24` empty placeholders.
+26 UTF-8 `.txt` files ordered by criticality. All filled; see SPEC.md for per-file scope and actuals.
 
 Baselines (state of the art): Java 25 LTS, Spring Boot 4.1 / Framework 7, TS 7 with 6-compat, Postgres 18, Kafka 4.3 KRaft-only, Vue 3 + TanStack Query v5.
 
@@ -35,7 +35,9 @@ calibration/
 ├── 21-linux-infra.txt
 ├── 22-python.txt
 ├── 23-finance-quant.txt
-└── 24-react.txt
+├── 24-react.txt
+├── 25-privacy-gdpr.txt
+└── 26-ecommerce.txt
 ```
 
 Format: plain blocks separated by blank-line `---` blank-line. No frontmatter or headings in `.txt`. Mix per file: real code, why-explanations, bad→diagnosis→fix, short agent traces. No secrets.
@@ -58,6 +60,14 @@ cat calibration/*.txt > /tmp/calibration-se.txt
 ./llama-quantize --imatrix imatrix-se.gguf model-F16.gguf model-Q6_K.gguf Q6_K
 ./llama-quantize model-F16.gguf model-Q8_0.gguf Q8_0   # baseline, ignores imatrix
 
+# Higher quality: Q4 base with Q8 kept where it counts — structural hygiene
+# (embed + output head, always) plus your imatrix winners (verify names
+# via ./llama-imatrix --in-file imatrix-se.gguf --show-statistics first).
+./llama-quantize --imatrix imatrix-se.gguf \
+  --tensor-type token_embd=q8_0 --tensor-type output.weight=q8_0 \
+  --tensor-type attn_v=q8_0 --tensor-type ffn_down=q8_0 \
+  model-F16.gguf model-Q4mix.gguf Q4_K_M
+
 ./llama-perplexity -m model-Q4_K_M.gguf -f eval/heldout-se.txt -ngl 99
 ./llama-perplexity -m model-Q4_K_M.gguf -f eval/heldout-general.txt -ngl 99
 ```
@@ -68,7 +78,7 @@ cat calibration/*.txt > /tmp/calibration-se.txt
 
 ```text
 .
-├── calibration/   # 24 sources
+├── calibration/   # 26 sources
 ├── eval/          # heldout-se.txt, heldout-general.txt
 ├── manifest.json  # tokens, weights, license (next)
 ├── SPEC.md        # agreed scope per file

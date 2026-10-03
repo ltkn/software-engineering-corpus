@@ -329,3 +329,27 @@ Vulnerable pattern: Tenant context accepted from query params or body because "t
 Why it fails: All three move trust across a boundary without re-verification: client-supplied tenancy forges isolation, annotation-only checks evaporate on new paths, consumed API data inherits trust it never earned.
 Remediation: Invariant one, tenant context cannot be supplied by the client — gateway sets it, services read it from propagated context only, RLS re-enforces it in Postgres. Invariant two, authorization is checked at the resource boundary — ownership enforced in the service method every path funnels through, annotations as the outer ring. Invariant three, untrusted API responses never become trusted domain objects — signature verification, strict schema DTOs, and explicit mapping before any business use.
 Regression control: One test per invariant (forged-tenant ignored, direct-service-call denied, hostile-vendor-fixture rejected); all three run on every build because boundaries regress silently.
+
+---
+
+Concept: Coding agents as privileged insiders — scope the harness like any other powerful principal.
+Vulnerable pattern: One agent token with read, write, execute, and network access for every task from typo fixes to production migrations.
+Why it fails: The agent's blast radius equals its broadest grant; a confused or injected instruction (see 01's adversarial blocks) executes with prod-write power on a typo task.
+Remediation: Tool grants per task tier (read-only exploration, write on approval, execute fenced to the repo, network to allow-listed hosts); irreversible actions (prod writes, key rotation, mass deletes) require a human gate; agent-proposed vs human-approved vs auto-applied changes labeled in every audit trail.
+Regression control: Grant-tier test per task class (typo task cannot reach network); irreversible-action gate asserted by attempting one in drill.
+
+---
+
+Concept: Agent output trust tiers — proposed, approved, applied.
+Vulnerable pattern: Agent-written migration auto-applied by CI because "the agent already tested it".
+Why it fails: Testing proves behavior, not authorization; auto-apply collapses the human decision the change-set size demanded.
+Remediation: Tier every agent output (proposal needs review, approved executes in staging, applied to prod only via the normal gates); tier recorded in the commit trailer.
+Regression control: Pipeline test asserts prod-apply without human approval fails closed; trailer audit quarterly.
+
+---
+
+Concept: Agent-visible secrets minimization — the harness sees references, never values.
+Vulnerable pattern: Agent debugging session prints the secret store contents "to check connectivity", persisting values in the transcript log.
+Why it fails: Transcripts are telemetry with wide readership and long retention; values there inherit the widest audience.
+Remediation: Agents receive secret names and file paths; values inject at runtime only; transcript scanner redacts credential shapes with build failure on hit.
+Regression control: Transcript redaction test with planted canary values; canary alert drill per quarter.

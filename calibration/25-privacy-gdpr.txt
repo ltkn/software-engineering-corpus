@@ -1,0 +1,93 @@
+Concept: Lawful basis recorded per processing purpose, never assumed globally.
+Rule: every personal-data use (accounts, orders, marketing, analytics, fraud) carries its named basis (contract, consent, legitimate interest with balancing test, legal obligation).
+Violation: "consent" banner covering everything including contract-necessary order processing, with no record of which basis covers what.
+Practice: purpose registry mapping each flow to its basis; consent granular per purpose with withdrawal honoring; legitimate-interest assessments filed.
+Verification: purpose-to-basis matrix reviewed per new feature; consent-withdrawal drill asserts processing stops for that purpose only.
+
+---
+
+Concept: Data-subject access requests answered completely and on time.
+Rule: identity verified proportionately, all personal data across services compiled within one month, third-party data protected in the response.
+Violation: CSV of the users row only, missing events, logs, Kafka-derived profiles, and support tickets.
+Practice: DSR runbook with per-system extraction queries (database, warehouse, logs, telemetry, backups index), identity check scaled to data sensitivity.
+Verification: drill DSR completed against the clock; completeness checklist per system signed.
+
+---
+
+Concept: Erasure executed against a deletion map, not ad-hoc queries.
+Rule: every store holding personal data registered with its deletion path and owner; erasure runs the map, not memory.
+Violation: user row deleted, seven downstream copies (warehouse, search index, backups, logs, analytics, emails, ML features) intact.
+Practice: deletion map per data class; cascade jobs for live stores; crypto-shredding keys for backups where rewrite is infeasible.
+Verification: post-erasure probe queries every registered store; map coverage audited — unregistered stores are findings.
+
+---
+
+Concept: Erasure vs retention resolved explicitly, never by accident.
+Rule: audit, tax, and fraud records carry legal retention schedules that override erasure narrowly; everything else erases.
+Violation: "legal obligation" invoked blanket-wide to refuse all erasures while marketing keeps the data too.
+Practice: retention schedule per data class with legal basis and expiry; erasure suppresses non-exempt uses immediately and schedules exempt-copy deletion at expiry.
+Verification: retention-vs-erasure matrix reviewed with counsel annually; exempt-copy deletion jobs assert completion.
+
+---
+
+Concept: Backups that cannot forget handled by design, not discovered in a DSR.
+Rule: backup strategy chosen with erasure in mind: crypto-shredding (per-tenant keys, destroy key to forget) or bounded retention with documented re-deletion on restore.
+Violation: 7-year immutable backups containing data erased everywhere else, discovered during the regulator's follow-up question.
+Practice: strategy decided before the first DSR; restore procedure includes re-running pending erasures.
+Verification: restore drill asserts erasure survival (deleted stays deleted post-restore); strategy documented in the DPIA.
+
+---
+
+Concept: Portability delivered in usable structured formats.
+Rule: export core account and order data as structured, commonly-used, machine-readable files with a data dictionary.
+Violation: PDF "export" of screenshots, unusable for porting and embarrassing under scrutiny.
+Practice: JSON/CSV exports generated from the same DTOs the API serves; dictionary documents every field.
+Verification: export-import round trip into a test account; field-coverage test against the DTO surface.
+
+---
+
+Concept: DPIA triggers identified before processing starts.
+Rule: new large-scale profiling, sensitive data, systematic monitoring, or novel tech triggers a Data Protection Impact Assessment with mitigation tracking.
+Violation: fraud-scoring model live for a year, DPIA "planned" after the complaint arrives.
+Practice: trigger checklist in the design template; DPIA owned with mitigations ticketed like any launch blocker.
+Verification: design-review gate asks the trigger questions; unassessed high-risk processing blocked like a failing test.
+
+---
+
+Concept: Breach notification clock starts at awareness, not at full understanding.
+Rule: 72-hour supervisory notification with phased detail; affected individuals notified without undue delay where high risk; all timed from awareness.
+Violation: three-week "investigation" before notifying, clock argued from the final report date.
+Practice: breach runbook with hour-0 containment, hour-24 scoping draft, hour-48 notification draft; DPO looped at hour zero.
+Verification: tabletop drill timed against the 72-hour bound; notification templates pre-approved by counsel.
+
+---
+
+Concept: Cross-border transfers with a valid mechanism, documented per flow.
+Rule: adequacy decision, SCCs with transfer impact assessment, or derogation — named per destination, reviewed on legal change.
+Violation: US analytics vendor added by marketing with no mechanism on file.
+Practice: transfer registry per vendor (mechanism, assessment date, supplementary measures like encryption); procurement blocked without it.
+Verification: vendor-onboarding gate requires the mechanism entry; registry reviewed on Schrems-style rulings within the quarter.
+
+---
+
+Concept: Privacy by design in new features, verified in review.
+Rule: data minimization (collect only what the feature uses), purpose limitation (no secondary use without new basis), default-private settings.
+Violation: "date of birth for personalization" on a checkout form, stored forever, used never.
+Practice: data-needs section in every design doc; defaults private; retention set at creation, not "later".
+Verification: design-review checklist with the three questions; field-addition test asserts purpose registration.
+
+---
+
+Concept: Children's and special-category data handled as prohibited-by-default.
+Rule: no special-category inference (health, beliefs, ethnicity) from behavior or purchases; age-gating where the product could attract children.
+Violation: pregnancy-prediction scores from purchase patterns shared with marketing segments.
+Practice: inference allow-list (only explicitly approved models); special-category features require DPIA plus counsel sign-off.
+Verification: inference-output audit against the allow-list; segment-definition review per new audience.
+
+---
+
+Concept: Processor and sub-processor discipline across vendors.
+Rule: Article-28 terms with every processor; sub-processor list maintained with objection rights; audits or certifications checked, not assumed.
+Violation: support tool with full database read "temporarily" for two years, no DPA on file.
+Practice: vendor register with DPA status, data scope, and review dates; access scoped to the support function with expiry.
+Verification: register completeness audit quarterly; expired-DPA finding blocks renewal, not just flags it.

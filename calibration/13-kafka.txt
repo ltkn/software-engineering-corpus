@@ -1,0 +1,316 @@
+Goal: Create a topic with the partition count the ordering contract needs.
+Wiring: partitions sized so each ordering key hashes with headroom (12 partitions for 3x growth), replication factor 3, min.insync.replicas 2, acks all on producers.
+Why: partition count fixes the parallelism ceiling and the ordering granularity forever (splitting later reorders keys); ISR 2 of 3 survives one broker loss without stalling writes.
+Misconfiguration: 1 partition "to keep ordering simple" — the whole topic processes single-threaded at 2% of needed throughput.
+Verification: produce-order test per key asserts sequence preserved; kill-one-broker drill keeps writes flowing.
+
+---
+
+Goal: Size partitions for a 4x growth headroom without oversharding.
+Wiring: target ~100MB/s per partition ceiling, consumer concurrency matched to partition count, key-hash review confirming hot keys spread.
+Why: too few partitions caps throughput at single-thread speed; hundreds of tiny partitions inflate rebalance time and controller load.
+Misconfiguration: 200 partitions for a 5MB/s topic, rebalances taking minutes for megabytes.
+Verification: rebalance drill timed; per-partition throughput measured against the ceiling in load test.
+
+---
+
+Goal: Interpret consumer lag as error or capacity gap correctly.
+Wiring: lag dashboards per partition (max and distribution, not just sum), with traffic overlay.
+Why: summed lag hides skew — one hot partition at 400k beside eleven idle ones is a keying problem, not a capacity problem.
+Misconfiguration: doubling consumers against skewed partitions, lag unchanged, bill doubled.
+Verification: skew alert (any partition over 3x median) fires before the sum alert; capacity added only when all partitions lag together.
+
+---
+
+Goal: Keep poll loops healthy under slow processing.
+Wiring: max.poll.interval.ms sized above the 99th processing time with margin, processing split so no single poll handles minutes of work, heartbeat thread untouched.
+Why: exceeding the interval evicts the member, triggering rebalance storms that make the slowness contagious.
+Misconfiguration: payment API called inline in the poll loop, 6-minute processing against a 5-minute interval, rebalance every cycle.
+Verification: zero involuntary rebalances over a 1h soak at p99 processing load; interval breach alert fires before eviction.
+
+---
+
+Goal: Commit offsets with exactly-once intent per use case.
+Wiring: enable.auto.commit false with synchronous commit after side effects for critical paths; async with callback and retry tracking where throughput dominates.
+Why: auto-commit marks consumed what was never processed; commit-after-effect ties progress to outcomes.
+Misconfiguration: auto-commit true with 5s interval plus a crash window — thousands of "processed" messages never touched.
+Verification: kill-mid-batch drill shows redelivery (at-least-once) with idempotent consumers absorbing it, zero silent loss.
+
+---
+
+Goal: Use static membership to survive rolling restarts without rebalances.
+Wiring: group.instance.id per pod (StatefulSet ordinal), session and rebalance timeouts sized to restart duration.
+Why: members keep their partitions across restarts instead of triggering full rebalances per pod.
+Misconfiguration: dynamic membership with aggressive timeouts, every deploy rebalancing for ten minutes.
+Verification: rolling restart completes with zero partition movement; rebalance metric flat across the deploy.
+
+---
+
+Goal: Produce idempotently as the default for every producer.
+Wiring: enable.idempotence true (implies acks all, retries unbounded within delivery.timeout, single in-flight per partition where ordering demands it).
+Why: broker-side deduplication absorbs retries and failovers without application code.
+Misconfiguration: retries 3 with idempotence off — every retry window risks duplicates the consumers must somehow detect.
+Verification: broker-kill drill during production shows zero duplicates downstream; config audit asserts idempotence on.
+
+---
+
+Goal: Batch and compress for throughput without latency drift.
+Wiring: linger.ms small (5–20ms), batch.size matched to average record, compression lz4 or zstd, buffer.memory bounded.
+Why: batching amortizes request overhead; linger caps the added latency explicitly instead of letting it emerge.
+Misconfiguration: linger 500ms "for efficiency" adding half a second to p99, or no batching at all with 10x request overhead.
+Verification: p99 latency vs throughput curve recorded per topic; linger changes re-measured, never assumed.
+
+---
+
+Goal: Retry with backoff that respects the broker.
+Wiring: retries effectively unbounded within delivery.timeout.ms, retry.backoff exponential from 100ms, idempotence on so retries are safe.
+Why: transient broker blips resolve in seconds; giving up early converts blips into data loss.
+Misconfiguration: retries 0 "to fail fast", dropping every record that coincides with a leader election.
+Verification: leader-election drill shows delayed-but-delivered records, zero loss; retry-storm guard via backoff verified in metrics.
+
+---
+
+Goal: Propagate trace and tenant context in record headers.
+Wiring: traceparent plus tenant id plus correlation id set at produce time, read at consume time into the logging context.
+Why: headers travel with the record through retries, DLQs, and replays; side-channel context stores drift out of sync.
+Misconfiguration: tenant in a parallel database table keyed by offset — compacted, deleted, or lagging behind the record it describes.
+Verification: header-presence test per topic; incident drill joins producer and consumer logs on one key.
+
+---
+
+Goal: Run transactions with fencing for exactly-once pipelines.
+Wiring: unique transactional.id per instance (pod ordinal suffix), transaction boundaries around consume-transform-produce, abort on fence with full rejoin.
+Why: fencing turns split-brain producers into a loud error instead of silent duplicates; EOS holds across the read-process-write cycle.
+Misconfiguration: shared transactional.id across replicas after a rolling deploy — ProducerFencedException mid-transaction, half-committed state.
+Verification: 50k-message audit shows zero duplicates and zero gaps; fence drill (duplicate id started deliberately) aborts loudly.
+
+---
+
+Goal: Bound the EOS scope honestly: what exactly-once covers and what it cannot.
+Wiring: EOS across Kafka read-process-write; side effects outside Kafka (emails, charges) made idempotent separately with keys.
+Why: transactions cannot span the email gateway; claiming EOS end-to-end without idempotent sinks is a fiction that fails at the first retry.
+Misconfiguration: "exactly-once checkout" with a non-idempotent charge call inside the transaction boundary drawing.
+Verification: side-effect audit per pipeline (each sink idempotent or single-writer); duplicate-delivery drill asserts single effects.
+
+---
+
+Goal: Route poison messages to a DLQ with cause headers, never looping forever.
+Wiring: 3 attempts with backoff, then publish raw bytes plus headers (topic, partition, offset, exception type, timestamp) to source.DLQ, commit the offset, alert on DLQ growth.
+Why: unbounded retry replays the same record forever, freezing the partition; DLQ preserves evidence while unblocking progress.
+Misconfiguration: infinite retry "until it succeeds" — lag frozen for six hours on one malformed Avro record.
+Verification: poison fixture drains lag, DLQ holds the record with cause headers, alert fires once, replay runbook tested on staging.
+
+---
+
+Goal: Handle schema incompatibility without stopping the world.
+Wiring: compatibility mode BACKWARD for consumer-evolving topics; producer-side pre-registration check in CI; incompatible schemas rejected before deploy.
+Why: catching incompatibility at CI time costs minutes; catching it in production costs the topic.
+Misconfiguration: field changed from optional to required, deployed Friday, all old consumers crash-looping by Monday.
+Verification: compatibility check in the schema CI job; dual-read migration pattern (new optional field first, required next quarter) documented per change.
+
+---
+
+Goal: Choose subject naming per domain deliberately.
+Wiring: TopicNameStrategy where each topic owns its schema evolution; RecordNameStrategy where one event type spans topics with shared evolution.
+Why: naming decides what "compatible" is measured against; the wrong strategy blocks legal changes or permits breaking ones.
+Misconfiguration: default strategy everywhere, blocking an independent topic's evolution because an unrelated topic shares the subject.
+Verification: naming decision recorded per topic family; compatibility test asserts the intended strategy per subject.
+
+---
+
+Goal: Secure the schema registry like any other API.
+Wiring: registry behind authentication, write access limited to CI deploy roles, compatibility enforcement server-side (not client-honored).
+Why: an open registry lets anyone register a breaking schema that crashes every consumer.
+Misconfiguration: registry writable anonymously "because it's internal".
+Verification: anonymous-write probe rejected; compatibility-bypass attempt rejected server-side.
+
+---
+
+Goal: Build Streams topologies with standby replicas for fast recovery.
+Wiring: num.standby.replicas 1, state stores with changelog topics, commit interval tuned, staggered rolling restarts.
+Why: standbys hold warm state so rebalances restore in seconds instead of replaying hours of changelog.
+Misconfiguration: zero standbys with 50GB state stores — every deploy replays from scratch for nine minutes.
+Verification: rebalance drill under 90s across three deploys; state-size dashboard with growth alerts.
+
+---
+
+Goal: Use the Streams DLQ support for deserialization failures.
+Wiring: deserialization exception handler routing to the DLQ topic with record metadata, processing continuing.
+Why: one malformed record must not halt the topology; the DLQ preserves it for analysis and replay.
+Misconfiguration: default handler crashing the thread, topology down until manual intervention per bad record.
+Verification: malformed-record fixture lands in DLQ with metadata; topology throughput unaffected; replay drill succeeds.
+
+---
+
+Goal: Operate Queues for Kafka (share groups, KIP-932 GA) where point-to-point fits.
+Wiring: share group per worker pool, per-record-delivery semantics with explicit acknowledge, visibility timeouts sized to processing p99.
+Why: queues give competing consumers without partition-assignment surgery for workloads that need work-sharing, not ordering.
+Misconfiguration: share groups for strictly ordered per-key processing — ordering guarantees silently absent.
+Verification: ordering-requirement checklist per topic decides queue vs consumer-group; redelivery test asserts at-least-once with idempotent handlers.
+
+---
+
+Goal: Configure Connect workers with secret hygiene and rolling safety.
+Wiring: secrets via mounted files from the manager (never properties files in git), tasks balanced with connectors versioned alongside worker images, rolling restarts one worker at a time.
+Why: Connect holds credentials for every integrated system; its config is the highest-value file in the streaming stack.
+Misconfiguration: connector passwords in versioned JSON, readable by every repo viewer.
+Verification: secret scanner covers connector configs; rolling restart keeps all 12 tasks running; config drift test per connector.
+
+---
+
+Goal: Authenticate clients with SASL/SCRAM against the current baseline.
+Wiring: SASL_SSL with SCRAM-SHA-512, credentials from the secret store mounted per workload, rotation via versioned secrets with worker rolling.
+Why: SCRAM avoids plaintext password equivalents on the wire; per-workload credentials bound blast radius.
+Misconfiguration: PLAINTEXT with SASL on an internal network "because VPC", readable by any packet capture on shared infrastructure.
+Verification: plaintext-listener probe refused; rotation drill (new secret version, rolling restart) completes without task loss.
+
+---
+
+Goal: Authorize with ACLs per principal, DLQs mirroring sources.
+Wiring: per-service principals with topic-level allow (produce/consume/describe on exactly their topics), DLQ topics carrying the same grants as sources, deny-by-default with audit.
+Why: broad ACLs turn one compromised consumer into cluster-wide read access; mirrored DLQ grants keep replay usable without escalation.
+Misconfiguration: one super-user credential shared by all services "to avoid ACL toil".
+Verification: unauthorized-topic probe denied per principal; DLQ replay works with source-equivalent grants, nothing broader.
+
+---
+
+Goal: Lay out the KRaft quorum to survive an AZ loss.
+Wiring: 3 (or 5) controllers spread across AZs with anti-affinity, controllers separated from brokers, voters distinct from observers.
+Why: Raft needs a majority of voters; co-located controllers share one fate, and the metadata quorum is the cluster's brain.
+Misconfiguration: three controllers on one AZ "for latency" — one outage stalls all metadata updates.
+Verification: AZ-kill drill in staging re-elects in seconds with produce/consume uninterrupted; controller distribution asserted in config audit.
+
+---
+
+Goal: Isolate controllers from brokers operationally.
+Wiring: dedicated controller nodes (or combined mode only in dev), separate disks and heap sizing, controller metrics on their own dashboard.
+Why: broker GC pauses must never stall metadata; combined mode couples two failure domains for convenience.
+Misconfiguration: combined nodes in production, broker heap pressure pausing leader elections cluster-wide.
+Verification: broker-chaos drill (heap pressure injected) shows stable controller leadership; combined mode banned by config test in prod.
+
+---
+
+Goal: Rack awareness for replica placement and fetch locality.
+Wiring: broker.rack set per AZ, replica assignment rack-aware, fetch-from-follower enabled for cross-AZ cost control.
+Why: replicas spread across racks survive rack failure; follower fetching keeps cross-AZ bandwidth bills bounded.
+Misconfiguration: rack-unaware placement putting all three replicas of hot partitions in one AZ.
+Verification: replica-distribution audit per hot topic; cross-AZ fetch ratio dashboarded.
+
+---
+
+Goal: Tiered storage for retention economics.
+Wiring: local retention bounded (days), remote storage (object store) for months, segment rolling sized for upload efficiency.
+Why: local disks buy performance, object storage buys history; tiering keeps both without choosing.
+Misconfiguration: infinite local retention until disks fill at 3am, or aggressive 24h deletion destroying the audit trail regulators require.
+Verification: retention policy per topic with business owner and legal basis; storage-cost dashboard per tier; restore-from-remote drill quarterly.
+
+---
+
+Goal: Plan capacity from measured per-partition ceilings.
+Wiring: produce/consume benchmarks per instance type recorded, headroom policy (50% sustained max), partition growth procedure with key-hash review.
+Why: capacity from vendor slides fails on contact with real serializers and real keys; measured ceilings plus headroom survive growth.
+Misconfiguration: "Kafka handles millions of messages" as the capacity plan, partitions fixed at topic creation in 2021.
+Verification: quarterly benchmark refresh; headroom alert fires before ceilings, never after.
+
+---
+
+Goal: Upgrade Kafka with version-pinned procedure and protocol checks.
+Wiring: upgrade one minor at a time through supported paths, metadata version gates stepped deliberately, client compatibility matrix verified first.
+Why: broker-client protocol mismatches fail subtly (feature-gated behaviors silently absent); metadata upgrades are one-way doors.
+Misconfiguration: skipping two majors over the weekend with untested clients.
+Verification: client-matrix green before brokers move; metadata-version gate checklist signed; rollback snapshot (downgrade path) confirmed available before starting.
+
+---
+
+Goal: Monitor the four signals that predict incidents.
+Wiring: under-replicated partitions, controller leadership changes, request-queue time (broker overload), and consumer lag distribution — each with runbooks.
+Why: these four precede nearly every Kafka incident class; everything else is diagnosis detail.
+Misconfiguration: forty metrics dashboarded, none alerted; the URP spike discovered by a customer.
+Verification: each signal has a firing drill on record; alert thresholds derived from incident history, not defaults.
+
+---
+
+Goal: Handle large messages without breaking the cluster.
+Wiring: max.message.bytes and replica.fetch.max.bytes raised together with segment and buffer math done, large-payload topics separated from small-record topics.
+Why: brokers, replicas, and consumers must agree on size limits or large records wedge replication; mixing sizes wastes memory on small records.
+Misconfiguration: 10MB payloads on the default 1MB limit, producer exceptions cascading into DLQ floods.
+Verification: size-limit matrix test per topic; large-payload topics isolated with their own retention math.
+
+---
+
+Goal: Migrate the last ZooKeeper-era assumptions out (historical note, one line only).
+Wiring: ZooKeeper-based tooling, flags, and runbooks removed; KRaft is the only mode and all operational knowledge assumes it.
+Why: leftover ZK-era procedures (ensemble health checks, znode inspections) waste incident time and mislead new operators.
+Verification: repo grep for zookeeper returns zero outside this historical line; runbooks reference controllers, never ensembles.
+Historical note: clusters migrated ZooKeeper to KRaft via dual-mode on 3.x before the 4.x upgrade; ZooKeeper was removed entirely in Kafka 4.0.
+
+---
+
+Goal: Secure inter-broker communication end to end.
+Wiring: TLS on all listeners including inter-broker and controller, SASL between brokers where policy demands, the same CA discipline as client-facing listeners.
+Why: "internal network" still carries every record in plaintext to anyone with network access; encryption boundaries follow data, not diagrams.
+Misconfiguration: TLS on the client listener only, inter-broker plaintext justified by VPC.
+Verification: packet-capture drill on the broker network shows no plaintext records; listener-config audit per broker.
+
+---
+
+Goal: Test the whole topology quarterly with a chaos drill.
+Wiring: scheduled drill rotating through broker kill, AZ loss, poison record, schema break, credential rotation, and version upgrade rehearsal.
+Why: untested paths (DLQ replay, quorum re-election, fence recovery) are where incidents become outages.
+Misconfiguration: drills run once at launch, procedures rotting for two years until needed.
+Verification: drill log with findings-to-tickets traceability; untested-path inventory shrinks per quarter, never grows.
+
+---
+
+Goal: Document topic ownership and lifecycle per topic.
+Wiring: owner team, retention basis, schema subject, ACL principals, deprecation status recorded alongside the topic definition as code.
+Why: ownerless topics accumulate retention nobody defends and consumers nobody knows; lifecycle review needs the facts in one place.
+Verification: quarterly lifecycle review consumes this registry; orphaned topics reassigned or retired with consumer sign-off.
+
+---
+
+Goal: Read only committed data on EOS consumers.
+Wiring: isolation.level read_committed on every consumer in a transactional pipeline.
+Why: read_uncommitted exposes aborted messages that the producer rolled back; downstream acts on ghosts.
+Misconfiguration: default read_uncommitted kept "for latency", aborted orders processed and shipped.
+Verification: abort-injection test asserts aborted records invisible; consumer config audit asserts the level per transactional topic.
+
+---
+
+Goal: Enable exactly-once in Streams with the current guarantee setting.
+Wiring: processing.guarantee exactly_once_v2 with the transactional state stores and changelog topics it requires.
+Why: v2 removes the version-one performance penalties that made teams disable EOS; the guarantee covers the topology's own read-process-write.
+Misconfiguration: EOS flag on with an incompatible older setting, silently degrading to at-least-once while dashboards claim exactly-once.
+Verification: guarantee setting asserted in config audit; kill-mid-topology drill shows no duplicates in output topics.
+
+---
+
+Goal: Configure compaction plus retention per topic economics.
+Wiring: cleanup.policy compact,delete with min.compaction.lag.ms sized to consumer catch-up, segment.ms tuned for upload granularity, remote retention per the topic's legal basis.
+Why: compaction keeps latest keys while delete bounds history; lag settings protect slow consumers from reading compacted-away data they still need.
+Misconfiguration: compact-only with no delete on a high-churn topic — unbounded disk growth wearing a compaction costume.
+Verification: disk-growth projection per topic reviewed quarterly; lagging-consumer test passes against compacted topics.
+
+---
+
+Goal: Tune consumer fetch behavior instead of accepting defaults.
+Wiring: fetch.min.bytes and fetch.max.wait.ms balanced (small waits for latency-sensitive, larger batches for throughput), max.poll.records sized so worst-case processing fits inside the poll interval.
+Why: defaults optimize for the average pipeline; slow per-record processing needs smaller polls, chatty small records need bigger fetches.
+Misconfiguration: max.poll.records 500 with 2s-per-record processing — every poll cycle evicts the member.
+Verification: worst-case processing budget documented per consumer; poll-interval math asserted in config review.
+
+---
+
+Goal: Run Connect distributed with survivable restarts.
+Wiring: offset, config, and status storage topics replicated 3x with compaction where appropriate; connectors versioned with worker images; exactly-once support enabled per connector capability.
+Why: Connect's own state lives in Kafka topics; losing them loses connector positions and duplicates or drops synced data.
+Misconfiguration: single-replica offset topic on a dev broker carried into production — one broker loss replays three days of syncs.
+Verification: storage-topic replication asserted; worker-kill drill resumes connectors from stored offsets without mass replay.
+
+---
+
+Goal: Size log segments for tiered upload efficiency.
+Wiring: segment.bytes and segment.ms tuned so closed segments upload promptly without fragmenting into thousands of tiny objects.
+Why: tiered storage uploads whole closed segments; tiny segments multiply object counts and list costs, huge segments delay remote availability.
+Misconfiguration: 1GB segments with 7-day roll on a low-volume topic — remote tier permanently days behind.
+Verification: segment-age distribution dashboarded; remote-availability lag within the topic's recovery objective.

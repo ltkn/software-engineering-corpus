@@ -1,0 +1,290 @@
+Goal: Component structure with script setup and typed props/emits.
+Wiring:
+<script setup lang="ts">
+const props = defineProps<{ userId: string; editable?: boolean }>();
+const emit = defineEmits<{ save: [id: string] }>();
+</script>
+Why: props and emits declared once with types; the template type-checks against them.
+Pitfall: Options-API props without types, misspelled emit names failing silently at runtime.
+Verification: vue-tsc clean; misspelled-emit fixture errors at compile time.
+
+---
+
+Goal: Two-way bindings with defineModel instead of manual emit pairs.
+Wiring:
+<script setup lang="ts">
+const search = defineModel<string>({ required: true });
+</script>
+Why: defineModel collapses value-plus-update boilerplate into one declaration with modifiers support.
+Pitfall: manual update:value emits drifting out of sync with the prop across refactors.
+Verification: modifier (.trim, .lazy) fixtures behave identically to the manual form; type-check clean.
+
+---
+
+Goal: Template refs with useTemplateRef (3.5+) instead of string refs.
+Wiring:
+<script setup lang="ts">
+import { useTemplateRef, onMounted } from "vue";
+const input = useTemplateRef("name-input");
+onMounted(() => input.value?.focus());
+</script>
+Why: typed refs bound by template ref name; nullability explicit before mount.
+Pitfall: this.$refs with any-typed access crashing on renamed refs.
+Verification: renamed-ref fixture fails type-check; focus behavior tested post-mount.
+
+---
+
+Goal: Reactivity choice: ref vs reactive vs computed, stated per use.
+Wiring: ref for primitives and replaceable objects; reactive for grouped form state; computed for derivations, never manual sync.
+Why: ref uniformity avoids .value-vs-direct confusion at module boundaries; computed caches and invalidates automatically.
+Pitfall: reactive object destructured (losing reactivity) then "fixed" with watchers patching copies back.
+Verification: destructuring-loss fixture flagged by review rule (storeToRefs or toRefs at boundaries); computed caching asserted by evaluation counts.
+
+---
+
+Goal: Watch vs watchEffect selection with cleanup discipline.
+Wiring: watch(source, cb, { once/onCleanup }) for explicit-source reactions with teardown; watchEffect only for multi-source dependency tracking.
+Why: explicit sources document what triggers the effect; cleanup runs on invalidation, preventing stale async writes.
+Pitfall: watchEffect fetching on every reactive read, racing responses into the wrong order.
+Verification: race fixture (slow-then-fast responses) resolves to latest only; cleanup invocation counted in tests.
+
+---
+
+Goal: Lifecycle ordering for data, DOM, and disposal.
+Wiring: fetch in setup or onServerPrefetch for SSR; DOM measurement in onMounted; listeners/intervals torn down in onUnmounted; never fetch in onMounted for SSR-rendered content.
+Why: setup-time fetching participates in SSR; mounted-only fetching guarantees hydration mismatch on server-rendered pages.
+Pitfall: onMounted fetch "working in dev" (client-only render) then flashing empty content in production SSR.
+Verification: hydration-mismatch test (server HTML equals client first render); disposal test asserts zero leaked listeners.
+
+---
+
+Goal: Provide/inject scoping for cross-cutting concerns, not prop drilling.
+Wiring: app-level tenant context provided once with an InjectionKey<TenantContext>, consumed where needed with a throwing default when absent.
+Why: typed keys prevent collisions; throwing defaults fail fast instead of undefined-sneaking.
+Pitfall: string-keyed provide/inject colliding across libraries, values silently undefined three levels down.
+Verification: missing-provider fixture throws with the key named; collision review bans raw string keys.
+
+---
+
+Goal: Slots and directives for extension points, not configuration sprawl.
+Wiring: named slots for layout regions, scoped slots passing row data to custom cells, custom directive only for direct DOM behavior (focus, tooltip positioning).
+Why: slots compose in templates (reviewable); directives escape reactivity and must stay DOM-only.
+Pitfall: twelve boolean props configuring layout variants that slots would express declaratively.
+Verification: directive review asserts no reactive state inside; slot API snapshot per reusable component.
+
+---
+
+Goal: Composable extraction with clear input/output contracts.
+Wiring:
+// useUserSearch(tenant: Ref<string>) => { users, nextCursor, loadMore, error }
+Why: composables own one concern with typed reactive inputs and outputs; components stay thin orchestrators.
+Pitfall: composable reaching into router and store globals, untestable without the whole app.
+Verification: composable unit test with mocked fetch only; global-access review bans undeclared dependencies.
+
+---
+
+Goal: Effect scope cleanup for dynamic feature modules.
+Wiring: effectScope() around feature setup with scope.stop() on teardown; onScopeDispose for resource release inside composables.
+Why: dynamically mounted features (tabs, wizards) must release watchers and timers with their DOM, not leak per visit.
+Pitfall: wizard visited 50 times accumulating 50 live watchers, each refetching on tenant change.
+Verification: mount/unmount cycle test asserts watcher count returns to baseline.
+
+---
+
+Goal: Pinia store shape with actions owning async discipline.
+Wiring:
+export const useSession = defineStore("session", () => {
+  const token = ref<string | null>(null);
+  async function login(creds: Credentials) { token.value = await api.login(creds); }
+  return { token, login };
+});
+Why: setup-syntax stores compose with composables; actions centralize async transitions and error mapping.
+Pitfall: token mutated directly from five components with five different refresh strategies.
+Verification: store unit test covers login/logout/refresh transitions; direct-mutation review bans outside actions.
+
+---
+
+Goal: Store testing without the app.
+Wiring: setActivePinia(createPinia()) per test with mocked API layer, asserting state transitions and getter derivations.
+Why: stores are pure logic plus async boundaries; testing them needs no router, DOM, or network.
+Pitfall: store tests booting the full app "for realism", 40s per file, skipped by everyone.
+Verification: store suite under 5s; API-boundary mocked at one seam.
+
+---
+
+Goal: Persistence boundaries excluding auth material.
+Wiring: pinia-plugin-persistedstate with paths allow-listing UI preferences only; tokens and sessions never persisted.
+Why: persisted auth survives longer than its lifetime and leaks across profiles on shared machines.
+Pitfall: whole-store persistence including the refresh token, readable from localStorage by any script.
+Verification: persistence test asserts stored keys exactly; token-absence probe on storage snapshots.
+
+---
+
+Goal: Router guards as UX hints with server-side enforcement assumed.
+Wiring: beforeEnter checking store roles to redirect, while every API enforces independently.
+Why: guards improve UX (no flashing admin pages); they authorize nothing because routes are client-side suggestions.
+Pitfall: guard-only "protection" on /admin bypassed by direct API calls.
+Verification: guard test asserts redirects; API matrix test (in 08/11 shape) asserts denial regardless of navigation.
+
+---
+
+Goal: Lazy routes with loading and error boundaries.
+Wiring: defineAsyncComponent with delay, timeout, and error component for heavy views; route-level code splitting by default.
+Why: initial bundle stays small; failures show designed states instead of blank screens.
+Pitfall: eager imports of the admin panel into the login bundle, doubling first paint for logged-out users.
+Verification: bundle analysis asserts route chunks; failure-injection test renders the error boundary.
+
+---
+
+Goal: Nuxt SSR data fetching participating in server render.
+Wiring: useAsyncData/useFetch with the same query key the client resumes, fetched during SSR and dehydrated.
+Why: server HTML must equal the client's first render or hydration mismatches flash and warn.
+Pitfall: onMounted-only fetching on SSR pages (server renders empty, client flashes content).
+Verification: hydration-mismatch suite asserts zero warnings on the three critical pages; HTML snapshot per route.
+
+---
+
+Goal: Hydration matching via dehydrated Query cache.
+Wiring: server prefetches the exact first page (same key, same cursor, same limit), dehydrates the Query cache, client hydrates before mounting.
+Why: identical key plus identical data equals identical HTML; any divergence flashes.
+Pitfall: server prefetches without cursor while the client resumes page two.
+Verification: first-paint HTML equality test; cursor-mismatch fixture flagged in review.
+
+---
+
+Goal: SEO and meta handling per route.
+Wiring: useHead/useSeoMeta with route-driven titles and descriptions, canonical URLs, noindex on authenticated pages.
+Why: crawlers see SSR HTML; correct meta per route is a ranking and correctness input.
+Pitfall: single static title across the app plus authenticated pages indexed with user data.
+Verification: per-route meta snapshot test; authenticated-route noindex asserted.
+
+---
+
+Goal: Generic components with preserved type inference.
+Wiring:
+<script setup lang="ts" generic="T extends { id: string }">
+defineProps<{ rows: T[] }>();
+</script>
+Why: generic components keep row-type precision instead of widening to any[] at the table boundary.
+Legacy: untyped generic tables with per-cell casts.
+Verification: wrong-row-type fixture fails type-check; inference test asserts T flows to cell slots.
+
+---
+
+Goal: Template type-checking in CI with vue-tsc.
+Wiring: vue-tsc --noEmit as a required job alongside tsc, covering templates that tsc alone never sees.
+Why: template expressions (v-for keys, prop bindings, event payloads) carry a third of frontend bugs; unchecked they fail only in browsers.
+Legacy: tsc clean with broken templates shipping weekly.
+Verification: template-error fixture (wrong prop type, missing key) fails the job; both compilers green required per PR.
+
+---
+
+Goal: XSS discipline: interpolation only, v-html banned by default.
+Wiring: {{ comment.body }} everywhere; v-html requires a sanitizer plus a security-review comment naming the requirement.
+Why: interpolation escapes by construction; v-html executes whatever it receives.
+Pitfall: v-html for "rich text" rendering unsanitized user comments into persistent XSS.
+Verification: v-html occurrence lint (allow-list with review refs); stored-payload round-trip test asserts inert rendering.
+
+---
+
+Goal: Token storage with memory access plus httpOnly refresh.
+Wiring: access token in memory (5-minute life), refresh in httpOnly SameSite=strict cookie, silent refresh on 401 with single-flight.
+Why: XSS cannot exfiltrate what JavaScript cannot read for long-lived credentials; short access lifetime bounds theft windows.
+Pitfall: access token in localStorage "for persistence", readable by any injected script indefinitely.
+Verification: storage audit asserts no tokens in localStorage; refresh-theft drill bounds exposure to the access window.
+
+---
+
+Goal: CSP coordination with the serving layer.
+Wiring: frontend declares resource needs (api origin, image domains, fonts); Nginx/CDN serves the enforcing header; report-only first for one day.
+Why: CSP breaks silently for users while tests stay green; the report window catches real-world sources tests miss.
+Pitfall: enforcing-day-one CSP blocking the payment iframe in production.
+Verification: report-uri review before enforcing; E2E asserts zero console violations; header asserted in deploy checks.
+
+---
+
+Goal: CSRF posture for cookie-authenticated mutations.
+Wiring: SameSite=strict cookies plus anti-CSRF tokens on mutations, verified against the backend contract from 11.
+Why: SameSite alone leaves top-level GET and Lax subtleties; tokens close the gap deterministically.
+Pitfall: "SameSite=Lax default is enough" with state-changing GETs remaining.
+Verification: forged-mutation test per cookie-authenticated route; no state-changing GETs in routing audit.
+
+---
+
+Goal: Untrusted-URL guards on redirects and links.
+Wiring: safeRedirect allowing only same-origin paths plus an allow-listed set, applied to login-next, payment-return, and user-provided links.
+Why: open redirects launder phishing through the trusted domain.
+Pitfall: returnUrl reflected verbatim after login.
+Verification: external-URL fixture redirects to the default dashboard; allow-list change reviewed.
+
+---
+
+Goal: Component tests at the behavior level.
+Wiring: mount with Testing Library queries (role, text), user-event interactions, mocked composables at the fetch seam only.
+Why: behavior tests survive refactors; implementation tests (internal ref values) break on every cleanup.
+Pitfall: asserting internal data() values instead of rendered outcomes.
+Verification: refactor drill (rewrite internals, keep behavior) leaves the suite green.
+
+---
+
+Goal: Composable unit tests with mocked fetch.
+Wiring: test useUserSearch against an MSW-style mock server asserting keys, pagination concatenation, error mapping, and abort behavior.
+Why: composables own data logic; testing them needs no DOM, router, or store.
+Pitfall: composable tests mounting full pages, slow and brittle to layout changes.
+Verification: suite under 10s; layout refactor leaves composable tests untouched.
+
+---
+
+Goal: E2E on the three critical flows before migration work.
+Wiring: login-to-checkout, search-with-pagination, admin-ownership-denied — each asserting visible outcomes plus network contract.
+Why: E2E guards user-visible behavior that unit tests cannot see (routing, hydration, cross-layer wiring).
+Pitfall: 200 E2E tests covering tooltips while checkout breaks silently.
+Verification: critical-flow suite required per PR; flake rate dashboarded with quarantine expiry.
+
+---
+
+Goal: Feature-folder organization with API-client layer shared with TanStack keys.
+Wiring: features/users/{components,composables,api,keys}.ts with the key factory as the single import for cache identity.
+Why: co-location keeps cache keys, hooks, and components consistent; scattered keys diverge.
+Pitfall: key literals duplicated across components, invalidations missing half the views.
+Verification: key-literal lint (factories only); invalidation test asserts all views refresh on mutation.
+
+---
+
+Goal: Error boundaries with designed fallback states.
+Wiring: onErrorCaptured at layout level routing to fallback UI with retry action and requestId display.
+Why: uncaught render errors blank the app; boundaries convert them into recoverable states with diagnostics.
+Pitfall: blank white screen on the first malformed API response in production.
+Verification: error-injection test renders fallback with requestId; retry action re-renders successfully.
+
+---
+
+Goal: Form handling with validation parity to the backend.
+Wiring: schema-shared validation (same rules client and server where feasible), field-level errors, submit disabled only with explanation, server errors mapped back to fields.
+Why: client validation is UX (instant), server validation is security (authoritative); parity prevents valid-in-UI-rejected-by-API dead ends.
+Pitfall: client accepting what the server rejects, users retrying a form that can never submit.
+Verification: parity test (client-valid fixtures accepted by server contract tests); server errors map to fields, never toasts-only.
+
+---
+
+Goal: Accessibility baseline on interactive components.
+Wiring: semantic elements, labels bound to inputs, focus management on dialogs and route changes, keyboard-operable custom controls.
+Why: a11y failures are correctness failures for a share of users and legal exposure for the product.
+Pitfall: div-buttons clickable by mouse only, invisible to keyboards and readers.
+Verification: axe-style audit in CI on critical pages; keyboard-only walkthrough per new interactive component.
+
+---
+
+Goal: Performance budgets enforced in CI.
+Wiring: bundle-size budget per route, interaction-timing budget (input to paint), long-task monitoring in production.
+Why: performance regresses by accumulation; budgets make each addition accountable.
+Pitfall: 3MB vendor bundle added casually, mobile p95 doubling over two quarters unnoticed.
+Verification: budget job fails PRs exceeding limits; production timing trended with alerts on slope change.
+
+---
+
+Goal: Dark-mode and theming via design tokens, not conditional classes.
+Wiring: CSS custom properties for surfaces/text/accents, data-theme switch, components referencing tokens only.
+Why: tokens centralize contrast and theming decisions; scattered conditionals guarantee inconsistency.
+Pitfall: 200 hardcoded hex values with a "dark mode later" ticket aging untouched.
+Verification: hardcoded-color lint on component styles; contrast audit per theme.

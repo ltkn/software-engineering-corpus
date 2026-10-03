@@ -1,0 +1,197 @@
+Concept: Order types and when each executes.
+Micro-example: stock at 100.00; limit buy at 99.50 fills only at or below 99.50; market buy fills immediately near 100.00 plus spread and impact; stop 98.00 triggers a market sell once touched.
+Assumption: quotes shown are tradable size at that instant; thin books slip past them.
+Misuse cost: market orders in illiquid opens paying 2% spread as "convenience".
+Verification: recompute fill vs quote snapshot; slippage log per order type reviewed.
+
+---
+
+Concept: American vs European exercise styles.
+Micro-example: American put on a dividend-paying stock may exercise optimally just before ex-div; European equivalent waits for expiry by contract.
+Assumption: exercise follows optimal policy net of costs; real holders deviate.
+Misuse cost: pricing an American option with European formulas, understating value where early exercise matters.
+Verification: exercise-style flag asserted per contract before any pricing call.
+
+---
+
+Concept: OHLCV semantics and adjustments.
+Micro-example: 2-for-1 split turns OHLC 200/205/198/202 with volume 1M into 100/102.5/99/101 with volume 2M; unadjusted series show a fake -50% return.
+Assumption: corporate-action history complete and correctly applied in order.
+Misuse cost: backtest "discovering" post-split crashes as alpha, trading on accounting fiction.
+Verification: adjustment audit per symbol (splits/dividends log vs vendor); return continuity asserted across action dates.
+
+---
+
+Concept: Spread, depth, and market impact intuition.
+Micro-example: quoted 100.00 x 100.10 with depth 200 shares; a 5,000-share market buy walks the book to 100.45 average.
+Assumption: visible depth is real and stable over the execution horizon (it often is not).
+Misuse cost: sizing positions from mid-price, paying impact that exceeds the predicted edge.
+Verification: impact estimate (spread cost plus depth-walk model) attached to every simulated fill.
+
+---
+
+Concept: Calls, puts, moneyness, and payoff at expiry in words.
+Micro-example: long 100-strike call with 3.00 premium: below 100 expires worthless (lose 3.00); at 105 worth 5.00 (net +2.00); breakeven exactly 103.00 excluding costs.
+Assumption: held to expiry with no early exercise or pin effects considered yet.
+Misuse cost: quoting gross payoffs as profits, forgetting premium plus costs.
+Verification: payoff recomputed per position with premium and costs itemized; breakeven asserted.
+
+---
+
+Concept: Expiry, exercise, and assignment mechanics.
+Micro-example: short call assigned overnight leaves short stock Monday morning with margin consequences; cash-settled index options simply credit/debit.
+Assumption: assignment when in-the-money at expiry (automatic exercise thresholds vary by broker).
+Misuse cost: weekend assignment surprise on an "expired" short position.
+Verification: expiry checklist per short position (close, roll, or accept assignment deliberately); broker auto-exercise rules on file.
+
+---
+
+Concept: Black-Scholes assumptions and where each breaks.
+Micro-example: 1-month 5%-vol mispricing if the true process jumps (earnings): model says 2.10, market trades 3.40 embedding the jump.
+Assumption list: lognormal diffusion, constant vol and rates, frictionless continuous trading, European exercise.
+Misuse cost: treating model output as value rather than as a quoted-vol translator.
+Verification: assumption checklist per pricing use; earnings/dividend calendar checked before trading model edges.
+
+---
+
+Concept: Binomial intuition as the discrete counterpart.
+Micro-example: one-step tree (up 110 / down 95, risk-neutral p from rates) prices the call as discounted expected payoff; refining steps converges toward Black-Scholes value.
+Assumption: risk-neutral pricing with the funding rate given; discrete steps approximate the continuous process.
+Misuse cost: real-probability pricing ("70% chance it goes up, so worth more") confusing P-measure with Q-measure.
+Verification: convergence test (more steps approaches the closed form); P-vs-Q labeling enforced in every writeup.
+
+---
+
+Concept: Implied vs historical volatility and what each answers.
+Micro-example: 30-day realized 18%, front-month IV 32% into earnings — the gap prices the known event, not model error.
+Assumption: realized computed on clean adjusted returns; IV backed out with correct rates/dividends.
+Misuse cost: "selling expensive vol" into a scheduled jump, harvesting premium against a known event.
+Verification: event calendar overlaid on every vol comparison; computation inputs (rates, divs) asserted per pricing run.
+
+---
+
+Concept: Smile, skew, and term structure reading.
+Micro-example: downside puts at 25-delta trade 6 vol points above ATM while upside calls trade flat — the market charges for crash protection specifically.
+Assumption: quotes contemporaneous and comparable (same expiry, clean marks).
+Misuse cost: single-vol pricing across strikes, systematically mispricing wings.
+Verification: smile snapshot per expiry before any multi-strike trade; wing exposures listed explicitly.
+
+---
+
+Concept: Delta as exposure and hedge ratio.
+Micro-example: long call delta 0.55 on 100 shares notional: hedge short 55 shares for delta-neutrality at this instant.
+Assumption: small moves, frozen vol surface, continuous rebalancing — all false in practice, approximately true intraday.
+Misuse cost: hedging once and "being neutral" through a 5% gap move.
+Verification: hedge-rebalance log with timestamps; delta drift alert past the tolerance band.
+
+---
+
+Concept: Gamma as the rate of delta change and the hedging cost driver.
+Micro-example: gamma 0.08 near expiry ATM: a 1-point move shifts delta by 0.08, forcing re-hedge; long gamma profits from realized moves, short gamma bleeds on them.
+Assumption: smooth surface; pinning and jumps handled as separate regimes.
+Misuse cost: short-dated short gamma held into expiry week, hedging costs exceeding collected premium 3-to-1.
+Verification: gamma-by-expiry ladder reviewed per book; hedging P&L attributed (theta earned vs gamma paid) daily.
+
+---
+
+Concept: Theta, vega, rho in one breath each with their tradeoffs.
+Micro-example: long straddle: negative theta daily (-0.40), positive vega (+1.20 per vol point), small rho; profit needs realized movement or vol expansion exceeding decay.
+Assumption: greeks computed under the same model whose limits were accepted above.
+Misuse cost: buying premium for direction and watching time decay win quietly.
+Verification: theta budget per position (max hold days at zero move); vega exposure summed book-wide.
+
+---
+
+Concept: Second-order greeks (vomma, vanna, charm, veta) and when they matter.
+Micro-example: large vanna book into an event: spot-vol co-movement dominates first-order greeks; charm accelerates expiry-week decay beyond theta's quote.
+Assumption: second-order small for short holds and small moves — checked, not assumed.
+Misuse: ignoring charm on Monday holding Friday expiry, decay running double the theta number.
+Verification: second-order report weekly for event and expiry books; material lines hedged or exited deliberately.
+
+---
+
+Concept: GEX/DEX construction from open interest and strike greeks.
+Micro-example: aggregate gamma exposure per strike from listed OI times per-contract gamma, signed by dealer positioning assumption; sum across strikes for index-level GEX.
+Assumption: OI current, positioning assumption (dealers short/long) stated, retail-vs-dealer split estimated — all approximations with error bars.
+Misuse cost: treating a noisy estimate as a physical support level and sizing accordingly.
+Verification: input timestamps and positioning assumption printed with every GEX chart; estimate-vs-realized pinning hit rate tracked, not assumed.
+
+---
+
+Concept: Positive vs negative gamma regimes and pinning mechanics.
+Micro-example: large positive GEX at 5000 into monthly expiry: dealer hedging dampens moves (sell rallies, buy dips), pinning toward the strike; negative regime inverts (hedging amplifies).
+Assumption: dealer positioning dominates marginal flow at those strikes; regimes flip with positioning, not with price alone.
+Misuse cost: fading a pin ("must revert") without positioning data, run over by the amplifying regime.
+Verification: regime label (positive/negative) with positioning evidence attached; pinning hit-rate tracked per regime separately.
+
+---
+
+Concept: Log returns for time aggregation.
+Micro-example: +5% then -5% simple returns net -0.25%, while log returns (+0.0488, -0.0513) sum to -0.0025 exactly and compound correctly across periods.
+Assumption: total-return series (dividends/splits adjusted) as input.
+Misuse cost: averaging simple returns across periods, overstating multi-period performance.
+Verification: aggregation identity test (sum of logs equals log of product); return-type labeled on every series.
+
+---
+
+Concept: Volatility estimators and their gaming modes.
+Micro-example: close-to-close 20% vs Parkinson high-low 24% on a trending month — estimator choice moves the number by a fifth.
+Assumption: estimator matched to data character (gaps vs intraday range); annualization factor stated (252 vs 365).
+Misuse cost: Sharpe inflated by picking the volatility estimator that flatters the track record.
+Verification: estimator and annualization printed with every vol number; same-estimator rule across comparisons.
+
+---
+
+Concept: Sharpe/Sortino with gaming modes disclosed.
+Micro-example: Sharpe 2.1 on monthly marks hiding intra-month -15% drawdown; Sortino using a 0% target flattering a negatively-skewed return stream.
+Assumption: returns i.i.d.-ish (they are not), risk-free rate stated, fees included.
+Misuse cost: allocating on headline Sharpe without drawdown, skew, and fee scrutiny.
+Verification: Sharpe always accompanied by max drawdown, skew note, and net-of-fees computation; target rate stated for Sortino.
+
+---
+
+Concept: Z-scores and hypothesis tests applied (taught in 03, used here).
+Micro-example: strategy daily mean 4bps with 60bps daily vol over 252 days: t = 0.0004/(0.006/sqrt(252)) ≈ 1.06 — indistinguishable from noise.
+Assumption: roughly stationary returns; autocorrelation checked (it inflates naive t).
+Misuse cost: "profitable backtest" with t ≈ 1 shipped real capital.
+Verification: t-statistic and CI printed per backtest; autocorrelation-adjusted errors where persistence detected; t < 2 treated as no evidence.
+
+---
+
+Concept: Lookahead prevention as the first backtest law.
+Micro-example: signal using earnings announced after close to "predict" the same day's move — impossible live, perfect in-sample.
+Assumption: every input timestamped by availability, not occurrence; point-in-time data only.
+Misuse cost: lookahead-inflated Sharpe 3.0 collapsing to 0.4 live.
+Verification: availability-lag audit per input (when knowable vs when used); as-of historical datasets where available.
+
+---
+
+Concept: Survivorship and selection bias in universes.
+Micro-example: backtest on current index members only, excluding the delisted disasters — the graveyard excluded, returns overstated by design.
+Assumption: universe fixed at each historical date with entries/exits recorded.
+Misuse cost: "beating the market" by testing against survivors.
+Verification: universe snapshot test (historical membership reconstructed); delisted-inclusion spot checks.
+
+---
+
+Concept: Transaction costs and slippage modeled before conclusions.
+Micro-example: 200%-turnover strategy with 5bps edge per trade: 2bps spread plus 1bp fees plus impact erases it three times over.
+Assumption: cost model calibrated to venue, size, and urgency — not a flat optimistic basis-points guess.
+Misuse cost: paper profits that lose money from the first live fill.
+Verification: cost schedule per venue attached to every backtest; net-of-all-costs as the headline number, gross banned from headlines.
+
+---
+
+Concept: Overfitting and multiple-testing correction across strategy variants.
+Micro-example: 50 parameter variants tried, best Sharpe 2.4 reported alone — expected best-of-50 under pure noise is already elevated.
+Assumption: trial count recorded honestly, including discarded variants.
+Misuse cost: deploying the luckiest noise fit, decaying immediately out of sample.
+Verification: deflated-Sharpe (or Bonferroni-style) adjustment with trial count stated; walk-forward or embargoed out-of-sample required before capital.
+
+---
+
+Concept: Paper-vs-live divergence checklist at launch.
+Micro-example: live fills 8bps worse than paper with wider spreads at the traded hour — edge survives but halves.
+Assumption: first weeks treated as validation, sized accordingly.
+Misuse cost: full sizing on day one against unvalidated assumptions.
+Verification: divergence log (paper vs live per fill) reviewed weekly for the first quarter; kill criteria pre-committed (divergence past X sustained Y days halts trading).

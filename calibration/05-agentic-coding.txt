@@ -330,3 +330,21 @@ Investigation: Asked for the slowest tenant's p99, the contractual SLO (none exi
 Decisions: Refuse to plan without answers: any index choice without a target tenant and ordering constraints risks the audit-endpoint mistake again. Sent back three questions with a default proposal attached so the owner can approve rather than design.
 Verification: No code written; the clarification request itself is the artifact, with the per-endpoint traffic table attached.
 Outcome: Needs clarification: blocked on product answers, default proposal on the table. Building first would have been the failure mode.
+
+---
+
+Goal: Replan mid-flight when the product owner changes the requirement during the pagination change-set.
+Context: Migration applied, backend done, frontend half-done; owner now requires admin-configurable page sizes up to 500 instead of fixed 25.
+Investigation: Read the half-built hook (limit hardcoded), the index (serves any limit, fine), the contract (limit documented as fixed).
+Decisions: Neither bulldoze the old plan nor restart from zero: freeze the shipped backend slice (it supports any limit already), replan only the contract and hook for a validated max-limit parameter with a cap, and record the scope change with its new estimate. Rule: changed requirements replan the unbuilt part; built parts are kept unless the change invalidates them, and the estimate is restated, never silently absorbed.
+Verification: New plan reviewed with the owner; cap of 500 enforced with a boundary test; original estimate annotated with the delta.
+Outcome: Replanned openly: backend kept, contract and hook rescoped, estimate restated. No silent scope growth.
+
+---
+
+Goal: Write the handoff note pausing the RS256 cutover mid-window for another session.
+Context: Dual-accept active, old-key rate declining, window-closure check pending, runbook linked.
+Investigation: None new — summarize state so a fresh context resumes without re-deriving anything.
+Decisions: Note records decisions made (extend-not-rollback rule, 24h-zero-rate closure), change-set state (steps 1–2 shipped, flag still dual-accept), next step (check rate dashboard, then disable HS256), and open questions (MDM cohort deadline unconfirmed).
+Verification: Handoff read back by a second session in drill: time-to-productive under five minutes, zero repeated questions.
+Outcome: Deferred to next session with a note that actually transfers state: decisions, state, next step, open questions — nothing else.

@@ -421,3 +421,25 @@ Validation: access lifetimes were sized for this day (minutes on sensitive APIs)
 Failure: "revoked at the dashboard" while the leaked access token works 55 more minutes against the payments API.
 Remediation: short lifetimes as pre-incident work, status-checked endpoints for crown jewels, post-incident rotation of everything the token could have touched.
 Regression test: semi-annual drill timed end to end; drill asserts the documented residue window, then asserts closure after expiry.
+
+---
+
+Concept (RFC 8693 token exchange; reviewed 2026-10): delegation chains that narrow authority at each hop instead of forwarding one broad token.
+Participants: calling service with its token, authorization server, downstream service.
+Sequence: caller presents its token plus the target audience and wanted scope; server validates, mints a new token with narrowed aud and scope bound to the delegation (act/claim chain recording the path); downstream validates the exchanged token, never the original.
+Invariant: each hop holds strictly less authority than the last; the chain is auditable from the token contents.
+Validation: audience narrowed (never widened) per hop, scope subset enforced, delegation chain length bounded by policy, original token never forwarded past the first hop.
+Failure: original broad token forwarded through three services "to keep it simple" — one compromise anywhere is total, and no hop can tell whose authority it exercises.
+Remediation: exchange at every trust boundary with per-hop audiences; chain claims logged for audit.
+Regression test: widened-audience exchange rejected; over-long chain rejected; downstream rejects the original token outright.
+
+---
+
+Concept (RFC 8693 impersonation vs delegation semantics; reviewed 2026-10): act-as versus on-behalf-of recorded distinctly.
+Participants: service acting for a user, downstream enforcing policy.
+Sequence: exchange request carries act (impersonation: service acts fully as the user) or may_act plus operator identity (delegation: service acts with its own identity constrained by the user's grant); the minted token records which.
+Invariant: downstream policy can distinguish "user did this" from "service did this for the user" and enforce differently.
+Validation: claim names match the semantic used, operator identity present for delegation, scopes narrowed in both cases.
+Failure: impersonation tokens used where delegation was intended — audit shows the user performing actions they never took.
+Remediation: default to delegation; impersonation requires explicit policy approval per flow with expiry.
+Regression test: audit-trail test asserts the recorded actor matches the semantic; impersonation flow without approval rejected.

@@ -1,0 +1,285 @@
+Design decision: POST creates, PUT replaces, PATCH modifies, DELETE removes; GET never mutates.
+Contract fragment:
+POST /users -> 201 with Location: /users/{id}
+DELETE /users/{id} -> 204, no body
+Why: method semantics let intermediaries, clients, and audits reason uniformly; a GET that mutates breaks caching, prefetching, and CSRF assumptions at once.
+Versioning note: method set frozen per major version; new actions become sub-resources, never verbs in URLs.
+Verification: contract test asserts no state change on any GET; method-not-allowed returns 405 with an Allow header.
+
+---
+
+Design decision: Status codes used precisely across the API.
+Contract fragment: 200 ok with body, 201 created with Location, 202 accepted with status URL, 204 no content, 400 validation failure, 401 unauthenticated, 403 unauthorized, 404 absent (or existence-hidden), 409 conflict, 422 semantic refusal, 429 throttled.
+Why: clients branch on codes, not message strings; precise codes make retries, auth flows, and error handling programmable.
+Versioning note: codes per endpoint documented in OpenAPI and never narrowed without a version bump.
+Verification: status-assertion test per endpoint per outcome; message-matching on the client banned in review.
+
+---
+
+Design decision: RFC 9457 problem details as the single error shape.
+Contract fragment:
+{"type": "https://api.acme.test/problems/user-not-found", "title": "User not found",
+ "status": 404, "detail": "No user with that id in your tenant.", "instance": "/users/9d44",
+ "requestId": "req_9f2", "code": "USER_NOT_FOUND"}
+Why: type URIs document, titles inform humans, codes branch machines, requestId joins logs; one shape replaces per-endpoint ad-hoc maps.
+Versioning note: new codes are additive; code removal is a breaking change with sunset.
+Verification: shape test per error (fields present, no stack bytes, no sensitive values); docs URIs resolve in CI link check.
+
+---
+
+Design decision: ETags with If-Match for concurrent writes.
+Contract fragment:
+GET returns ETag: "users-acme-9d44-v3"; PUT requires If-Match, else 412 Precondition Failed on mismatch.
+Why: optimistic concurrency without locks; lost updates become explicit 412s the client merges instead of silent overwrites.
+Versioning note: ETag format opaque and versioned internally; clients treat it as an opaque token, never parse it.
+Verification: concurrent-edit test asserts 412 with current state; stale-write drill shows zero silent overwrites.
+
+---
+
+Design decision: Cache-Control tiers per resource volatility.
+Contract fragment: reference data public, max-age=3600; user data private, max-age=30; realtime no-store.
+Why: intermediaries and clients cache aggressively only where freshness allows; private directive keeps tenant data out of shared caches.
+Versioning note: cache directives versioned with the resource; directive changes announced because they alter client behavior.
+Verification: header assertions per route class; private-data-in-shared-cache probe fails.
+
+---
+
+Design decision: Retry-After (RFC 9110) as the throttle signal every client can trust.
+Contract fragment:
+429 with Retry-After: 60 plus {"code": "RATE_LIMITED", "retryAfterSec": 60}
+Why: Retry-After is finished RFC semantics, implemented everywhere; it is the one rate-limit signal immune to draft churn.
+Versioning note: stable across versions; body code additive.
+Verification: throttle test asserts header plus body agreement; client backoff honors the header value exactly.
+
+---
+
+Design decision: Legacy X-RateLimit-* headers with documented reset semantics, IETF draft headers alongside only.
+Contract fragment:
+X-RateLimit-Limit: 100, X-RateLimit-Remaining: 12, X-RateLimit-Reset: epoch seconds, documented as such.
+Why: vendor conventions vary (reset as seconds, millis, or datetime); documenting ours removes the ambiguity the ecosystem suffers. The IETF RateLimit/RateLimit-Policy fields remain draft-v11 as of 2026-10 (review "not ready", syntax moving) — shipped alongside, never instead, with the draft version recorded.
+Versioning note: header additions are additive; reset-semantics changes are breaking.
+Verification: header-semantics test asserts units; draft headers validated against a real Structured Fields implementation, version pinned.
+
+---
+
+Design decision: Idempotency-Key on every mutating endpoint that touches money or state.
+Contract fragment: same key plus same payload replays the stored response; same key plus different payload returns 422; keys expire after 24h.
+Why: network retries and double-clicks become safe replays instead of duplicate charges.
+Versioning note: key semantics frozen per major version; expiry changes announced.
+Verification: double-submit drill asserts single effect with identical replay body; changed-payload probe asserts 422.
+
+---
+
+Design decision: OpenAPI-first for public contracts, generation-gated in CI.
+Contract fragment: spec edited first, server stubs and client types generated, drift fails the build.
+Why: the spec is the contract both sides program against; code-first specs describe whatever shipped, including mistakes.
+Versioning note: spec versioned with the API; breaking diff blocks merge without a version bump.
+Verification: CI diff job fails on undocumented routes or shape changes; generated clients compile in the same pipeline.
+
+---
+
+Design decision: Resource modeling with nouns, sub-resources for actions that do not fit.
+Contract fragment: /orders/{id}/cancel as a sub-resource POST (an action creating a cancellation), not POST /cancelOrder.
+Why: nouns keep routing, authz matrices, and caching uniform; verbs in URLs fragment every one of them.
+Versioning note: new sub-resources additive; verb-URLs never introduced, existing ones sunset with dates.
+Verification: routing audit greps for verb-URLs in reviews; auth matrix covers each sub-resource explicitly.
+
+---
+
+Design decision: Keyset pagination as the default with opaque cursors.
+Contract fragment: ?limit=25&cursor=ey... response {data: [...], next_cursor: ey... or null}; cursor base64, never parsed client-side.
+Why: O(log n + limit) at any depth with stable results under inserts; opaque cursors keep the encoding free to evolve.
+Versioning note: cursor format internal and versioned; clients treating it as data break on their own terms, documented.
+Verification: page-concatenation test equals the full ordered query; depth-400 benchmark asserts bounded time.
+
+---
+
+Design decision: OFFSET allowed only with written justification and a cap.
+Contract fragment: ?offset= with max 1000 and a deprecation header pointing at the cursor variant.
+Why: small admin lists genuinely need random access; unbounded OFFSET is a full-scan footgun at depth.
+Versioning note: offset variant sunset-dated from introduction; cursor variant canonical from day one.
+Verification: depth-cap test asserts 400 responses past the max; deprecation header asserted present.
+
+---
+
+Design decision: Filtering and sorting through an allow-listed grammar.
+Contract fragment: ?sort=created_at:desc&status=active validated against field and direction allow-lists; unknown fields 400.
+Why: raw sort-field interpolation becomes SQL injection or full-scan ordering; allow-lists make intent explicit and indexable.
+Misconfiguration avoided: sort parameter concatenated into ORDER BY.
+Verification: injection battery on sort/filter params; unindexed-sort probe asserts 400 with guidance, not a slow query.
+
+---
+
+Design decision: Retries with backoff plus jitter, idempotent methods only.
+Contract fragment: GET/HEAD/OPTIONS/PUT/DELETE retried up to 3 with exponential backoff and full jitter; POST retried only with idempotency keys.
+Why: backoff spaces attempts, jitter desynchronizes clients, method discipline prevents retry-amplified duplication.
+Versioning note: retry policy documented per endpoint class; changes announced because they alter client-visible behavior under failure.
+Verification: fault-injection test asserts bounded attempts with spread timestamps; POST-without-key retry absence asserted in review.
+
+---
+
+Design decision: Timeouts per hop with a documented budget.
+Contract fragment: connect 2s, read 10s on the edge; downstream calls carry their own tighter budgets summing under the edge budget.
+Why: unbounded hops convert one slow dependency into pool exhaustion everywhere upstream.
+Versioning note: timeout values versioned in config, changes reviewed like code.
+Verification: slow-stub drill asserts 503 with the error contract at the bound; pool metrics flat during the drill.
+
+---
+
+Design decision: Circuit breakers with tuned thresholds, not defaults.
+Contract fragment: open after 50% failures over 20 requests, half-open probe of 3, sleep window 30s — values from drill data.
+Why: defaults trip on noise or never trip on real outages; tuned thresholds reflect the dependency's actual failure signature.
+Versioning note: threshold changes deployed as config with before/after metrics attached.
+Verification: fault-injection drill asserts open/probe/close transitions; metrics prove the tuned values against two incidents.
+
+---
+
+Design decision: Read-your-write windows for post-mutation reads.
+Contract fragment: confirmation reads routed to primary for 5 seconds post-write, then replicas allowed.
+Why: replication lag makes "order not found" the default post-checkout experience without a primary-read window.
+Versioning note: window duration configurable; shortening it is safe, lengthening it costs read capacity and needs review.
+Verification: post-write visibility test; window-expiry test asserts replica reads resume.
+
+---
+
+Design decision: Stale-while-revalidate boundaries stated per resource.
+Contract fragment: Cache-Control: max-age=60, stale-while-revalidate=30 on reference data only.
+Why: bounded staleness with background refresh beats thundering herds on expiry.
+Versioning note: staleness budgets versioned; tightening is safe, loosening needs product sign-off.
+Verification: expiry-storm test asserts single revalidation; staleness never exceeds the documented bound in tests.
+
+---
+
+Design decision: SSE for server-to-client streams with buffering discipline.
+Contract fragment: text/event-stream with named events and ids, X-Accel-Buffering: no, proxy_buffering off,Last-Event-ID resume supported.
+Why: SSE rides HTTP infrastructure (auth, TLS, proxies) that WebSockets renegotiate; buffering off keeps events live.
+Versioning note: event names versioned; new fields additive, removal deprecated.
+Verification: latency test asserts sub-200ms event delivery end to end; resume test replays from Last-Event-ID without gaps.
+
+---
+
+Design decision: WebSocket only for bidirectional low-latency needs.
+Contract fragment: /ws/orders with auth at handshake, heartbeats every 25s, idle timeout 1h, backpressure via bounded server queues with drop-oldest policy.
+Why: chat-like and live-collaboration patterns need two-way push; request/response APIs do not pay the connection-state cost.
+Versioning note: message schemas versioned like REST bodies; handshake auth versioned with the API.
+Verification: idle-socket test survives 10 minutes; backpressure drill asserts bounded memory with documented drop policy.
+
+---
+
+Design decision: Webhooks designed as untrusted inbound plus signed outbound.
+Contract fragment: inbound receivers verify raw-byte HMAC with replay cache; outbound deliveries carry signatures, retry with backoff over 24h, then DLQ with alert.
+Why: inbound webhooks are internet input; outbound webhooks need at-least-once semantics receivers can deduplicate.
+Versioning note: signature scheme versioned (v0/v1 headers during rotation); payload versions follow the API versioning policy.
+Verification: five-case delivery battery (unsigned, wrong secret, replay, tamper, timing) per receiver; outbound retry drill asserts delivery then quiescence.
+
+---
+
+Design decision: API-to-Kafka handoff with the outbox behind it.
+Contract fragment: POST returns 202 with operation id; event lands via transactional outbox, relayed to Kafka; status endpoint tracks the operation.
+Why: HTTP cannot transact with Kafka; the outbox bridges them with exactly the reliability both sides promise.
+Versioning note: operation-status shapes versioned with the API; event schemas versioned with the topic.
+Verification: crash-between-accept-and-publish drill shows the operation completing exactly once on recovery.
+
+---
+
+Design decision: Additive change discipline with a breaking-change checklist.
+Contract fragment: new optional fields freely; new required fields, renames, removals, and semantic changes only in new versions.
+Why: most "minor" breaks are semantic (stricter validation, changed defaults); the checklist catches what diffs miss.
+Versioning note: checklist itself versioned; every release runs it.
+Verification: breaking-diff CI job blocks unversioned breaks; semantic-change review item signed per release.
+
+---
+
+Design decision: Versioning strategy stated once for the whole API surface.
+Contract fragment: media-type versions (application/vnd.acme.v2+json) with URI aliases during transition, sunset headers with dates, 410 past sunset.
+Why: one strategy means one set of tooling (routing, tests, docs, sunset jobs) instead of per-team dialects.
+Versioning note: the strategy document versioned; changing strategy is itself a breaking change with migration support.
+Verification: strategy-conformance test per new endpoint (versioned, sunset-dated, converter-covered).
+
+---
+
+Design decision: Client migration windows with dual-serve periods.
+Contract fragment: v1 and v2 serve together for two quarters; v1 responses carry Sunset and Deprecation headers from day one of v2.
+Why: clients migrate on their schedules, not ours; headers make the deadline machine-readable.
+Versioning note: window length committed per version; shortening needs the same process as breaking.
+Verification: sunset test flips v1 to 410 after its date in staging; header presence asserted from v2 launch.
+
+---
+
+Design decision: BOLA design controls on every object route.
+Contract fragment: ownership check at the service method every path funnels through; annotations as the outer ring; new overloads inherit by construction.
+Why: per-route annotations alone are bypassed by the next overload; service-layer enforcement covers paths that do not exist yet.
+Versioning note: control coverage asserted per version; new versions re-run the full matrix.
+Verification: cross-tenant read matrix per endpoint version; forged-param battery green.
+
+---
+
+Design decision: BFLA design controls with default deny.
+Contract fragment: role checks on every privileged handler; UI hiding as usability only; admin surface enumerated in the auth matrix.
+Why: hidden buttons execute fine under direct calls; deny-by-default makes the safe state the lazy state.
+Versioning note: role model changes versioned with migration notes for affected clients.
+Verification: forbidden-verb matrix per admin route per version.
+
+---
+
+Design decision: Rate and quota caps as design inputs, not afterthoughts.
+Contract fragment: per-principal quotas plus per-endpoint caps (page size 100, batch 50, payload sizes per route) published in docs and headers.
+Why: capacity planning needs numbers; abuse control needs enforcement points chosen at design time.
+Versioning note: tightening safe anytime; loosening reviewed for capacity impact.
+Verification: cap+1 boundary tests per capped input; burst test in the nightly job.
+
+---
+
+Design decision: SSRF-safe outbound fetching for URL-accepting features.
+Contract fragment: allow-listed destinations, per-hop IP validation with resolve-canonicalize-validate-connect, no credential ambient to the fetcher, redirect chains bounded.
+Why: server-side requests inherit server network position; validation once at input misses redirect and rebinding time-of-use changes.
+Versioning note: allow-list changes reviewed; fetcher behavior covered by the same contract tests across versions.
+Verification: six-case SSRF battery per URL-accepting feature; new URL-accepting feature extends it or review fails.
+
+---
+
+Design decision: Unsafe-consumption validation for every third-party response.
+Contract fragment: strict schema validation, timeouts with backoff, signature verification where offered, secrets server-side only, degraded-mode behavior specified.
+Why: providers are untrusted input with SLAs; their outages and compromises become ours without validation boundaries.
+Versioning note: provider-version pins recorded; provider upgrades re-run validation tests.
+Verification: hostile-fixture battery per integration (wrong types, huge numbers, extra fields); fault-injection timeout suite.
+
+---
+
+Design decision: Timeouts, pagination, and payload caps composed into a resource budget per endpoint.
+Contract fragment: documented budget table (max payload, max page, timeout, quota cost) published per route class.
+Why: endpoints have finite cost envelopes; the budget makes cost reviewable at design time instead of discovered in incidents.
+Versioning note: budget tightening safe; loosening needs capacity sign-off.
+Verification: budget-conformance test per route class; overload drill asserts bounded behavior (errors or shedding, never OOM).
+
+---
+
+Design decision: Request tracing headers required, response headers minimal.
+Contract fragment: clients send traceparent plus idempotency key where applicable; responses carry requestId, rate headers, and nothing identifying internals (no server versions, no stack names).
+Why: debuggability flows one way (in), information disclosure flows the other; minimal responses leak nothing to fingerprint.
+Versioning note: header additions additive; header removals announced (someone always parses them).
+Verification: fingerprint probe asserts no version leakage; trace-join drill across gateway and service.
+
+---
+
+Design decision: OPTIONS and HEAD handled correctly as non-mutating infrastructure.
+Contract fragment: OPTIONS answers CORS preflight with the configured policy; HEAD mirrors GET headers without a body; neither ever mutates.
+Why: preflight is browser negotiation, not an action; HEAD exists for clients checking size and freshness.
+Versioning note: preflight policy versioned with CORS config; HEAD behavior stable across versions.
+Verification: preflight test per CORS deployment; HEAD-vs-GET header equality test; mutation attempt via either asserted inert.
+
+---
+
+Design decision: Content negotiation with a default that never surprises.
+Contract fragment: Accept: application/json default; versioned media types honored; unacceptable types get 406 with the offered list.
+Why: clients that send no Accept header outnumber those that do; the default must be the common case, not an error.
+Versioning note: new representations additive; default representation changes are breaking.
+Verification: no-Accept test asserts JSON; unacceptable-type test asserts 406 with alternatives listed.
+
+---
+
+Design decision: Long-running work returns 202 with pollable status, never held connections.
+Contract fragment: POST /exports returns 202 plus Operation: /operations/{id}; GET /operations/{id} reports queued/running/done/failed with result links.
+Why: held connections couple client patience to job duration; pollable operations survive deploys, retries, and impatient clients.
+Versioning note: operation shapes versioned with the API; terminal states stable across versions.
+Verification: deploy-during-operation drill completes the job; client-disconnect drill shows no orphaned work.

@@ -1,0 +1,412 @@
+Task: Page users by keyset on the tenant timeline.
+SQL:
+SELECT id, email, created_at FROM users
+WHERE tenant_id = $1 AND (created_at, id) > ($2, $3)
+ORDER BY created_at, id LIMIT $4;
+Reading: equality on tenant_id plus range on (created_at, id) resolves to one bounded index range scan; the id tiebreak keeps duplicate timestamps stable across pages.
+Pitfall: OFFSET page 400 scanning and discarding 10k rows at 900ms, worsening with depth.
+Verification: EXPLAIN ANALYZE shows Index Scan at ~3ms; pagination-concatenation test equals the full ordered query with no gaps or duplicates.
+
+---
+
+Task: Rank each tenant's latest three orders per user.
+SQL:
+SELECT * FROM (
+  SELECT o.*, ROW_NUMBER() OVER (PARTITION BY o.user_id ORDER BY o.created_at DESC) AS rn
+  FROM orders o WHERE o.tenant_id = $1
+) t WHERE rn <= 3;
+Reading: window functions compute per-partition rankings without self-joins; the tenant predicate must sit inside, or every tenant's rows rank together.
+Pitfall: correlated subquery per user (N+1 in SQL clothing) at 40x the cost.
+Verification: row-count assertion per user plus EXPLAIN showing a single WindowAgg over the index scan.
+
+---
+
+Task: Walk the category tree to arbitrary depth.
+SQL:
+WITH RECURSIVE tree AS (
+  SELECT id, parent_id, name FROM categories WHERE id = $1 AND tenant_id = $2
+  UNION ALL
+  SELECT c.id, c.parent_id, c.name FROM categories c
+  JOIN tree t ON c.parent_id = t.id WHERE c.tenant_id = $2
+) SELECT * FROM tree;
+Reading: recursive CTE iterates to fixpoint; the tenant predicate belongs in both the anchor and the recursive arm or tenants leak across levels.
+Pitfall: adjacency-list fetching in application loops (one query per level).
+Verification: depth assertion on a 5-level fixture; cross-tenant category excluded by test.
+
+---
+
+Task: Monthly revenue per tenant with running totals.
+SQL:
+SELECT tenant_id, month,
+       SUM(total) AS revenue,
+       SUM(SUM(total)) OVER (PARTITION BY tenant_id ORDER BY month) AS running
+FROM orders WHERE status = 'paid' GROUP BY tenant_id, month;
+Reading: aggregate first, then window over the grouped rows; nesting order decides whether the running total compounds correctly.
+Pitfall: running sum over ungrouped rows double-counting partial months.
+Verification: hand-computed fixture totals match to the cent; status filter asserted (refunds excluded).
+
+---
+
+Task: Search users by email prefix with trigram support for typos.
+SQL:
+CREATE INDEX users_email_trgm ON users USING gin (email gin_trgm_ops);
+SELECT id, email FROM users
+WHERE tenant_id = $1 AND email % $2 ORDER BY similarity(email, $2) DESC LIMIT 10;
+Reading: pg_trgm turns LIKE-prefix and similarity matching into index probes; the tenant equality keeps the trigram scan scoped.
+Pitfall: ILIKE '%x%' without the extension scanning the whole table per keystroke.
+Verification: EXPLAIN shows Bitmap Index Scan on the trigram index; typo fixture ("jon@gmial") still matches.
+
+---
+
+Task: Store flexible order attributes without EAV chaos.
+SQL:
+SELECT id FROM orders
+WHERE tenant_id = $1 AND attrs @> '{"gift": true}'::jsonb;
+CREATE INDEX orders_attrs_gin ON orders USING gin (attrs);
+Reading: @> containment queries hit the GIN index; JSONB stores parsed binary, not text, so path operators stay cheap.
+Pitfall: EAV tables (attribute/value rows) turning every filter into a self-join maze.
+Verification: containment query uses the GIN index in EXPLAIN; schema test rejects unknown top-level keys per policy.
+
+---
+
+Task: Enforce one active subscription per tenant with exclusion semantics.
+SQL:
+ALTER TABLE subscriptions ADD CONSTRAINT one_active
+EXCLUDE USING gist (tenant_id WITH =, daterange(started, ended) WITH &&)
+WHERE (status = 'active');
+Reading: exclusion constraints generalize uniqueness to overlapping ranges; the predicate limits enforcement to active rows.
+Pitfall: application-level check-then-insert racing under concurrency, duplicating active subscriptions.
+Verification: concurrent-insert test yields exactly one active row; overlap fixture rejected at the database.
+
+---
+
+Task: Keep email unique per tenant, case-insensitively.
+SQL:
+CREATE UNIQUE INDEX users_tenant_email ON users (tenant_id, lower(email));
+Reading: expression index enforces the real-world key (tenants plus case-folded email), not the storage key.
+Pitfall: application lowercasing on write but raw comparison on read, duplicating Ana@ and ana@ across months.
+Verification: duplicate-case insert rejected; EXPLAIN shows the expression index serving lookups.
+
+---
+
+Task: Cover the hot timeline query with an index-only scan.
+SQL:
+CREATE INDEX users_timeline_cover ON users (tenant_id, created_at, id) INCLUDE (email);
+Reading: INCLUDE carries email in the leaf without widening the key; visibility-map freshness decides whether heap fetches vanish.
+Pitfall: covering everything (INCLUDE *) bloating the index past the table it accelerates.
+Verification: EXPLAIN shows Index Only Scan with heap fetches near zero after VACUUM; size comparison recorded.
+
+---
+
+Task: Diagnose a slow join with EXPLAIN ANALYZE and BUFFERS.
+SQL:
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT u.email, count(o.id) FROM users u
+LEFT JOIN orders o ON o.user_id = u.id
+WHERE u.tenant_id = $1 GROUP BY u.email;
+Reading: actual rows vs estimates per node locates the misestimate; Buffers shows shared hits vs reads (cache vs disk truth).
+Pitfall: reading cost numbers as milliseconds, or tuning based on EXPLAIN without ANALYZE estimates.
+Verification: after ANALYZE plus the composite index, planning time and execution time recorded; statistics target raised only on the misestimated column.
+
+---
+
+Task: Fix a nested-loop blowup on skewed tenant data.
+SQL pattern: same join as above, planner choosing nested loop for a 2M-row tenant.
+Reading: the planner picks nested loop from average-size statistics; the tenant is 100x the average, so the loop executes 2M inner scans.
+Pitfall: enable_nestloop=off globally, punishing every small query for one skewed tenant.
+Verification: targeted statistics plus selective index change the plan for the skewed tenant; small-tenant plans unchanged and asserted.
+
+---
+
+Task: Choose READ COMMITTED with explicit locking for checkout, SERIALIZABLE only where proven.
+SQL:
+BEGIN;
+SELECT * FROM inventory WHERE sku = $1 FOR UPDATE;
+-- adjust, insert order, commit
+COMMIT;
+Reading: row locks serialize the contended SKUs; the rest of the workload keeps MVCC concurrency.
+Pitfall: SERIALIZABLE everywhere "for safety", serializing the whole shop and retry-storming under load.
+Verification: concurrent-checkout test shows zero oversell with READ COMMITTED plus locks; serialization failures (if any) carry retry logic with backoff.
+
+---
+
+Task: Read a deadlock report and fix the order.
+SQLSTATE 40P01: process A locks orders row 7 then users row 3; process B locks users row 3 then orders row 7.
+Reading: the deadlock graph names the opposite orders; the fix is one global order (parent before child) in both paths.
+Pitfall: retry-on-deadlock without fixing the order — converting a design bug into a latency tax.
+Verification: 200 concurrent pairs, zero deadlocks after reordering; retry retained as belt-and-braces with jitter.
+
+---
+
+Task: Size autovacuum for a high-churn orders table.
+SQL:
+ALTER TABLE orders SET (autovacuum_vacuum_scale_factor = 0.02, autovacuum_analyze_scale_factor = 0.01);
+Reading: defaults (20% dead tuples) never trigger on a 100M-row hot table; tighter fractions keep bloat bounded and plans honest.
+Pitfall: manual weekly VACUUM FULL taking exclusive locks during peak.
+Verification: bloat query stays under 5%; analyze frequency keeps row estimates within 2x on the hot tenant.
+
+---
+
+Task: Coordinate two services with advisory locks for the nightly job.
+SQL:
+SELECT pg_advisory_lock(hashtext('nightly-reconcile'));
+-- run once across three replicas
+SELECT pg_advisory_unlock(hashtext('nightly-reconcile'));
+Reading: session-level locks serialize across instances without a table; crash releases automatically with the session.
+Pitfall: fixed-rate unlocked jobs triple-charging on every multi-replica deploy.
+Verification: three-replica drill executes exactly once; killed holder releases, second run proceeds.
+
+---
+
+Task: Enforce tenant isolation with forced RLS.
+SQL:
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE orders FORCE ROW LEVEL SECURITY;
+CREATE POLICY orders_tenant ON orders USING (tenant_id = current_setting('app.tenant_id')::uuid);
+Reading: FORCE closes the table-owner bypass; the policy reads the connection-scoped setting, so every path (app, migrations, admin tools) resolves the same tenant.
+Pitfall: RLS enabled but not forced — owner connections see everything, including the compromised migration script.
+Verification: owner-connection probe returns zero rows without the setting; per-table policy test in CI.
+
+---
+
+Task: Grant least privilege to the application role.
+SQL:
+REVOKE ALL ON SCHEMA public FROM app_role;
+GRANT CONNECT, USAGE ON SCHEMA public TO app_role;
+GRANT SELECT, INSERT, UPDATE ON orders, users TO app_role;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_role;
+Reading: default-deny with explicit grants per object; sequences granted separately because inserts need them.
+Pitfall: GRANT ALL ON ALL TABLES IN SCHEMA public "to stop permission errors", including the migration-history and audit tables.
+Verification: permission matrix test (each statement class allowed/denied); future tables denied by default until granted.
+
+---
+
+Task: Write a SECURITY DEFINER helper that cannot be hijacked.
+SQL:
+CREATE OR REPLACE FUNCTION tenant_orders(tid uuid)
+RETURNS SETOF orders LANGUAGE sql SECURITY DEFINER
+SET search_path = pg_catalog, public AS
+$$ SELECT id, tenant_id, total FROM orders WHERE tenant_id = tid $$;
+REVOKE ALL ON FUNCTION tenant_orders(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION tenant_orders(uuid) TO app_role;
+Reading: fixed search_path defeats hijacking; minimal column list beats SELECT *; execute granted to one role.
+Pitfall: DEFINER without SET search_path plus PUBLIC execute — any user redirects table references and reads everything.
+Verification: search_path-attack test passes; PUBLIC-execute probe denied.
+
+---
+
+Task: Keep all access parameterized; audit for concatenation.
+SQL:
+SELECT id, email FROM users WHERE tenant_id = $1 AND email = $2;
+Reading: $1/$2 separate code from data at the protocol level; quoting bugs become impossible rather than unlikely.
+Pitfall: one "safe" internal tool concatenating because "only admins use it".
+Verification: injection battery (quote, comment, UNION, stacked) per text input; SAST bans string-built SQL; server log review shows zero multi-statement strings.
+
+---
+
+Task: Partition the events table by month with rolling retention.
+SQL:
+CREATE TABLE events (id bigint, tenant_id uuid, at timestamptz NOT NULL, payload jsonb)
+PARTITION BY RANGE (at);
+-- monthly partitions plus detach-and-archive job
+Reading: pruning drops whole partitions from queries and deletes; retention becomes detach (milliseconds) instead of DELETE (hours of bloat).
+Pitfall: single 500M-row table where every range query scans everything and every delete bloats.
+Verification: EXPLAIN shows partition pruning per query; detach drill completes in seconds with zero locks held past milliseconds.
+
+---
+
+Task: Replicate for read scaling with logical replication, lag-bounded.
+SQL: publication on orders/events tables; subscription on the replica; lag alert at 30s.
+Reading: logical replication copies tables, not blocks — version-tolerant and selective; lag is the staleness contract with readers.
+Pitfall: reading "replicated" data assuming synchrony, serving yesterday's prices as current.
+Verification: lag dashboard with alert; staleness-sensitive reads routed to primary by policy test.
+
+---
+
+Task: Prove PITR works before needing it.
+SQL: base backup weekly, WAL archiving continuous, restore drill to a scratch instance monthly targeting a mid-week timestamp.
+Reading: backups are hypotheses; only restores are evidence. RTO/RPO measured from drills, not documentation.
+Pitfall: three years of "successful" backups, first restore attempted during the actual incident.
+Verification: monthly drill restores to a named timestamp with row-count reconciliation; drill time recorded against the RTO budget.
+
+---
+
+Task: Pool connections with transaction-mode caveats documented.
+SQL-side config: pooler in transaction mode, server_reset_query equivalents understood, prepared statements accounted for.
+Reading: transaction pooling reuses backends across clients, breaking session-level features (advisory locks, temp tables, SET locals, prepared statements) unless handled.
+Pitfall: advisory-lock job through transaction pooling — locks vanish mid-run as backends rotate.
+Verification: feature-matrix test (each session feature works or is routed around); job connections use session pooling explicitly.
+
+---
+
+Task: Upgrade Postgres with a rehearsed procedure.
+SQL path: pg_upgrade --check, full backup, upgrade standby-first or blue-green, application compatibility run (new reserved words, changed defaults, protocol 3.2 driver check).
+Reading: upgrades change planner behavior and defaults, not just binaries; the rehearsal on production-like data catches both.
+Pitfall: minor-version auto-upgrade flipping a plan on Monday morning with no baseline to compare.
+Verification: pre/post EXPLAIN baselines on the top-20 queries; driver matrix green including the 3.2 protocol path.
+
+---
+
+Task: Discover slow queries with pg_stat_statements, not anecdotes.
+SQL:
+SELECT query, calls, mean_exec_time, rows FROM pg_stat_statements
+ORDER BY total_exec_time DESC LIMIT 20;
+Reading: total time (not average) ranks what to fix; calls-times-mean separates the frequent-slow from the rare-slowest.
+Pitfall: optimizing the dramatic 2-second monthly report while the 40ms-per-call hot path burns 90% of budget.
+Verification: weekly review consumes the top of this list; each fix references the queryid it retired.
+
+---
+
+Task: Driver check for the PG 18 wire-protocol path.
+SQL: protocol 3.2 exercised in staging with pipelining and the driver's extended-query path.
+Reading: new protocol versions change framing and capability negotiation; old drivers fall back or fail in version-specific ways.
+Pitfall: production upgrade with a three-year-old driver that negotiates down silently, losing pipelining and misreporting errors.
+Verification: driver matrix (current plus one back) green against PG 18; protocol version asserted in connection logs.
+
+---
+
+Task: Full-text search for the support console without an external engine.
+SQL:
+ALTER TABLE tickets ADD COLUMN tsv tsvector
+GENERATED ALWAYS AS (to_tsvector('english', subject || ' ' || body)) STORED;
+CREATE INDEX tickets_tsv ON tickets USING gin (tsv);
+Reading: generated tsvector keeps the index fresh without triggers; GIN serves ranked matches with headlined snippets.
+Pitfall: ILIKE '%term%' across millions of tickets per keystroke.
+Verification: typo-tolerant query returns in milliseconds with relevance ordering; language config asserted per tenant locale where needed.
+
+---
+
+Task: Arrays for tags with containment queries.
+SQL:
+SELECT id FROM articles WHERE tenant_id = $1 AND tags @> ARRAY['postgres','perf'];
+CREATE INDEX articles_tags ON articles USING gin (tags);
+Reading: native arrays with GIN beat join tables for low-cardinality tag filtering; @> is the indexed operator.
+Pitfall: tags as comma-separated text with LIKE matching 'post' inside 'postmortem'.
+Verification: containment uses the GIN index; exact-element semantics asserted (no substring matches).
+
+---
+
+Task: Materialized view for the daily revenue dashboard.
+SQL:
+CREATE MATERIALIZED VIEW daily_revenue AS SELECT ...;
+REFRESH MATERIALIZED VIEW CONCURRENTLY daily_revenue;
+Reading: CONCURRENTLY refreshes without blocking readers (needs a unique index); dashboards read the snapshot, never the live aggregate.
+Pitfall: live aggregation per dashboard load at 9am, thirty executives running the same 4-second query.
+Verification: refresh duration monitored; staleness SLA documented on the dashboard itself.
+
+---
+
+Task: Views as the compatibility layer during column renames.
+SQL: CREATE VIEW users_compat AS SELECT id, email, tenant_key AS tenant_id FROM users;
+Reading: views let old readers survive renames while writers move; the view carries the deprecation, not documentation nobody reads.
+Pitfall: renaming the column and "telling everyone", breaking three unowned integrations.
+Verification: old-contract tests read through the view; view removal scheduled with owner sign-off.
+
+---
+
+Task: Connection-string hygiene across environments.
+SQL-adjacent config: postgresql://app@db:5432/acme?sslmode=verify-full, passwords from the manager, never in the URL, per-environment hosts.
+Reading: verify-full defeats MITM; URL-embedded passwords leak into logs, process lists, and error reports.
+Pitfall: sslmode=require (encryption without identity) plus password in the deploy script.
+Verification: connection test asserts verify-full; secret scanner covers config files and process args.
+
+---
+
+Task: Monitoring with five alerts that matter.
+SQL-adjacent checks: replication lag, bloat ratio, connection saturation, checkpoint frequency, oldest-transaction age (wraparound guard).
+Reading: each alert maps to a specific failure mode with a runbook; wraparound age is the one that kills the database outright if ignored.
+Pitfall: forty alerts nobody reads, missing the transaction-id wraparound that halts writes.
+Verification: each alert has a drill proving it fires; wraparound age dashboarded with a hard ceiling.
+
+---
+
+Task: Migration discipline: expand-contract in five safe steps.
+SQL sequence: add nullable column → dual-write → backfill in batches → switch reads → add constraint.
+Reading: each step runs against both schema versions during deploys; no step ever needs the previous code gone.
+Pitfall: add-column-with-default rewrite locking 40M rows, or drop-then-add breaking the old release mid-rollout.
+Verification: rehearsal under production-like volume with lock monitoring; down migrations never written, rollback is previous image.
+
+---
+
+Task: CTEs for readable multi-stage reports, with materialization control.
+SQL:
+WITH filtered AS MATERIALIZED (
+  SELECT ... WHERE tenant_id = $1 AND ...
+) SELECT ... FROM filtered ...;
+Reading: MATERIALIZED fences the optimizer from inlining a selective CTE into a worse plan; default (NOT MATERIALIZED) usually wins and stays default.
+Pitfall: CTE as an optimization fence everywhere "because CTEs are faster", freezing good plans into bad ones across versions.
+Verification: both forms EXPLAINed on production-like data; the fence used only where measured better, with a comment citing the measurement.
+
+---
+
+Task: Set operations for allow-list reconciliation.
+SQL:
+SELECT email FROM imported EXCEPT SELECT email FROM users WHERE tenant_id = $1;
+Reading: EXCEPT computes the delta declaratively; the alternative (application loops with exists-checks) is N queries and a race.
+Pitfall: NOT IN with NULLs in the subquery returning empty always (three-valued logic trap).
+Verification: NULL-containing fixture asserts EXCEPT (correct) vs documented NOT IN behavior; delta test on known diffs.
+
+---
+
+Task: Sampling for approximate analytics without full scans.
+SQL: SELECT ... FROM events TABLESAMPLE SYSTEM (1) WHERE ...;
+Reading: block-level sampling answers "roughly how many" in milliseconds where exact counts cost minutes; method documented alongside the number.
+Pitfall: sampled figures presented as exact in the board report.
+Verification: sample-vs-exact calibration recorded; sampled outputs always labeled with method and margin.
+
+---
+
+Task: Row-level audit trail without triggers everywhere.
+SQL: audit table written by the application alongside mutations in the same transaction (service-enforced), with actor, action, before/after JSONB.
+Reading: application-written audit carries business context triggers cannot see (actor, reason); transactional write keeps audit and effect atomic.
+Pitfall: trigger-based audit logging every column including secrets, unreadable and unleaky at once.
+Verification: audit-completeness test per mutation (no write without its audit row); secret fields excluded by redaction test.
+
+---
+
+Task: Timezone discipline: timestamptz everywhere, conversions at display.
+SQL: store timestamptz, query in UTC ranges, convert with AT TIME ZONE only for presentation.
+Reading: timestamptz is an absolute instant; timestamp without zone is a wall-clock reading that means different instants per zone.
+Pitfall: timestamp columns plus application math producing phantom duplicates across the DST fold.
+Verification: DST-fold fixture (ambiguous hour) stored and retrieved unambiguously; display conversion tested per tenant zone.
+
+---
+
+Task: Partial index for the active-orders hot path.
+SQL:
+CREATE INDEX orders_active ON orders (tenant_id, created_at) WHERE status = 'active';
+Reading: partial indexes serve the 2% hot subset at a fraction of the size; the predicate must match the query predicate exactly.
+Pitfall: full index on status with 98% 'done' rows — larger than the table, used by nothing.
+Verification: EXPLAIN shows the partial index for active queries; predicate-mismatch test proves the planner skips it when the WHERE differs.
+
+---
+
+Task: Expression statistics for skewed tenants.
+SQL: ALTER TABLE orders ALTER COLUMN tenant_id SET STATISTICS 500;
+Reading: default 100-histogram statistics describe the average tenant; skewed giants need finer histograms for sane row estimates.
+Pitfall: raising statistics globally, slowing ANALYZE everywhere for one tenant's benefit.
+Verification: estimate-vs-actual within 3x on the skewed tenant after targeted raise; ANALYZE duration unchanged elsewhere.
+
+---
+
+Task: Statement timeout as the backstop against runaways.
+SQL: SET statement_timeout = '30s'; with per-role tighter values for interactive users.
+Reading: timeouts convert runaway queries from outages into errors; the application must handle them as retryable-where-safe.
+Pitfall: no timeout with a BI tool cross-joining in production, holding locks for hours.
+Verification: runaway fixture (cartesian fixture) cancelled at the bound; application maps timeout errors to 503 with retry guidance, never 500 with stack.
+
+---
+
+Task: Read-your-write for the checkout confirmation page.
+SQL: confirmation read routed to primary for 5 seconds post-write, then replicas allowed.
+Reading: replication lag makes "order not found" the default post-checkout experience without a primary-read window.
+Pitfall: session pinning to primary forever "to be safe", halving read capacity permanently.
+Verification: post-write read test asserts visibility; window expiry test asserts replica reads resume.
+
+---
+
+Task: Logical decoding awareness for future CDC needs.
+SQL: wal_level logical set from day one (cheap insurance), publication defined per table when CDC consumers arrive.
+Reading: wal_level logical costs little and enables later CDC without a restart-and-reload migration; publications stay surgical per consumer need.
+Pitfall: full-wal shipping "just in case" with no consumers, paying retention for nothing.
+Verification: wal_level asserted in config audit; each publication has a named consumer and a removal date when it ends.

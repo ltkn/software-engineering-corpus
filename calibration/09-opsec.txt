@@ -158,6 +158,14 @@ Recovery: Remove standing grants first; rotate credentials the standing accounts
 
 ---
 
+Rule: Human access requires phishing-resistant MFA; passwords plus TOTP are the floor, not the target.
+Violation: Production break-glass with password plus SMS code, SIM-swapped during an incident window.
+Practice: Hardware keys or platform passkeys for production and secret-manager access; TOTP accepted only where hardware is unavailable, with a migration date; SMS codes never accepted for privileged access.
+Control: Auth-method inventory per privilege tier; SMS-allowed flag triggers a finding, not a pass.
+Recovery: Downgrade sessions to the new method on next login; rotate anything the weak session could reach.
+
+---
+
 Rule: Separate human and service identities, always.
 Violation: Deploy script uses an engineer's personal token; she leaves, deploys break — or worse, keep working.
 Practice: Services own service accounts with scoped roles; humans authenticate as themselves with short sessions; no shared passwords anywhere.

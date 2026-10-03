@@ -1,0 +1,315 @@
+Goal: Run TypeScript 7 alongside 6.0 during the transition without binary conflicts.
+Wiring (package.json, verified against the 7.0 release notes):
+{
+  "devDependencies": {
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
+  }
+}
+Why: 7.0 ships tsc from the native package while API-dependent tooling keeps using 6.0's tsc6 and API; both compilers coexist until the 7.1 API lands.
+Legacy: single typescript@5.x install where editor, CLI, and API all share one binary.
+Verification: npx tsc --version reports 7.x; npx tsc6 --version reports 6.x; both type-check the same tree clean.
+
+---
+
+Goal: Clear the 6.x deprecations that become hard errors under 7.
+Wiring: remove baseUrl in favor of paths, replace node10/classic/amd/umd moduleResolution, enable stableTypeOrdering thinking explicitly (it becomes the only behavior), drop esModuleInterop=false and allowSyntheticDefaultImports=false.
+Why: 7.0 adopts 6.0's defaults and promotes its deprecations to errors; clearing warnings on 6.0 is the migration.
+Legacy: tsconfig carried forward since 4.x with ignored deprecation warnings.
+Verification: tsc6 --noEmit clean with zero warnings; then tsc --noEmit clean on the identical tree.
+
+---
+
+Goal: Survive the new 7.0 defaults deliberately.
+Wiring: strict true, module esnext, rootDir ./, types [] — each set explicitly even where it matches the new default, with a comment naming the 7.0 behavior.
+Why: explicit values document intent and survive the next default change; implicit reliance on defaults caused the rootDir/types surprises.
+Legacy: empty tsconfig relying on whatever the compiler assumed that year.
+Verification: config diff reviewed per 7.0 migration guide; noImplicit surprises asserted by compiling a fixture that violates each default.
+
+---
+
+Goal: Keep editor support working while 7.0 lacks a programmatic API.
+Wiring: VS Code set to the TypeScript 6.0 language server ("Disable TypeScript 7 Language Server" equivalent) while tsc 7 handles CLI checks and CI.
+Why: Vue, Angular template checking, and typescript-eslint still need the 6.0 API until 7.1 ships the new one.
+Legacy: single-version editor setup where CLI and IDE always agreed.
+Verification: editor errors and tsc --noEmit agree on a fixture file; divergence investigated as config drift, not ignored.
+
+---
+
+Goal: tsconfig split for SPA app vs shared library code.
+Wiring: app config (bundler resolution, jsx react-jsx, strict, noEmit with vite build) separate from library config (declaration emit on, isolated-style settings, explicit entry).
+Why: apps optimize for checking speed and bundler behavior; libraries optimize for declaration quality and consumer compatibility.
+Legacy: one root tsconfig with declaration emit slowing every app check and leaking internals.
+Verification: both configs clean independently; library declarations reviewed for leaking private types.
+
+---
+
+Goal: Strict family flags understood individually, not as a bundle.
+Wiring: strictNullChecks, noUncheckedIndexedAccess, noImplicitOverride, noUncheckedSideEffectImports each enabled with a comment stating what class of bug it catches.
+Why: strict:true is the floor; the family members catch index-out-of-bounds-undefined, accidental overrides, and side-effect imports that strict alone misses.
+Legacy: strict false "temporarily" for three years.
+Verification: each flag demonstrated by a fixture that fails without it and passes with it.
+
+---
+
+Goal: Erasable-syntax-only code safe under any native transpiler.
+Wiring: erasableSyntaxOnly true; no enums, namespaces, or parameter properties in new code; const objects with as const plus union types instead.
+Why: erasable constructs compile by type-stripping alone, so esbuild, swc, and the native tsc agree; non-erasable syntax ties correctness to one compiler's emit.
+Legacy: const enum shipped to a bundler that inlines differently per version.
+Verification: erasableSyntaxOnly clean; emit compared across tsc and the bundler on a fixture.
+
+---
+
+Goal: verbatimModuleSyntax for import discipline.
+Wiring: verbatimModuleSyntax true; import type used for all type-only imports; satisfies the bundler's needs without elision surprises.
+Why: elision behavior differences between compilers silently drop value imports the checker thought were types (or keep type imports as runtime requires).
+Legacy: importsNotUsedAsValues default juggling per bundler.
+Verification: isolated-transpile fixture (transpileModule per file) behaves identically to full-program emit.
+
+---
+
+Goal: Discriminated unions as the state-machine shape for async data.
+Wiring:
+type QueryResult =
+  | { status: "pending" }
+  | { status: "success"; rows: User[]; nextCursor: string | null }
+  | { status: "failure"; code: "timeout" | "auth" | "unknown" };
+Why: the status tag makes impossible states unrepresentable; narrowing replaces boolean-flag soup (isLoading plus isError plus data-nullable).
+Legacy: { data?: User[], loading: boolean, error?: string } with four contradictory combinations representable.
+Verification: exhaustive switch over status with no default compiles; impossible-state construction rejected by review fixture.
+
+---
+
+Goal: Narrowing with custom type guards at API boundaries.
+Wiring:
+function isUserPage(v: unknown): v is { rows: User[]; nextCursor: string | null } {
+  return typeof v === "object" && v !== null && Array.isArray((v as any).rows);
+}
+Why: unknown-first input plus a guard centralizes validation; downstream code works on narrowed types instead of casts.
+Legacy: as UserPage casts on fetch results, lying to the compiler about unvalidated JSON.
+Verification: hostile-fixture battery (null, array, wrong shapes) rejected by guards; no as casts on network data in review.
+
+---
+
+Goal: satisfies for exact-shape constants without widening.
+Wiring:
+const emptySuccess = { status: "success", rows: [], nextCursor: null } satisfies QueryResult;
+Why: satisfies checks assignability while preserving literal inference; annotation alone would widen rows to never[] or any[].
+Legacy: const x: QueryResult = ... losing literal types, then fighting the checker downstream.
+Verification: hover-type test (literals preserved); mismatched constant fails compilation at the definition.
+
+---
+
+Goal: Template literal types for structured strings (routes, keys, event names).
+Wiring:
+type Route = `/users/${string}` | `/users/${string}/orders`;
+type CacheKey = ["users", string, string | null, number];
+Why: malformed routes and keys become compile errors; TanStack key factories compose from these primitives.
+Legacy: stringly-typed keys built by concatenation, colliding silently across features.
+Verification: malformed-route literal rejected; key-factory output asserted assignable to the tuple type.
+
+---
+
+Goal: keyof/typeof deriving types from runtime sources of truth.
+Wiring:
+const config = { tenant: "acme", limit: 25 } as const;
+type Config = typeof config;
+type ConfigKey = keyof Config;
+Why: one source (the value) feeds both runtime and types; drift between a hand-written interface and the value becomes impossible.
+Legacy: interface Config duplicated beside the const, diverging within a quarter.
+Verification: drift test (add a key to the value, stale interface fails); derived-type fixture green.
+
+---
+
+Goal: Conditional types with infer for unwrapping.
+Wiring:
+type Unwrap<T> = T extends Promise<infer U> ? U : T;
+type Element<T> = T extends (infer U)[] ? U : never;
+Why: generic utilities (data loaders, table columns) operate on inner types without per-call-site annotations.
+Legacy: any-typed helpers with casts at every call site.
+Verification: unwrap fixture asserts resolved inner types; misuse on non-Promise resolves to the identity branch, tested.
+
+---
+
+Goal: Mapped types with key remapping for API translation layers.
+Wiring:
+type Nullable<T> = { [K in keyof T]: T[K] | null };
+type Getters<T> = { [K in keyof T as `get${Capitalize<string & K>}`]: () => T[K] };
+Why: translation shapes (nullable forms, getter mirrors) derive mechanically from domain types instead of hand-duplicated.
+Legacy: parallel NullableUser interface rotting beside User.
+Verification: key-remap fixture asserts generated names; domain-type change propagates without touching the mapped type.
+
+---
+
+Goal: Variance intuition for callback-heavy APIs.
+Wiring: producers (sources) covariant, consumers (sinks) contravariant; strictFunctionTypes enforced so mismatched callbacks fail loudly.
+Why: strict variance catches the handler that accepts less than the emitter provides before production does.
+Legacy: strictFunctionTypes off, bivariant method parameters silently accepting wrong handlers.
+Verification: contravariant-handler fixture rejected; strict flag asserted on in tsconfig audit.
+
+---
+
+Goal: Declaration files and module augmentation done surgically.
+Wiring: declare module for untyped vendors with minimal surface; interface merging only for documented plugin points.
+Why: augmentation is global mutation of shared types; surgical scope limits the blast radius.
+Legacy: wildcard any declarations silencing the checker across whole libraries.
+Verification: augmentation surface reviewed per addition; vendor-type coverage measured (any count trending down).
+
+---
+
+Goal: Validate at the edge with schemas, never bare casts.
+Wiring: fetch wrapper parsing unknown through a schema (zod/valibot-style) returning typed data or a collected error list.
+Why: network JSON is unknown by construction; schemas move failure from runtime TypeErrors to parse-time validation with paths.
+Legacy: response as Promise<User> cast, crashing on the first API evolution.
+Verification: hostile-fixture battery (wrong types, missing keys, extra fields, null vs undefined) per endpoint schema.
+
+---
+
+Goal: unknown-first handling of third-party JSON.
+Wiring: JSON.parse results typed unknown, narrowed through guards before any property access.
+Why: unknown forces handling; any postpones it to production.
+Legacy: const data: any = JSON.parse(...) spreading untyped assumptions through five layers.
+Verification: no-explicit-any lint on boundary modules; any usage requires a dated justification comment.
+
+---
+
+Goal: Error narrowing instead of catch-and-pray.
+Wiring:
+try { await save(u); }
+catch (e) {
+  if (e instanceof ValidationError) return fieldErrors(e);
+  if (e instanceof NetworkError) return retryable(e);
+  throw e;
+}
+Why: handled errors handled, unknown errors rethrown; the catch clause states its competence explicitly.
+Legacy: catch (e) { return genericError(); } swallowing programming bugs with user errors.
+Verification: unknown-error fixture rethrows; handled classes asserted per branch.
+
+---
+
+Goal: Exhaustive-switch helpers for domain unions.
+Wiring:
+function assertNever(x: never): never { throw new Error("unhandled: " + x); }
+// in every switch over a domain union, default: return assertNever(variant);
+Why: new union members break compilation at every switch instead of falling into a silent default.
+Legacy: default: break with a comment "should not happen", happening quarterly.
+Verification: new-variant fixture fails compilation at all switches; never a runtime surprise.
+
+---
+
+Goal: Explicit resource management with using for scoped cleanup.
+Wiring:
+using conn = pool.acquire();
+await conn.query(...);
+// Symbol.dispose runs at block exit on all paths
+Why: deterministic cleanup without try/finally pyramids; early returns and throws all release.
+Legacy: manual release calls skipped on the third early return added last spring.
+Verification: early-return and throw fixtures assert release counts; Symbol.dispose presence asserted per acquisition.
+
+---
+
+Goal: Const type parameters for literal-preserving generics.
+Wiring:
+function key<const T extends readonly unknown[]>(...parts: T): string { ... }
+Why: const inference keeps tuple literals literal through generic boundaries (TanStack key factories depend on this).
+Legacy: readonly unknown[] widening "users" to string, collapsing key discrimination.
+Verification: literal-preservation fixture asserts tuple element types survive the generic call.
+
+---
+
+Goal: Node 22+ baseline with explicit engine policy.
+Wiring: engines field plus Volta/nvm pin plus CI check; APIs used only within the baseline (node:test runner, watch mode, permission model where adopted).
+Why: engine drift between laptop, CI, and container produces works-here failures on APIs that do not exist elsewhere.
+Legacy: engines absent, production running two majors behind development.
+Verification: engine-mismatch CI job fails fast; API-availability fixture per baseline feature.
+
+---
+
+Goal: pnpm workspaces with frozen lockfiles end to end.
+Wiring: pnpm-workspace.yaml, workspace: protocol for internals, --frozen-lockfile in CI and Docker, lockfile committed.
+Why: one lockfile for the monorepo, deterministic installs everywhere, workspace links instead of version drift between packages.
+Legacy: npm install without lockfile in Docker, "works on my machine" as a service.
+Verification: lockfile-drift job fails the build; Docker layer cache hits on dependency-only rebuilds.
+
+---
+
+Goal: Package exports discipline for shared libraries.
+Wiring: exports map with types, import, and require conditions; no deep imports into internals; files field limiting published surface.
+Why: exports define the public contract; deep imports couple consumers to file layouts.
+Legacy: main pointing at src/index.ts with the whole tree importable.
+Verification: deep-import probe fails; publint-style check in CI per publishable package.
+
+---
+
+Goal: Type-check as a CI gate with performance budget.
+Wiring: tsc --noEmit (both 6 and 7 during transition) as a required job with a time budget and NODE_OPTIONS sized for the monorepo.
+Why: type errors are cheapest at the gate; slow gates get skipped, so the gate carries a budget.
+Legacy: type-check optional and red for months, "we'll fix it later".
+Verification: gate required on every PR; budget breach investigated as an incident, not waived.
+
+---
+
+Goal: isolatedModules-era habits updated for the native compiler.
+Wiring: type-only imports explicit, const enums avoided, no ambient global mutations without declaration files.
+Why: single-file transpilation (bundlers, native tsc paths) cannot see cross-file type facts; code must mean the same per file and per program.
+Legacy: const enum across files inlining differently per tool.
+Verification: transpileModule-per-file fixture behaves identically to program emit.
+
+---
+
+Goal: Narrowing order that matches runtime cost.
+Wiring: cheapest discriminants first (status strings before deep shape checks), guards composed from cheap to expensive.
+Why: validation hot paths run per record; ordering cheap-first keeps the common case fast without changing semantics.
+Legacy: JSON-schema-validate-everything on a 10k-row import, 40x slower than tag-first dispatch.
+Verification: benchmark on representative payloads; ordering documented with the measured rationale.
+
+---
+
+Goal: Branded types for identifiers that must not mix.
+Wiring:
+type UserId = string & { readonly __brand: "UserId" };
+type TenantId = string & { readonly __brand: "TenantId" };
+function getUser(id: UserId, tenant: TenantId) { ... }
+Why: stringly-typed ids cross silently (user id passed as tenant id); brands make the swap a compile error.
+Legacy: (id: string, tenantId: string) with two transposed-argument incidents per year.
+Verification: transposition fixture fails compilation; brand-construction centralized in validated factories.
+
+---
+
+Goal: Satisfies plus generics for TanStack key factories (the file's flagship pattern).
+Wiring:
+export const userKeys = {
+  all: ["users"] as const,
+  list: (tenant: string, cursor: string | null, limit: number) =>
+    [...userKeys.all, tenant, cursor, limit] as const,
+};
+Why: as-const tuples preserve literal structure for cache matching; parameter types prevent the undefined-drift that breaks key hashing.
+Legacy: ["users", tenantId, page] built inline per hook, keys diverging across components.
+Verification: key-equality test (same inputs, identical keys); undefined-cursor fixture hashes deterministically.
+
+---
+
+Goal: NoUncheckedIndexedAccess for array and record access.
+Wiring: noUncheckedIndexedAccess true; every arr[i] handled as T | undefined with explicit fallback.
+Why: out-of-bounds access returns undefined at runtime; the flag makes that visible at compile time.
+Legacy: arr[i].field crashing on short arrays in production pagination code.
+Verification: index-access fixture requires handling; suppression requires justification comments.
+
+---
+
+Goal: Readonly discipline at API boundaries.
+Wiring: readonly arrays and properties on all inbound DTOs and cached query data; mutation only through explicit copy-and-replace.
+Why: readonly inputs make TanStack cache data and shared DTOs safe from accidental mutation across components.
+Legacy: cached query result mutated by a sort() in one component, corrupting every other view.
+Verification: mutation attempt fails compilation; frozen-object runtime test in dev mode catches violations early.
+
+---
+
+Goal: Async iteration with for-await for paged consumption.
+Wiring:
+for await (const page of paginate((c) => fetchUsers(tenant, c, 25))) {
+  yield* page.rows;
+}
+Why: consumers read pages as a stream without managing cursors; backpressure natural through iteration pacing.
+Legacy: manual while(cursor) loops with copy-pasted termination bugs (null vs undefined vs empty string).
+Verification: termination fixture per cursor shape; mid-iteration abort honored via AbortSignal.

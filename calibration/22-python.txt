@@ -1,0 +1,187 @@
+Goal: Baseline on Python 3.14 (current stable as of 2026-10; 3.10 EOL, 3.15 pre-release).
+Wiring: requires-python = ">=3.14" in pyproject, CI matrix on 3.13 plus 3.14, deprecation warnings as errors in tests.
+Why: 3.10 is end-of-life (no security updates); the floor must be a supported series, and the ceiling the current stable.
+Pitfall: requires-python >=3.9 "for compatibility", testing only on 3.14, shipping syntax that breaks on 3.9.
+Verification: CI fails on EOL interpreters; version matrix green on the two supported series.
+
+---
+
+Goal: Strict typing with mypy/pyright, no untyped defs in new code.
+Wiring: strict mode on, disallow_untyped_defs, warn_return_any; shared types for API boundaries.
+Why: untyped defs infect callers silently; strict boundaries make None-handling and narrowing explicit.
+Pitfall: Any-typed helpers with casts at every call site, mypy "passing" on code it never checked.
+Verification: strict gate per PR; Any usage requires dated justification comments, trending down.
+
+---
+
+Goal: Dataclasses vs attrs vs Pydantic chosen by purpose.
+Wiring: dataclasses for internal value objects; attrs where validators/converters earn it; Pydantic at API and config boundaries for parsing plus validation.
+Why: dataclasses are stdlib-simple; attrs adds runtime validation power; Pydantic owns untrusted-input parsing with error reporting.
+Pitfall: Pydantic models for every internal tuple, paying validation overhead on trusted data in tight loops.
+Verification: boundary-input tests through Pydantic; hot-path allocation profile free of validation overhead.
+
+---
+
+Goal: Pattern matching where it clarifies dispatch.
+Wiring: match on event/command unions with guard clauses, exhaustiveness via assert_never equivalent.
+Why: structural dispatch beats isinstance chains for message handling; guards keep conditions beside patterns.
+Pitfall: match with a catch-all case hiding unhandled variants, the same silent-default bug as switches.
+Verification: new-variant fixture fails (no silent catch-all); guard conditions tested independently.
+
+---
+
+Goal: Asyncio task groups for structured concurrency in Python.
+Wiring: async with TaskGroup() as tg: tg.create_task(...) with timeouts via wait_for, cancellation propagating to children.
+Why: task groups bound lifetimes like structured scopes; orphaned tasks and silent cancellations disappear.
+Pitfall: bare create_task fire-and-forget with exceptions vanishing into "exception was never retrieved".
+Verification: cancellation drill asserts child termination; unretrieved-exception warnings asserted zero in tests.
+
+---
+
+Goal: Cancellation and timeouts as protocol, not afterthought.
+Wiring: wait_for with explicit bounds per I/O call; CancelledError allowed to propagate (never swallowed into default returns); cleanup in finally/aclose.
+Why: hung dependencies must fail loudly and release resources; swallowed cancellation hangs shutdown.
+Pitfall: except CancelledError: return None — shutdown that never completes.
+Verification: cancellation test asserts timely termination plus resource release; timeout drill per dependency.
+
+---
+
+Goal: Async generators for streaming paged APIs.
+Wiring: async def pages() yielding validated batches with the session and backoff inside, consumers iterating with for-async.
+Why: callers read streams without managing cursors, retries, or sessions; backpressure natural through iteration pacing.
+Pitfall: materializing all pages into a list "for convenience", OOM on the large tenant.
+Verification: large-tenant stream test with bounded memory; mid-iteration abort honored.
+
+---
+
+Goal: Sync/async boundary discipline at one seam.
+Wiring: async code entered via asyncio.run at the top level; sync libraries called via to_thread; async called from sync only through a documented bridge.
+Why: mixed boundaries create event-loop affinity bugs and thread-pool exhaustion that manifest only under load.
+Pitfall: asyncio.run inside a loop per request, creating and destroying loops thousands of times.
+Verification: loop-creation count test (one per process lifetime in prod paths); blocking-call audit (all wrapped in to_thread).
+
+---
+
+Goal: Pytest fixtures and factories over shared mutable state.
+Wiring: fixture factories (make_user(**overrides)) with function scope; module fixtures only for expensive containers.
+Why: factories give fresh valid objects per test; shared module state couples tests through hidden channels.
+Pitfall: conftest-level mutable user mutated by twelve tests, order-dependent greens.
+Verification: random-order run green (pytest-randomly or equivalent); shared-state lint on conftest.
+
+---
+
+Goal: Markers including async configuration, explicit and strict.
+Wiring: asyncio_mode strict with per-test markers, custom markers registered (slow, integration, contract) with --m deselection in fast jobs.
+Why: strict mode forces intent per async test; markers separate the 10s unit job from the 10min integration job.
+Pitfall: auto mode hiding sync/async confusion plus unregistered markers silently ignored.
+Verification: marker audit (all used markers registered); fast-job time budget enforced.
+
+---
+
+Goal: Parameterized boundary tests per validation rule.
+Wiring: @pytest.mark.parametrize over valid/invalid/edge triples for every parser and validator.
+Why: boundaries are where bugs live; parametrization makes the boundary table executable and reviewable.
+Pitfall: one happy-path test per validator, boundary behavior discovered in production.
+Verification: boundary table reviewed per validator; mutation of a boundary value fails the test.
+
+---
+
+Goal: Property-based testing with Hypothesis for invariants.
+Wiring: @given strategies generating tenants, pages, and interleaved inserts asserting concatenation-equals-full-query.
+Why: generated cases find the duplicate-timestamp skip no example thought of; shrinking reports the minimal failure.
+Pitfall: property tests without shrinking configured, reporting 200-line failing inputs nobody reads.
+Verification: seed database recorded for reproductions; example suite kept for documentation alongside.
+
+---
+
+Goal: pyproject as the single build truth.
+Wiring: build-system, project metadata, tool configs (ruff, mypy, pytest) in pyproject.toml; no setup.py/setup.cfg remnants.
+Why: one file, one schema family; split configs drift and duplicate.
+Pitfall: dependencies declared in three places with three versions.
+Verification: single-source test (each dependency named once); config-duplication lint.
+
+---
+
+Goal: uv for env, lock, and install.
+Wiring: uv venv plus uv sync from uv.lock committed; uv run for scripts; uv pip only where pip semantics explicitly needed.
+Why: one tool for lockfile-accurate environments at pip-composite speed; lockfile committed like any other.
+Pitfall: requirements.txt without hashes regenerated per developer, "works on my machine" as a service.
+Verification: lockfile-drift fails CI; fresh-clone-to-green timed and budgeted.
+
+---
+
+Goal: ruff for lint and format, replacing the flake8/black/isort stack.
+Wiring: ruff check plus ruff format with the rule set explicit (pyflakes, pycodestyle, isort-order, bugbear, per-file ignores documented).
+Why: one fast binary replacing four slow tools with consistent configuration; bugbear catches the real bugs (mutable defaults, except-pass).
+Verification: lint gate per PR; rule-set changes reviewed with before/after finding deltas.
+
+---
+
+Goal: Typer CLIs with typed options for corpus and backtest tooling.
+Wiring: typer.run entry points, typed options with defaults and help, JSON output mode for pipelines.
+Why: typed options validate before execution; JSON mode composes tools without screen-scraping.
+Pitfall: argparse boilerplate with untyped strings parsed three layers deep, failing on the first quote character.
+Verification: --help snapshot test; JSON-mode output schema-validated per command.
+
+---
+
+Goal: Script entry points keeping tooling importable and testable.
+Wiring: [project.scripts] mapping commands to main() functions; logic in importable modules, main() thin.
+Why: tested logic plus thin CLIs; scripts-as-files resist testing and grow barnacles.
+Pitfall: 400-line script with sys.argv indexing, untestable except by subprocess.
+Verification: logic unit-tested without subprocess; CLI smoke test per command.
+
+---
+
+Goal: pandas/polars frames for strategy analysis with explicit dtypes.
+Wiring: schemas declared (timestamps tz-aware, prices Decimal-or-float documented, no object columns where numerics belong).
+Why: silent dtype coercion corrupts backtests (object columns, tz-naive mixing); explicit schemas fail fast.
+Pitfall: CSV-read defaults inferring different dtypes per file, strategy "profitable" on misaligned series.
+Verification: schema assertion per frame load; dtype-drift test on new data drops.
+
+---
+
+Goal: Notebook-to-script discipline for anything that matters.
+Wiring: exploration in notebooks allowed; anything reused twice becomes a tested script with pinned environment.
+Why: notebooks hide execution order and environment; scripts state both.
+Pitfall: production backtest running from a notebook with out-of-order cells nobody can reproduce.
+Verification: no-notebook rule for scheduled/shared work; notebook outputs never committed as evidence alone.
+
+---
+
+Goal: Reproducible seeds across the analysis stack.
+Wiring: single seed constant threading through random, numpy, model init, and data shuffling; seed logged with every result.
+Why: unreproducible numbers cannot be reviewed, debugged, or trusted.
+Pitfall: seed set for the model but not the shuffle — "same seed, different results" investigated monthly.
+Verification: double-run equality test on fixtures; seed recorded in every result artifact.
+
+---
+
+Goal: CSV/Parquet interchange hygiene at system boundaries.
+Wiring: Parquet with explicit schema for bulk data; CSV only with documented encoding, delimiter, quoting, and header policy; validation on read.
+Why: CSV dialects differ per producer (the NUL-byte surprise, the semicolon locale); Parquet carries types.
+Pitfall: comma CSV consumed from a semicolon-locale exporter, columns shifted silently.
+Verification: dialect test per producer (parse fixture asserting shape); Parquet schema assertion on write.
+
+---
+
+Goal: JVM/Python interop through contracts, never through shared memory assumptions.
+Wiring: subprocess or HTTP boundary with JSON/schema-validated payloads; timeouts and error mapping explicit on both sides.
+Why: runtimes differ in threading, GC pauses, and error models; contracts isolate the differences to one seam.
+Pitfall: Jython-era in-process assumptions resurrected via shared files without locking.
+Verification: contract tests on both sides of the seam; timeout and error-mapping drills per direction.
+
+---
+
+Goal: Error propagation across runtimes with mapped semantics.
+Wiring: Python exceptions mapped to exit codes plus structured stderr JSON; JVM side maps to domain exceptions with the original context attached.
+Why: raw tracebacks across the boundary leak internals and confuse callers; mapped errors preserve meaning.
+Pitfall: CalledProcessError with a 200-line traceback as the user-facing error.
+Verification: error-mapping matrix per direction; stderr-shape test asserting no internals leak.
+
+---
+
+Goal: Dependency vulnerability scanning for Python environments.
+Wiring: lockfile audit in CI (pip-audit or equivalent) with severity SLA matching the main policy; base-image Python patched via rebuilds.
+Why: transitive PyPI dependencies carry CVEs like any other supply chain; EOL interpreters stop receiving fixes entirely.
+Verification: audit gate on criticals past SLA; interpreter EOL check (3.10-class runtimes rejected).

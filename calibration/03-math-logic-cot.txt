@@ -388,3 +388,28 @@ Step 1. p-value: probability of data this extreme under H0; screening tool with 
 Step 2. Bayes factor: relative predictive performance of H1 vs H0; quantifies evidence both ways at the price of prior sensitivity.
 Step 3. Switch when the question is evidence quantification or model comparison rather than error-rate-controlled decision making.
 Answer: p for decisions with error control, Bayes factor for evidence grading.
+
+---
+
+Q: A fair coin comes up heads 9 times in 10 flips. How surprised should you be, in bits?
+Step 1. Surprise of an outcome is -log2(P): under fairness, P(9+ heads in 10) = (10+1)/1024 ≈ 0.0107, about 6.5 bits — genuinely surprising, roughly a 1-in-93 event.
+Step 2. Surprise is not evidence of bias by itself: specify the alternative (e.g. P(heads)=0.7) and compare likelihoods before concluding.
+Step 3. Entropy extends this: expected surprise over the distribution, the floor no encoding beats on average.
+Answer: About 6.5 bits of surprise; evidence needs the likelihood ratio, not the surprise alone.
+
+---
+
+Q: Two compressors report 2.1 vs 2.4 bits per symbol on the same log stream. What does the gap mean?
+Step 1. Cross-entropy reading: the worse model spends an extra 0.3 bits per symbol — over a billion symbols, 300M bits (~37MB) of avoidable cost.
+Step 2. The gap measures model mismatch (KL divergence), not data randomness: same stream, different assumptions.
+Step 3. Quantization parallel: bits concentrate where the weight distribution is peaky; a quantizer mismatched to the distribution pays the same kind of extra-bits tax on every weight.
+Answer: 0.3 bits/symbol of model mismatch; match the coder (or quantizer) to the distribution.
+
+---
+
+Q: Draft: "low entropy means the data has little information, so quantize it harder." Correct it.
+Step 1. Half-right and dangerous: low entropy means predictable, so fewer bits suffice — but the conclusion must be per-tensor, from measured distributions, never from the label "logs" or "embeddings".
+Step 2. A peaky-but-critical tensor (rare security tokens) quantized hard destroys exactly the distinctions that matter; entropy guides bit allocation only together with importance (see imatrix logic).
+Step 3. Correct statement: allocate bits by measured distribution shape times task importance, verified by downstream eval, not by entropy alone.
+Correction: "Entropy informs bit budgets; importance decides them; eval confirms."
+Answer: Entropy alone never justifies aggressive quantization.

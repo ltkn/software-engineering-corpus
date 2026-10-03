@@ -525,3 +525,19 @@ Modern form: @Builder for stepwise construction with defaults, @RequiredArgsCons
 Why: agents maintain millions of Lombok lines; illiteracy in @SuperBuilder hierarchies or required-args injection is blindness in legacy Spring code, while new code prefers records where they fit.
 Counter-pattern: @Builder on a three-field record-shaped carrier (ceremony without need) or records forced onto JPA entities (proxy and dirty-checking breakage).
 Check: entity-vs-record decision recorded per class; builder usage justified by optional/defaulted parameters.
+
+---
+
+Concept: JPMS migration pitfalls — split packages and automatic modules bite at deploy, not in the IDE. Migration pattern.
+Modern form: one package in exactly one module; third-party jars without module-info consumed as explicit requires after jdeps analysis, with add-modules/selective opens declared in the launch config, not scattered flags.
+Why: split packages (same package in two jars) fail modular runs while classpath runs stay green; automatic modules read everything and export everything, silently widening access the modular build later revokes.
+Counter-pattern: unnamed-module development "temporarily" for two years, then a flag-day migration under release pressure.
+Check: modular build from day one in CI (even while shipping classpath); jdeps split-package scan fails the build.
+
+---
+
+Concept: Opens for testing and frameworks, declared once and narrowed over time. Convention.
+Modern form: opens com.acme.users.entities to org.hibernate.orm.core, org.junit.platform.commons in module-info.test or surefire argLine; production opens reviewed annually for removal.
+Why: reflection needs explicit doors; test-only doors must not leak into the shipped descriptor where they widen every deployment's attack surface.
+Counter-pattern: opens ... to all unnamed modules "until we figure it out", permanent since 2023.
+Check: opens audit lists each entry with owner and reason; unnamed opens fail the build.

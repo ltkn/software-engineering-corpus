@@ -1,0 +1,181 @@
+Goal: Catalog modeling separating sellable truth from channel presentation.
+Pattern: PIM holding canonical product plus variants (size/color with distinct SKUs), channel-specific titles/images/prices as overlays, never forks.
+Why: one truth with overlays serves web, mobile, and marketplace consistently; forked catalogs diverge within a quarter.
+Pitfall: per-channel product tables with "temporary" sync jobs reconciling them nightly.
+Verification: overlay-coverage test (every channel renders from canonical plus its overlay); fork-detection audit (duplicate SKUs across tables fail the build).
+
+---
+
+Goal: Variant and SKU discipline that survives scale.
+Pattern: variant axes declared per product family (size, color), SKU per purchasable combination, optionality explicit; bundles as containers referencing SKUs, never pseudo-SKUs with hidden contents.
+Why: inventory, pricing, and fulfillment all key on SKU; ambiguous granularity corrupts every downstream number.
+Pitfall: "one size" pseudo-SKU hiding three physical variants, inventory permanently wrong.
+Verification: SKU-uniqueness plus variant-completeness tests; bundle-explosion test (contents resolve deterministically).
+
+---
+
+Goal: Pricing engine with rule precedence and auditability.
+Pattern: base price, then stacked adjustments in fixed precedence (sale, coupon, loyalty, volume) each recorded as line items; effective-price function pure and replayable.
+Why: precedence disputes ("which discount applied?") resolve from the recorded stack; replayability makes support and testing deterministic.
+Pitfall: final-price floats stored without the adjustment trail, disputes unresolvable.
+Verification: price-replay test (same inputs, same itemization); precedence-conflict fixture resolves per the documented order.
+
+---
+
+Goal: Promotions as versioned rules with guardrails, not code deploys.
+Pattern: promotion definitions (eligibility, benefit, caps, windows) as data with start/end, budget caps, per-account limits, and kill switches; engine evaluates deterministically.
+Why: marketing moves at campaign speed; code deploys for "weekend 20% off" couple revenue to release trains.
+Pitfall: hardcoded coupon logic requiring a deploy to end an abused campaign.
+Verification: abuse-loop drill (profitable repetition capped by design); expired-promotion test (outside window, no discount).
+
+---
+
+Goal: Cart as a priced snapshot with explicit expiry, not live queries.
+Pattern: cart lines snapshot price and availability at add-time with a validity window; revalidation on checkout start; abandoned-cart retention per policy.
+Why: price changes mid-checkout create disputes; snapshots make the checkout price a promise with a deadline.
+Pitfall: live-price-at-payment charging a different total than displayed, with support tickets as the reconciliation system.
+Verification: price-change-during-checkout drill charges the snapshotted total or re-consents explicitly; expiry test revalidates past the window.
+
+---
+
+Goal: Checkout as an explicit state machine, not a script.
+Pattern: states (cart, details, payment_pending, authorized, captured, fulfilled, refunded, failed) with allowed transitions enumerated; every transition an event with idempotency.
+Why: implicit checkout flows strand orders in undefined states ("paid but not created"); enumerated transitions make orphans impossible by construction.
+Pitfall: boolean flags (paid=true, shipped=false) combining into twelve undocumented states.
+Verification: state-coverage test (every state reachable in tests, every transition exercised); orphan-state probe (no order outside the machine) nightly.
+
+---
+
+Goal: Inventory reservation with oversell prevention at scale.
+Pattern: reserve on checkout start with TTL (minutes), confirm on capture, release on expiry/failure; stock decremented at reservation, not at payment.
+Why: selling the last unit twice is the cardinal ecommerce sin; reservation serializes contention at the decision point.
+Pitfall: check-then-decrement races under flash-sale concurrency, overselling 300 units of 100.
+Verification: concurrency drill (10x buyers, 100 units) sells exactly 100 with fair failure for the rest; expired reservations release provably.
+
+---
+
+Goal: PaymentIntent lifecycle on current Stripe API (dahlia line, 2026-08-26 current; monthly backward-compatible upgrades, majors versioned).
+Pattern: one PaymentIntent per order/session; create with amount/currency plus automatic payment methods; handle requires_action (3DS) via the SCA engine default of automatic; capture on fulfillment (manual capture for delayed shipment); reuse the same intent across retries.
+Why: the intent object is the payment's state machine mirroring the order's; automatic 3DS delegates SCA decisions to risk data instead of static rules.
+Pitfall: new intent per retry attempt, orphaning authorizations that later capture unexpectedly.
+Verification: retry drill reuses the intent; status-transition test covers requires_action/succeeded/failed/canceled paths.
+
+---
+
+Goal: 3DS/SCA handling with exemption strategy, not blanket friction.
+Pattern: automatic 3DS (SCA engine decides per risk), request_three_d_secure any only from fraud-engine logic; frictionless preference where conversion matters; exemption flags where regulation allows low-risk skipping.
+Why: every challenge drops conversion measurably; authentication applied by risk, not by fear.
+Pitfall: forcing 3DS on all transactions "for security", converting 15% fewer checkouts.
+Verification: challenge-rate vs fraud-rate tradeoff reviewed per quarter; exemption-eligible traffic identified and measured.
+
+---
+
+Goal: Stripe webhooks as the fulfillment trigger, never the client callback.
+Pattern: endpoint pinned to an explicit API version, signature verified on raw bytes with the endpoint secret, idempotency on event id, payment_intent.succeeded driving fulfillment; thin vs snapshot payload choice documented per handler.
+Why: clients abandon pages post-payment; only webhooks reliably observe completion; version pinning prevents shape drift breaking handlers silently.
+Pitfall: fulfilling on client-side success callback, shipping nothing to customers who closed the tab (plus replaying deliveries double-shipping).
+Verification: five-case delivery battery (unsigned, wrong version, replay, tamper, out-of-order); closed-tab drill still fulfills exactly once.
+
+---
+
+Goal: Refunds, disputes, and chargebacks as first-class flows.
+Pattern: refund against the PaymentIntent/charge with reason codes, partial-refund support, dispute webhook handling with evidence auto-assembly (receipts, tracking, terms snapshot).
+Why: post-purchase flows decide retention and win rates; ad-hoc refunds via dashboard create unaudited money movement.
+Pitfall: refunds issued from personal judgment with no linkage to the order state machine.
+Verification: refund-state test (order transitions to refunded/partially-refunded with amounts reconciled); dispute-evidence packet generated per case automatically.
+
+---
+
+Goal: Subscriptions and trials with test-clock discipline.
+Pattern: trial periods, billing cycles, proration rules, dunning (failed-payment retries with customer comms), test clocks for time-travel testing of renewals and upgrades.
+Why: subscription edge cases (mid-cycle upgrades, failed renewals, trial conversions) are where billing bugs hide; test clocks make them testable.
+Pitfall: "just wait a month to verify the renewal logic" as the test plan.
+Verification: test-clock suite covering trial→paid, upgrade proration, dunning exhaustion, cancellation timing; proration math asserted to the cent.
+
+---
+
+Goal: Tax calculation with jurisdiction rules, not flat rates.
+Pattern: tax engine (provider or ruled tables) keyed by ship-from/ship-to/product-taxability, with exemption certificate handling and nexus tracking.
+Why: taxability varies by product and place; flat-rate tax under-collects liability and overcharges customers.
+Pitfall: single VAT rate applied globally, audit exposure compounding per order.
+Verification: jurisdiction-fixture battery per supported region; nexus-threshold monitoring with alerts.
+
+---
+
+Goal: Fraud screening proportionate to order value and history.
+Pattern: risk scoring (Radar-style rules plus velocity checks) gating step-up authentication or manual review above thresholds; trusted-customer fast lanes below.
+Why: uniform friction loses good customers; uniform laxness invites testing fraudsters who probe with small orders first.
+Pitfall: manual review on every order over $50, operations drowning while fraudsters learn the exact threshold.
+Verification: false-positive vs fraud-catch tradeoff reviewed monthly; threshold changes A/B measured on conversion.
+
+---
+
+Goal: Search with faceted navigation over the catalog index.
+Pattern: indexed attributes (category, brand, price bands, availability) with typo tolerance, synonym maps, and merchandised boosts recorded as rules.
+Why: search is the storefront for most sessions; relevance tuning is merchandising with measurable revenue impact.
+Pitfall: database LIKE search timing out at 100k SKUs with zero relevance control.
+Verification: relevance test set (queries with expected top results) run per index change; latency budget per query class.
+
+---
+
+Goal: Recommendations that degrade gracefully and disclose their basis.
+Pattern: collaborative/content signals with cold-start fallbacks (bestsellers, category picks); recommendation explanations where displayed ("because you bought X").
+Why: cold catalogs and new users break pure collaborative filtering; fallbacks keep rails full.
+Pitfall: empty recommendation rails for every new user, the highest-churn cohort seeing the emptiest pages.
+Verification: cold-start fixture (new user, new product) renders full rails; explanation presence asserted where UI claims personalization.
+
+---
+
+Goal: Marketplace seller onboarding with capability gating.
+Pattern: seller tiers (KYC level, payout method verified, return address confirmed) gating listing, fulfillment, and payout capabilities progressively.
+Why: capabilities follow verified trust; full access on signup invites counterfeit and payout fraud.
+Pitfall: instant full seller access, first payout to an unverified account unrecoverable.
+Verification: capability-matrix test per tier; unverified-capability probe denied at each gate.
+
+---
+
+Goal: Seller payouts with ledger discipline and holdbacks.
+Pattern: double-entry ledger per seller (sales, fees, refunds, holds), payout batches on schedule with reserve holdbacks for dispute windows, full statement per payout.
+Why: money movement without a ledger is unreconcilable; holdbacks fund the inevitable refunds without chasing sellers.
+Pitfall: payouts as direct transfers with spreadsheet reconciliation monthly.
+Verification: ledger-balance test (every cent accounted); holdback release asserted post-dispute-window; statement accuracy sampled per batch.
+
+---
+
+Goal: Fulfillment orchestration across warehouses and dropshippers.
+Pattern: sourcing decision (nearest stocked node with capacity), split-shipment policy with customer communication, tracking aggregation per order regardless of parcel count.
+Why: multi-node fulfillment minimizes time and cost jointly; uncoordinated nodes double-ship or starve.
+Pitfall: single-warehouse assumption hardcoded, cross-border orders shipping from one continent.
+Verification: sourcing-decision test per scenario (stockout, split, dropship); tracking completeness asserted per multi-parcel order.
+
+---
+
+Goal: Returns and RMA as a designed loop, not an apology process.
+Pattern: return windows per category, prepaid labels with carrier rules, inspection outcomes (restock, refurbish, dispose) driving refunds automatically, exchange as return-plus-new-order linked.
+Why: returns are 20%+ of ecommerce volume in apparel; ad-hoc handling bleeds margin and teaches abuse.
+Pitfall: manual email returns with spreadsheet tracking, refunds issued before goods arrive.
+Verification: RMA lifecycle test (all inspection outcomes); refund-before-receipt probe denied except for configured trusted tiers.
+
+---
+
+Goal: Notifications across the order lifecycle with preference respect.
+Pattern: event-driven messages (confirmation, shipment, delivery, refund) via customer-preferred channels with unsubscribe honored per category; transactional vs marketing separation enforced.
+Why: notification fatigue unsubscribes customers from the messages that prevent support tickets.
+Pitfall: marketing blasts from the transactional sender, tanking deliverability of receipts and shipping alerts.
+Verification: preference-respect test per category; sender-separation audit (transactional reputation isolated).
+
+---
+
+Goal: Analytics events with a versioned schema discipline.
+Pattern: event taxonomy (viewed_product, added_to_cart, checkout_started, purchased with values) versioned like APIs, validated at emit and ingest.
+Why: analytics drive pricing, fraud, and recommendation decisions; unversioned events rot into untrusted mush.
+Pitfall: seven spellings of "purchase" across teams, revenue dashboards disagreeing by 30%.
+Verification: event-schema registry with compatibility checks; dashboard-reconciliation test across the key metrics.
+
+---
+
+Goal: Peak-season readiness proven by drill, not hoped by forecast.
+Pattern: load test at 3x last peak on the full path (search, cart, checkout, payment stub, fulfillment mock), capacity pre-provisioned, freeze windows with exception process, war-room roster.
+Why: peaks are the year's revenue in days; the failure modes are known (pools, quotas, third-party limits) and drillable.
+Pitfall: "we scaled last year, we'll be fine" with 40% growth and unchanged quotas.
+Verification: peak drill green before the freeze; third-party limit confirmations (Stripe, carriers, tax provider) on file with headroom numbers.

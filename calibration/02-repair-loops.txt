@@ -548,3 +548,30 @@ Diagnosis: JPA persist without flush/clear grows the persistence context unbound
 Fix: Chunk 500 with clear, stateless inserts via JdbcTemplate batch for the hot path.
 Verify:
 Throughput flat at 19k rows/s across the full 2M file
+
+---
+
+Failure:
+No errors anywhere, but checkout p95 doubled from 180ms to 380ms starting with Tuesday's deploy. Logs clean, error rate flat, CPU normal.
+Diagnosis: Before/after flame-graph bisection: the new fraud-check client added a 190ms sequential call inside the request path that the old code ran concurrently with pricing. No failure, just serialization of two independent calls.
+Fix: Restore concurrency (join both futures before responding) and add a p95-by-dependency panel so the next serialization shows up as a named span, not a mystery.
+Verify:
+p95 back to 175ms; dependency panel attributes time per call; deploy-diff checklist now requires a profile comparison for path-touching changes.
+
+---
+
+Failure:
+Throughput halved overnight with zero errors: batch import crawls, no exceptions, GC logs show Full GC every 90 seconds where weekly used to be the norm.
+Diagnosis: JFR allocation bisection between builds: Tuesday's "harmless" DTO enrichment boxes 3M Integers per file, tripling allocation rate; the collector spends its time reclaiming garbage, not serving work.
+Fix: Primitive fields on the hot DTO plus streaming writes, restoring the old allocation rate.
+Verify:
+Allocation back under the baseline MB/sec; Full GC gone from the steady state; allocation-rate alert added at the heuristic threshold so the next regression pages instead of oozing.
+
+---
+
+Failure:
+Kafka consumer lag creeps 2% daily for three weeks, no errors, no rebalances, throughput nominally fine.
+Diagnosis: Partition-count vs key-distribution diff across the creep window: one tenant grew 40x and hashes onto two partitions; per-partition single-threaded processing caps those partitions while the rest idle. Not an error — a skew the dashboards average away.
+Fix: Split the hot tenant's key space (tenant plus shard suffix), raise concurrency to match partition count, add per-partition lag to the dashboard.
+Verify:
+Max per-partition lag under 30s at current volume; skew alert fires when any partition exceeds 3x the median.

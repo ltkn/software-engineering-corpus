@@ -1,0 +1,133 @@
+Concept: Components as functions of props with explicit returns.
+Snippet:
+function UserCard({ user, onSave }: { user: User; onSave: (u: User) => void }) {
+  return <article><h2>{user.email}</h2><button onClick={() => onSave(user)}>Save</button></article>;
+}
+Vue parallel: script-setup component with typed props and emits — same contract, compiler-checked template instead of JSX.
+Translator pitfall: defaultProps-era optional handling leaking undefined into required UI slots.
+Check: missing-prop fixture fails type-check; rendered output snapshot per variant.
+
+---
+
+Concept: Hooks rules — call order stable, top level only, custom hooks for reuse.
+Snippet:
+const [cursor, setCursor] = useState<string | null>(null);
+const { data } = useQuery({ queryKey: ["users", cursor], queryFn: () => fetchUsers(cursor) });
+Vue parallel: ref/computed at setup top level with the same ordering discipline; composables as the custom-hook equivalent.
+Translator pitfall: conditional hook calls (inside if blocks) scrambling state across renders.
+Check: conditional-hook lint fails; hook-order fixture stable across renders.
+
+---
+
+Concept: useEffect with explicit dependency arrays and cleanup.
+Snippet:
+useEffect(() => {
+  const c = new AbortController();
+  load(cursor, c.signal);
+  return () => c.abort();
+}, [cursor]);
+Vue parallel: watch(source, cb, { onCleanup }) with the same cancel-on-invalidate semantics.
+Translator pitfall: missing dependency array entries causing stale closures (effect sees last quarter's cursor forever).
+Check: exhaustive-deps lint clean; stale-closure fixture (changed dep, unchanged behavior) fails the test.
+
+---
+
+Concept: useMemo and useCallback as measured optimizations, not defaults.
+Snippet:
+const rows = useMemo(() => expensiveMap(users), [users]);
+Vue parallel: computed with automatic dependency tracking — no manual array to maintain.
+Translator pitfall: useCallback on every handler "for performance", adding dependency-array bugs for zero measured gain.
+Check: memoization added only with a render-count measurement attached; dep-array mismatches fail lint.
+
+---
+
+Concept: Context scoping for genuinely global concerns.
+Snippet:
+const TenantCtx = createContext<Tenant | null>(null);
+// provider high in the tree, useContext consumers below
+Vue parallel: provide/inject with InjectionKey plus throwing defaults.
+Translator pitfall: context for everything including per-component state, rerendering the tree on each keystroke.
+Check: context-value stability test (unrelated updates do not rerender consumers); default-null consumption throws with the key named.
+
+---
+
+Concept: Controlled vs uncontrolled inputs chosen deliberately.
+Snippet:
+<input value={name} onChange={(e) => setName(e.target.value)} />
+Vue parallel: v-model (defineModel in script setup) with the same single-source principle.
+Translator pitfall: mixing controlled value with defaultValue, React warning plus frozen input.
+Check: mixed-mode fixture warns in dev and is banned in review; form tests drive inputs like users (typing, clearing, submitting).
+
+---
+
+Concept: Rendering model — re-render on state change with reconciliation by keys.
+Snippet:
+{users.map((u) => <Row key={u.id} user={u} />)}
+Vue parallel: keyed v-for with the same stability requirement; :key formerly key.
+Translator pitfall: index-as-key on reorderable/paginated lists, scrambling row state across pages.
+Check: reorder fixture preserves row state; index-key usage fails review on dynamic lists.
+
+---
+
+Concept: Composition via children and custom hooks over inheritance.
+Snippet:
+<DataTable rows={users} renderRow={(u) => <UserRow user={u} />} />
+Vue parallel: scoped slots passing row data to custom cells.
+Translator pitfall: prop-drilling through six layers instead of composing at the ownership level.
+Check: drilling-depth review (beyond three levels, context or composition required); slot/prop API snapshot per reusable component.
+
+---
+
+Concept: React 19 use() and actions noted for recognition only.
+Snippet: const data = use(fetchPromise); — suspense-integrated consumption plus form actions with pending states.
+Vue parallel: Suspense boundaries plus async setup; server actions map to endpoint mutations, not a distinct primitive.
+Translator pitfall: porting use() suspensions as blocking awaits in watch callbacks, deadlocking the component.
+Check: recognition only — no depth; suspense-boundary test patterns shared with the Vue file.
+
+---
+
+Concept: Effect cleanup parallels with Vue watchers.
+Snippet: subscription in useEffect with unsubscribe returned; strict-mode double-invoke tolerated (setup/teardown/setup idempotent).
+Vue parallel: onScopeDispose plus watcher onCleanup; same idempotency requirement under HMR re-runs.
+Translator pitfall: non-idempotent subscriptions duplicating listeners under StrictMode double effects.
+Check: double-invoke fixture (mount/unmount/mount) leaves exactly one subscription.
+
+---
+
+Concept: State colocation vs lifting, same rule both frameworks.
+Snippet: filter text state lives in the FilterBar that owns it; only shared selection lifts to the list owner.
+Vue parallel: identical — ref in the component that uses it, Pinia only for cross-view concerns.
+Translator pitfall: lifting everything to a global store "for consistency", rerendering the app per keystroke.
+Check: store-membership review per new state (cross-view or truly global only); keystroke rerender test on the list view.
+
+---
+
+Concept: Error boundaries with reset keyed to query state.
+Snippet: <ErrorBoundary fallback={<Retry onRetry={reset} />} resetKeys={[cursor]}> around the route content.
+Vue parallel: onErrorCaptured layouts with retry actions keyed to the same cursor.
+Translator pitfall: boundary without reset keys — retry button rerenders the same crashed tree identically.
+Check: crash fixture renders fallback; retry with fixed data recovers; reset-key absence fails review.
+
+---
+
+Concept: Reading React Query code during porting (v5 semantics assumed).
+Snippet: useInfiniteQuery with getNextPageParam and initialPageParam null — maps directly to the Vue Query equivalent block for block.
+Vue parallel: the 17 file's infinite-query block is the translation target; keys, cursors, and termination translate 1:1.
+Translator pitfall: translating keepPreviousData-era patterns instead of the v5 placeholder form, carrying dead workarounds across frameworks.
+Check: ported hook reviewed against the v5 pattern checklist; placeholder behavior tested identically both sides.
+
+---
+
+Concept: Context-to-provide/inject plus Pinia translation shape.
+Snippet: React context value {tenant, setTenant} becomes provided readonly tenant ref plus a Pinia action for changes.
+Vue parallel: provide/inject for depth, Pinia for shared mutation — the same split the React code implies but rarely states.
+Translator pitfall: translating context wholesale into a global store including render-local state.
+Check: translated state placement reviewed (depth vs shared); behavior tests identical both sides.
+
+---
+
+Concept: useEffect-to-watch translation with dependency mapping.
+Snippet: useEffect(fn, [a, b]) becomes watch([() => a, () => b], fn) or a computed where derivation suffices.
+Vue parallel: computed preferred where the effect only derives; watch where side effects genuinely occur.
+Translator pitfall: every useEffect becoming watchEffect, reintroducing the race patterns the original code had already fixed with arrays.
+Check: derivation-vs-effect classification per translated effect; race fixture (slow-then-fast) green post-translation.
