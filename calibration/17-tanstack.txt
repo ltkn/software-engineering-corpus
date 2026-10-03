@@ -245,3 +245,39 @@ Wiring: query error states render inline retry UI; error boundaries catch only u
 Why: expected API errors are UI states (retryable, informative); boundaries are for bugs. Mixing them retries bugs and crashes on errors.
 Pitfall: every query error thrown to the boundary, resetting whole routes on 404s.
 Verification: 404-fixture renders inline retry without boundary activation; render-bug fixture activates the boundary with reset working.
+
+---
+
+Goal: Port a v4 store to vue-query v5 without silent behavior changes.
+Why: Every rename is a breaking change that the compiler does not flag: cacheTime is gcTime, isLoading collapsed into isPending (isLoading now means pending-and-fetching), status "loading" became "pending", keepPreviousData was replaced by placeholderData, onSuccess/onError/onSettled were removed from useQuery (they stay on mutations), useErrorBoundary became throwOnError, and every call site moved to the object-only signature.
+legacy/counter form:
+useQuery(['users', tenant], fetchUsers, { cacheTime: 5 * 60 * 1000, onSuccess: (d) => keys.set(d) })
+fix:
+useQuery({ queryKey: ['users', tenant], queryFn: fetchUsers, gcTime: 5 * 60 * 1000, placeholderData: keepPreviousData })
+misconfiguration: Reading loading as "pending" sends the loader UI at a completed query on the next focus refetch; switching to status === 'pending' fixes it.
+verification: Type-check fails on every old call site before the first runtime test, which is the point of the object-only signature — the compiler now catches the rename.
+
+---
+
+Goal: Keep server state out of Pinia and in Query keys instead.
+Why: The moment a query result is copied into a Pinia store, invalidation has to be reimplemented by hand; queryOptions lets the same typed key, queryFn, staleTime, and gcTime travel from the route loader to the hook without drift. Optimistic mutation is then keyed to the same tuple, so the optimistic row and the query result reconcile on invalidation instead of negotiating.
+snippet:
+export const usersOptions = (tenant: string) => queryOptions({
+  queryKey: ['users', tenant] as const,
+  queryFn: ({ signal }) => fetchUsers(tenant, signal),
+  staleTime: 30_000, gcTime: 5 * 60_000,
+});
+mutation:
+const m = useMutation({
+  mutationFn: (input: NewUser) => postUser(input),
+  onMutate: async (input) => {
+    await queryClient.cancelQueries({ queryKey: ['users', tenant] });
+    const prev = queryClient.getQueryData(['users', tenant]);
+    queryClient.setQueryData(['users', tenant], (old) => [...old, { ...input, id: 'optimistic' }]);
+    return { prev };
+  },
+  onError: (_e, _i, ctx) => queryClient.setQueryData(['users', tenant], ctx.prev),
+  onSettled: () => queryClient.invalidateQueries({ queryKey: ['users', tenant] }),
+});
+misconfiguration: optimistic rows keyed to a different tuple survive the invalidation and linger as phantom rows.
+verification: A mutation test with a mocked 409 asserts the optimistic row is rolled back, the prev cache payload is restored, and a simultaneous background-refresh returns one page, not a duplicate.

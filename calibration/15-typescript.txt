@@ -313,3 +313,45 @@ for await (const page of paginate((c) => fetchUsers(tenant, c, 25))) {
 Why: consumers read pages as a stream without managing cursors; backpressure natural through iteration pacing.
 Legacy: manual while(cursor) loops with copy-pasted termination bugs (null vs undefined vs empty string).
 Verification: termination fixture per cursor shape; mid-iteration abort honored via AbortSignal.
+
+---
+
+Goal: Remove a legacy tsconfig that passes on 6 but fails hard on tsc 7.
+Why: TS 7 removed the deprecated flags — baseUrl, the old moduleResolution graph, and incompatible targets. A config that relied on baseUrl for aliases errors outright; moduleResolution "node" no longer means bundler-style resolution.
+snippet:
+{
+  "compilerOptions": {
+    "strict": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "paths": { "@app/*": ["src/*"] }
+  }
+}
+legacy/counter form:
+{ "compilerOptions": { "baseUrl": ".", "moduleResolution": "node", "paths": {...} } }
+failure: TS errors that baseUrl/moduleResolution is removed; aliases silently resolve differently under bundler rules.
+verification: `tsc --noEmit` clean on both 6.0 and 7.0 with stableTypeOrdering on and no ignoreDeprecations.
+
+---
+
+Goal: Explain why this repo compiles TS with no enums or parameter properties.
+Why: Native Node 24 strips types without a compiler, and native type-stripping only accepts erasable syntax — anything that survives to runtime (enum objects, namespace values, parameter-property shorthand) needs the tsc step we are trying to skip. The `erasableSyntaxOnly` flag turns ts-to-js differences into a compile-time error instead of a runtime surprise.
+snippet:
+// ok for native stripping:
+type Role = "admin" | "editor";
+function canEdit(r: Role): boolean { return r !== "viewer"; }
+// not ok: enum Role { Admin, Editor }
+legacy/counter form: `npm run build && node dist/index.js` when the file could be `node --experimental-strip-types src/index.ts`.
+verification: Run the entrypoint twice — `node --experimental-strip-types` and `tsc` output — and diff the resulting values for parity; the test suite covers both paths in CI.
+
+---
+
+Goal: Speed up a monorepo type-check without losing project-reference boundaries.
+Why: TS 7 runs checks in parallel by default on multi-core hosts; the experimental flags expose the knobs. Splitting the check by project reference keeps incremental state correct per project so a one-package change does not re-check the tree.
+snippet:
+{
+  "references": [{ "path": "./packages/api" }, { "path": "./packages/web" }]
+}
+// CI: tsc --build --force   // 7.x uses parallel checking automatically
+counter form: one tsconfig at the root that imports everything; a single package change triggers a full-tree check.
+verification: Type-check wall-clock drops and only the changed project's .tsbuildinfo is rewritten; single-threaded mode available via the experimental flag for debugging.

@@ -353,3 +353,59 @@ Vulnerable pattern: Agent debugging session prints the secret store contents "to
 Why it fails: Transcripts are telemetry with wide readership and long retention; values there inherit the widest audience.
 Remediation: Agents receive secret names and file paths; values inject at runtime only; transcript scanner redacts credential shapes with build failure on hit.
 Regression control: Transcript redaction test with planted canary values; canary alert drill per quarter.
+
+---
+
+Concept: OWASP Top 10:2025 (final 2026-01) organizes risk by blended prevalence, impact, and exploitability — not by incident frequency. The 2025 revisions that matter most for this stack: Broken Access Control is now A01 and absorbs SSRF; Software Supply Chain Failures is the new A03; Mishandling of Exceptional Conditions is the new A10. Adjacent vocabulary: API Security Top 10:2023 for the API-specific failure classes, Agentic Applications 2026 (ASI01–ASI10) for agent-system risks.
+Vulnerable pattern: Remediation roadmaps copy the frequency story ("XSS is most common, patch that first") instead of the risk mapping and miss the two new classes.
+Why it fails: OWASP order is a risk model, and wiring the wrong budget to the wrong class leaves supply-chain and exceptional-condition failures without owners.
+Remediation: Pin the OWASP version in manifest.json; map each category to a control owner and reference countermeasures that still apply. Treat the A-codes as a stable identifier across revisions (A01 moved scope in 2025, the code did not).
+Regression control: Threat-model template carries the revision year; quarterly review of new A10 exceptional-condition findings against the error-contract tests.
+
+---
+
+Concept: BOLA/BFLA mechanism — object-level and function-level authorization failures. Mechanism home is this file; assessment depth lives in 08, wiring in 11/14.
+Vulnerable pattern: Fetch by id where the handler checks only "authenticated" and never "owns this object"; admin-only routes without a role gate.
+Why it fails: Identity is proven, then forgotten at the object boundary; any authenticated identity can read or invoke anything by id or verb.
+Remediation: Defense at the resource boundary: the service layer evaluates ownership against the tenant/object set, annotations form the outer ring, and every fallback path (jobs, webhooks, admin tooling) re-applies the same check. UUIDs are identifiers, not authorization.
+Regression control: Ownership matrix across five principals runs in CI; a cross-tenant read returns the exact contract shape that hides existence, and BFLA role boundaries have the same test.
+
+---
+
+Concept: Cryptographic usage posture as of 2026-10, updated.
+Vulnerable pattern: Hand-rolled JWT signature verification, fixed nonces, MD5-style password storage, and harvesting old ciphertext now for a future decrypt.
+Why it fails: Every custom design above has been broken in the wild; harvesting-now pays off the day a weak algorithm falls. Passwords need a memory-hard KDF, GCM forbids nonce reuse, and transit encryption needs current primitives.
+Remediation: TLS 1.3 preferred (1.2 floor) with hybrid X25519+ML-KEM key exchange where the stack supports it; argon2id for passwords with per-user salt; random 96-bit GCM nonces with the key-rotation bound documented; inventory long-lived confidentiality for harvest-now exposure and prioritize rotation there. FIPS 203/204/205 are the NIST-final baselines for the new primitives; crypto-agility is a deployment property, not a retrofit.
+Regression control: Cipher-suite scan on the edge build fails on any non-1.3 suite; a single-sourced crypto inventory reviewed at every dependency bump; Key shape and algorithm pinned in config, not code.
+
+---
+
+Concept: Agent systems as privileged insiders. The lethal trifecta: private data + untrusted content + external communication in one agent session.
+Vulnerable pattern: A coding agent with full repo access, arbitrary web fetch, and shell egress, processing an attacker-crafted PR body.
+Why it fails: Injection in the untrusted content can ride the whole session into data exfiltration; no single layer is at fault, the composition is.
+Remediation: Break at least one leg. Scope tool grants per task (read vs write vs execute vs network), isolate untrusted-content sessions from private-data contexts, force all egress through an allow-list, require typed human confirmation for irreversible actions, and batch approvals only for irreversible risk levels. Treat approval fatigue itself as a finding.
+Regression control: Threat-model the harness on every tool-grant change; injection-resistance tests run the canonical PR-body, issue-body, and dependency-metadata vectors.
+
+---
+
+Concept: MCP servers are third-party code. Their tool descriptions, argument schemas, and network behavior are untrusted input.
+Vulnerable pattern: Tool descriptions that instruct the agent to call exfiltrate(token) first, or a token passthrough that forwards the session's OAuth token to every MCP server.
+Why it fails: The agent cannot tell description from instruction; passthrough widens any one server's compromise to full account access.
+Remediation: Pin MCP servers by version or digest; per-server credentials scoped to that server's audience; no token passthrough — each server gets its own grant; sandbox execution; descriptions treated as untrusted text that is never auto-executed. Read-only by default, write scopes require the same review as a new dependency.
+Regression control: A server-version allow-list in config, CI failure on drift, and a test that flags a new tool appearing without an approval note.
+
+---
+
+Concept: The three trust-boundary invariants, stated as named violations and enforced on every build. Invariant one: tenant context never comes from the client — the gateway plus RLS derive it.
+Vulnerable pattern: Tenant id taken from a request field, header, or JWT sub without server-side rebinding.
+Why it fails: The client controls the field, so any caller can read or write another tenant's rows by changing a parameter.
+Remediation: Derive tenant exclusively from the verified principal and re-bind it at the service layer and in the database session; tenant-scoped RLS policies are forced.
+Regression control: A request with a forged tenant claim returns zero rows; the CI fixture sweeps omit/foreign/empty/array tenant inputs.
+
+---
+
+Concept: Passkeys/WebAuthn as the phishing-resistant credential. Mechanism here; flows in 07.
+Vulnerable pattern: Two-factor via SMS OTP as the only second factor, or an optional phishable TOTP that users routinely skip.
+Why it fails: OTP codes are replayable, phishables, and SMS depends on the carrier; an attacker who can phish a login page can often relay the second factor.
+Remediation: Prefer passkeys (FIDO2) for human primary authentication; require phishing-resistant MFA for production access and gate sensitive actions behind step-up authentication; keep recovery paths equally strong because account recovery is the usual bypass.
+Regression control: Login-flow tests confirm phishing-resistant MFA for admin; recovery flows tested for bypass attempts and logged.

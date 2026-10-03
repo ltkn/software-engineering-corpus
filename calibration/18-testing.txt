@@ -224,3 +224,51 @@ Example: README curl sequences, OpenAPI examples, and runbook commands executed 
 Why this level: docs rot faster than code; executable docs cannot lie for long.
 Anti-pattern: README showing v1 endpoints removed two years ago.
 Verification: docs-test job runs examples; failing example blocks the docs change that caused it.
+
+---
+
+What to test: API response contracts for POST /users.
+Minimal example: assert status 201, Location header present, and no extra fields beyond the contract.
+Why this level: a contract test catches serialization drift a MockMvc test cannot; route the check through the OpenAPI schema, not a hand-rolled shape.
+Anti-pattern: asserting only the happy path, which hides the problem-detail contract for failures.
+Verification: contract job fails on any schema addition not in the spec diff.
+
+---
+
+What to test: keyset pagination concatenating to the full query.
+Minimal example: property: for any tenant size, page_size, the pages joined sequentially equal the ordered result, with no duplicates or skips.
+Why this technique: an example can pick a friendly size; a property sweep covers every insert interleaving the comparator covers.
+Anti-pattern: a fixed-fixture test with a single tenant and one page size.
+Verification: Hypothesis or fast-check run in CI with a seeded random database; the invariant failure shrinks to a two-tenant minimal case.
+
+---
+
+What to test: a flaky suite's rerun policy.
+Minimal example: three failures in a row locally; bisect by isolation first, never by rerun counter.
+Why this discipline: a flake that gets quarantined without a root-cause note trains the team to ignore the signal; the goal is to delete the flake, not the gate.
+Anti-pattern: blind -u on snapshots or a retry wrapper that masks the same bug for six months.
+Verification: the quarantine entry carries a linked root-cause ticket and an expiry date; the daily sweep counts down.
+
+---
+
+What to test: a service's error budget under a realistic load profile.
+Minimal example: 500 VU sustained for 10 minutes; pass bar is p95 < 400ms and success rate > 99.5%; no 5xx on the warm path.
+Why this level: SLO-based bars replace the "no 500s ever" theatre with a measurable envelope that matches production telemetry.
+Anti-pattern: running load once on a quiet Sunday and declaring readiness.
+Verification: k6 output piped into the same dashboard as production telemetry; the gate fails the build on an SLO breach.
+
+---
+
+What to test: a fault-injection drill on the outbox relay.
+Minimal example: kill the relay mid-batch; resume must replay the claimed rows exactly once downstream.
+Why this technique: the failure mode is only visible when the crash happens at the one-line window between publish and mark-sent.
+Anti-pattern: mocks for the relay, which prove the happy path of code that only exists when the relay works.
+Verification: kill -9 during a load drill, then assert zero duplicates over 20 runs.
+
+---
+
+What to test: agent-written patches before they merge.
+Minimal example: the agent's PR includes four new tests; each must fail against the parent commit and pass on the branch.
+Why this technique: agent-written tests can be tautological; a red-green proof on the parent commit catches assertions that cannot fail.
+Anti-pattern: merging agent tests that pass on the broken code because the assertion restates the bug.
+Verification: CI runs the new tests against the parent commit as a gate; a golden-task replay ports the check to the agent harness.

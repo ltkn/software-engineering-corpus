@@ -283,3 +283,47 @@ Contract fragment: POST /exports returns 202 plus Operation: /operations/{id}; G
 Why: held connections couple client patience to job duration; pollable operations survive deploys, retries, and impatient clients.
 Versioning note: operation shapes versioned with the API; terminal states stable across versions.
 Verification: deploy-during-operation drill completes the job; client-disconnect drill shows no orphaned work.
+
+---
+
+Design decision: front REST/SSE on HTTP/3 with a fallback, instead of a hard upgrade.
+Contract or config fragment:
+listen 443 ssl;
+listen 443 quic;
+http3 on;
+add_header Alt-Svc 'h3=":443"; ma=86400' always;
+Why: H/3's QUIC transport removes TCP head-of-line blocking for the event streams this API serves, but clients fail the h3 handshake as often as they succeed on the first attempt; without the Alt-Svc advertisement and the H/2 fallback, a third of clients burn a full connect timeout on every session. This failure mode is invisible without per-hop timeout budgets, so the budget belongs in the client config.
+Versioning/compat note: H/3 fallback must advertise H/2 and H/1.1 on the same origin so old clients transparently downgrade.
+Verification: synthetic probe: 1,000 clients, zero sessions that never connect; H/2 and H/1.1 fallbacks counted in the edge dashboard.
+
+---
+
+Design decision: use HTTP message signatures (RFC 9421) instead of a bespoke X-Signature header for webhook and outbound-request integrity.
+Contract or config fragment:
+Signature-Input: sig1=("@method" "@path" "content-digest");created=1735689600;nonce="abc123";keyid="hook-01";alg="hmac-sha256"
+Signature: sig1=:...base64...
+Why: the bespoke HMAC scheme signs only the body, so method, path, and timestamp are replayable independently — a client that lifts the signature header replays the same call against a different path. RFC 9421 covers the request line and the content-digest, closing that. The failure it prevents is a signed webhook header replayed against a different endpoint or stripped of timestamp.
+Versioning/compat note: key rotation publishes both old and new keyids in Signature-Input until the clock-skewed verification window closes; docs distinguish the canonical-path form for proxies.
+Verification: integration test replays a captured Signature-Input against a different path and must fail with 401; a stripped content-digest fails with the documented error.
+
+---
+
+Design decision: treat IETF RateLimit headers as a draft until RFC, never as the sole signal.
+Contract or config fragment:
+RateLimit-Limit: 100
+RateLimit-Remaining: 41
+RateLimit-Reset: 780
+Plus the historical X-RateLimit-* trio preserved in parallel until at least one full deprecation window.
+Why: RateLimit/RateLimit-Policy are at draft-v11 with a moving syntax; shipping them as the only client contract means a draft refresh silently changes what clients parse. The old trio had documented reset semantics because the API owned them. The failure this prevents is treating an IETF draft as settled — the corpus marks this labeled draft, never settled.
+Versioning/compat note: both header families ship in parallel until Sunset on the legacy trio; the deprecation window is named in the contract doc.
+Verification: contract test asserts both families present and consistent on every 429 and on every 200.
+
+---
+
+Design decision: cache tiers are explicit per route, never assumed by a library.
+Contract or config fragment:
+Cache-Control: private, max-age=30        # session-scoped user payloads
+Cache-Control: public, max-age=300, stale-while-revalidate=600   # catalog reads
+Why: RFC 9111 lets stale-while-revalidate serve one stale response while revalidating — that is a UX win for catalog, a data-integrity loss for session state. The failure mode is cargo-culting the same Cache-Control onto user-specific and shared payloads alike.
+Versioning/compat note: when the cache key changes (e.g., adding a user dimension), the ETag and the Cache-Control tier must move together or conditional requests never validate.
+Verification: a probe asserts the user-specific route never returns a shared Cache-Control; a concurrent stale-while-revalidate window yields exactly one stale response per key.

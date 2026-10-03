@@ -443,3 +443,58 @@ Validation: claim names match the semantic used, operator identity present for d
 Failure: impersonation tokens used where delegation was intended — audit shows the user performing actions they never took.
 Remediation: default to delegation; impersonation requires explicit policy approval per flow with expiry.
 Regression test: audit-trail test asserts the recorded actor matches the semantic; impersonation flow without approval rejected.
+
+---
+
+Concept (RFC 9207/JARM; reviewed 2026-10): the authorization response must be carry-bound to the expected issuer, not just the redirect_uri match. Without it, an attacker who intercepts an authorization-response redirect of their own code can swap endpoints (mix-up).
+Participants: client, authorization server.
+Sequence: client records the expected issuer from the configured metadata at request time; on the redirect callback, the response's iss parameter is compared to the expected issuer and the state to the issued state before any further validation.
+Invariant: no token-endpoint call happens until iss matches the pre-configured issuer and state matches the in-flight transaction.
+Validation: state bound to client transaction, nonce bound to the id_token, redirect URI exact-matched, iss exact-matched against the pre-configured issuer.
+Failure: No iss check means the client may redeem an attacker's code at the attacker's authorization server.
+Remediation: Originate the check at the client transaction record, never from request input, and keep a distinct state per login attempt.
+Regression test: Callback with a mismatched iss is rejected before any code exchange; a replayed state is rejected.
+
+---
+
+Concept (RFC 7472-style dynamic client registration vs client-ID metadata documents; agents profile; reviewed 2026-10): an agent client needs a stable identity at a resource server. Two options: register dynamically (POST client metadata to the authorization server's registration endpoint), or publish a client-id metadata document at a stable https URL and use that URL as the client_id.
+Participants: agent/client, authorization server, resource server.
+Sequence: dynamic: client registers once per issuer, receives client_id and optionally a client secret; the resource server learns the AS via protected-resource metadata. Metadata-doc: the client publishes a JSON document at https://apps.example.com/acme-agent.json naming its redirect URIs and grant types and uses that URL as client_id.
+Invariant: the client_id the resource server validates against is the same one the authorization server issued or resolved; the authorization server's resolution of the client_id is the trust decision, and metadata documents are fetched over TLS with a cache bound like AS metadata.
+Validation: client_id is https and exactly the publisher's expected URL for the metadata-doc form; redirect URIs exact-compared; dynamic registration rate-limited and scoped to known registrants.
+Failure: A client_id taken from a request body reaches the metadata fetch and pulls attacker-controlled redirect URIs; or dynamic registration is open to anyone and produces rogue clients.
+Remediation: Fix the client_id binding at configuration, restrict the registration endpoint to known partners, and keep redirect URIs allow-listed exactly.
+Regression test: A changed client_id fails token exchange; the metadata document is fetched only over TLS with size limits; an unallow-listed redirect_uri is rejected.
+
+---
+
+Concept (RFC 9470 step-up authentication via WWW-Authenticate challenges; reviewed 2026-10): resource servers can demand a stronger authentication at sensitive operations by returning a challenge naming the required acr value and max_age.
+Participants: resource server, client, authorization server.
+Sequence: client calls a step-up endpoint; the resource server replies 401 with WWW-Authenticate: Bearer error="insufficient_user_authentication", acr_values="urn:example:mfa", max_age="0". The client restarts with authentication parameters for the named acr; the authorization server applies the stronger requirement.
+Invariant: the new token's acr claim must satisfy the challenge's acr_values, and the client proves possession of the same subject before escalation.
+Validation: acr claim exact-matched against the challenge values, auth_time within max_age, scope of the re-issued token narrowed or equal, never widened.
+Failure: Treating the 401 as a plain expiry and blindly refreshing re-enters the weaker session; accepting any new token without checking acr defeats the point.
+Remediation: Surface step-up to the user as a dedicated flow with the named requirement, verify acr and max_age on the fresh token, and record the stronger level for the request's lifetime.
+Regression test: A re-issued token with the same weaker acr is rejected with the challenge re-sent; a fresh token at the required acr passes.
+
+---
+
+Concept (RFC 8725, JWT BCP; applied at distinct checkpoints; reviewed 2026-10): access-token validation and ID-token validation are separate checkpoints with different expectations, even when both are JWTs.
+Participants: resource server (RP-less), client (ID token).
+Sequence: Resource server validates the access token: issuer, audience (the resource identifier), expiry, token_use or typ, signature, and the resource-indicator binding to the request. The client validates the ID token: issuer, audience (its own client_id), nonce matches the transaction, auth_time if required, exp/iat, alg matches the approved set.
+Invariant: an ID token is never accepted as an access token and vice versa; audiences are exact and explicit.
+Validation: alg fixed or allow-listed per client; typ or token_use claims cross-checked; no plaintext "none"; JWKS fetched with bound caching and rotation overlap.
+Failure: Accepting an ID token at the API gets you a user, not a delegated caller; accepting an access token as identity lets a resource server impersonate the client.
+Remediation: Distinct audience values (api://users vs the client_id) and distinct issuer/type expectations per checkpoint; shared library enforces the split.
+Regression test: The same JWT presented at the wrong checkpoint is rejected with the same class of error; audience mismatch cases covered; none-alg case fails closed.
+
+---
+
+Concept (applying the modern OAuth profile to coding agents and tool servers; fenced and labeled emerging; reviewed 2026-10): agents are both clients of their users' services and servers of tool capabilities.
+Participants: agent runtime (client), resource server (tool API), authorization server.
+Sequence: Resource server publishes protected-resource metadata; agent discovers the authorization server from it; tokens are requested with an explicit resource indicator per tool server; PKCE S256; per-hop audience narrowing when delegating to sub-agents via RFC 8693 exchange with an act claim.
+Invariant: No token passthrough — the agent never forwards a user token from one tool server to another; each server audience is explicit; delegation chains narrow, never widen.
+Validation: Protected-resource metadata's authorization_servers response is validated against the configured issuer; dynamic registration or client-ID metadata used for client identity; act and delegated_authorization claims checked on exchange.
+Failure: Reusing one ambient token across three tool servers lets compromise of the least-defended server replay it against all three.
+Remediation: Per-server audience indicators, per-tool consent at the agent runtime, and token exchange with audience narrowing on delegation. Tool grants are least-privilege per task.
+Regression test: A token minted for server A is rejected by server B; an exchange for a wider audience fails closed; a sub-agent chain cannot mint a wider token than its parent held.

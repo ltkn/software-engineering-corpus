@@ -227,3 +227,27 @@ Violation: Trace attributes carry user tokens for "debugging", CI artifacts arch
 Practice: Attribute allow-lists on traces and APM (drop or hash sensitive fields at the SDK), CI artifacts exclude secret paths by default, multi-stage Docker builds with secret mounts (never COPY of key files), K8s secrets from the manager (sealed or external), never literals in manifests, caches and crash reports under the same redaction tests as logs.
 Control: Scheduled scan across attribute schemas, artifact contents, image layers (dive-style diff on secret paths), and manifests for literal secrets; findings routed like any exposure by tier.
 Recovery: Rotate what each surface held; purge the contaminated artifact, layer, or trace window where possible; add the surface to the redaction checklist so the class cannot recur silently.
+
+---
+
+Rule: Forked CI jobs are untrusted; they get no secrets, no write permissions, and no path to production.
+Violation: A pull_request workflow from a fork checks out the head and runs install scripts on a runner with a registry token.
+Practice: No secrets on forked runs; actions default-empty permissions; never checkout fork head in a pull_request_target job; install scripts either allow-listed or disabled; artifacts signed after merge, not before.
+Control: Workflow linter in CI fails on pull_request_target + checkout-of-head; a scanner rule blocks long-lived cloud keys and keeps OIDC-to-cloud as the only deploy credential.
+Recovery: Rotate any token the job could have touched; review the fork's PRs for unexpected lockfile additions.
+
+---
+
+Rule: Production access is least-privilege, just-in-time, and recorded.
+Violation: A standing admin role grants every engineer shell into any production database, no approval needed.
+Practice: No standing admin. Elevation is JIT — a request names a role, a resource set, and a duration; an approver signs it off; the session is logged and playback-recorded; access expires at the timer, not at checkout. Break-glass access exists but is alarmed, audited, and reviewed before business hours resume.
+Control: Role bindings auto-expire; an audit row joins requester, approver, session, and commands; standing-admin grants page the security owner.
+Recovery: Any break-glass session triggers a manual review within one business day and rotates the elevated credential class it used.
+
+---
+
+Rule: History remediation is remove, rotate, then assess — in that order and with rotated first on a live secret.
+Violation: A credential in commit history gets scrubbed from Git but nobody rotates it, and the original commit still circulates in clones and forks.
+Practice: Rotate the credential first so the leaked value stops working regardless of how much history remains; then remove it from history with the rewrite tool and force-push; then assess exposure windows and which systems saw the value. Purges and rewrites are never the remediation by themselves.
+Control: Push protection blocks the write; the secret scanner re-audits history after the rewrite and verifies the canary-token and staged-file scans both go quiet.
+Recovery: If the value was live outside the forced-push window, the incident tier applies — tier one for production-bearing secrets, tier two for isolated dev-only material.

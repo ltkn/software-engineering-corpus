@@ -188,3 +188,22 @@ Schema: deploy-linked burn attribution (which release consumed how much budget) 
 Why: accountability without blame — the data shows which changes cost reliability, informing the next design.
 Anti-pattern: budgets burning with no link to causes, reviewed as weather rather than feedback.
 Verification: release record carries burn delta; repeated burners trigger design review, not just rollback.
+
+---
+
+Signal needed: boot-up observability that works before app code runs, on the same baseline as production.
+Config fragment: the spring-boot-starter-opentelemetry starter, with the 4.1 environment-variable support for OTLP endpoints so one container image targets any OTLP receiver by env alone.
+Schema or config fragment:
+OTEL_EXPORTER_OTLP_ENDPOINT=https://otel.internal:4318
+OTEL_SERVICE_NAME=users-svc
+How it reads in an incident: the very first boot after deploy already carries the service name, which is the only way to attribute a startup regression to the right pod.
+Anti-pattern: egressing per-signal to three different agents, each with its own queue and its own failure mode.
+Verification: a pod restart renders spans to the staging receiver within one heartbeat; the dashboard for the new service name appears without any application change.
+
+---
+
+Signal needed: correlate tenant context between logs and traces without smuggling PII across a trust boundary.
+Schema or config fragment: tenant_id travels in the server-timing/trace attributes set from the gateway; baggage is never populated with tenant or user identifiers.
+How it reads in an incident: every log line carries the same tenant field as the span attribute, so a drill query filters by tenant once and hits both signals.
+Anti-pattern: tenant id in W3C baggage — baggage propagates to every outbound call including third parties, leaking tenancy where it should never reach.
+Verification: a test that boots the gateway and spans two outbound calls asserts no tenant key appears in the W3C baggage header.

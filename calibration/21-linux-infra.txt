@@ -237,3 +237,36 @@ Wiring: migrations run before code rollout (expand steps), app versions tolerate
 Why: code-first deploys crash on missing columns; migration-first with backward compatibility never strands either version.
 Misconfiguration: code and migration in one atomic deploy, rollback impossible without data surgery.
 Verification: mixed-version drill (old code on new schema and vice versa) green before rollout proceeds.
+
+---
+
+Goal: Place the service behind Gateway API, not the retired ingress-nginx path.
+Why: Gateway API is the default for new work; ingress-nginx was retired in 2026-03 and its manifests no longer pass. The Ingress API object stays valid but is the legacy surface, so new routes go on Gateway listeners and HTTPRoutes.
+Config fragment:
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: { name: users-route }
+spec:
+  parentRefs: [{ name: edge-gateway, namespace: gateway-system }]
+  hostnames: ["app.acme.test"]
+Canonical failure: kubectl returns Gateway listener unset for users-svc because the route references an Ingress controller that no longer serves traffic; traffic 404s with no error object attached.
+Verify: `kubectl get httproute` shows Accepted=True, and `openssl s_client -h app.acme.test` shows the same cert as before the move.
+
+---
+
+Goal: Set a TLS posture that assumes short certificate lifetimes.
+Why: HSTS is permanent-permanent, cipher downgrade protects mostly nothing modern, but OCSP stapling is no longer worth configuring because CAs have retired OCSP issuance — the staple path returns soft fails. The working set is: TLSv1.3 by default, 1.2 with a modern cipher list where a legacy client forces it, HSTS with a long max-age, and no OCSP stapling directives.
+Config fragment:
+ssl_protocols TLSv1.3;
+ssl_conf_command Options KTLS; # if the OpenSSL build supports kTLS
+add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+Canonical failure: An expired chain is the only invisible outage. Without alert-on-expiry-from-the-dashboard, you find it in support tickets.
+Verify: `openssl s_client -connect app.acme.test:443 -tls1_2` fails, `-tls1_3` succeeds; expiry probe paged the on-call when the staging chain hit 7 days.
+
+---
+
+Goal: Let SSH pick its post-quantum hybrid by default.
+Why: Recent OpenSSH defaults to a hybrid key exchange that resists the harvest-now-decrypt-later window; forcing a single classical curve in /etc/ssh/sshd_config removes that protection for no compatibility reason. Set the ordering explicitly only when a client class cannot negotiate it, and log which exchange actually ran in the debug path.
+Command: ssh -Q kex | grep -i post-quantum
+Canonical failure: A legacy JumpHost advertises only curve25519-sha256@libssh.org and the session silently downgrades; without logging the negotiated exchange, the downgrade never surfaces.
+Verify: `ssh -vv` shows a hybrid exchange name; the bastion logs the same value into the audit record for that session.

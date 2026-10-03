@@ -413,3 +413,35 @@ Step 2. A peaky-but-critical tensor (rare security tokens) quantized hard destro
 Step 3. Correct statement: allocate bits by measured distribution shape times task importance, verified by downstream eval, not by entropy alone.
 Correction: "Entropy informs bit budgets; importance decides them; eval confirms."
 Answer: Entropy alone never justifies aggressive quantization.
+
+---
+
+Q: Ten hypotheses, two truly null. p-values: 0.001, 0.008, 0.03, 0.04, 0.20, 0.31, 0.44, 0.52, 0.77, 0.91 at alpha 0.05. Compare Bonferroni vs Benjamini-Hochberg.
+Step 1. Bonferroni rejects each if p <= 0.05/10 = 0.005. Only 0.001 passes.
+Step 2. BH: reject p_(k) when p_(k) <= (k/10)*0.05 using the largest such k. p_(2)=0.008 <= 0.01, so the top two reject.
+Step 3. Bonferroni bounds family-wise error, so it is conservative; BH bounds false discovery rate, so it keeps more real signals at the same alpha. Multiple correction is for comparing many things to a threshold, never for rescuing a single planned comparison.
+Answer: Bonferroni keeps 1, BH keeps 2; choose by whether FWER or FDR is the operational risk.
+
+---
+
+Q: Two groups of checkout latencies: n1=n2=30, means 820 vs 760ms, pooled SD 100ms. Report the effect size with a CI, not just the p.
+Step 1. Cohen's d = (820-760)/100 = 0.6 (medium by the small-medium-large convention, a heuristic, not a guarantee).
+Step 2. A 95% CI for d via bootstrap over the two resamples is roughly [0.05, 1.13]; with n=30 per arm the estimate is noisy.
+Step 3. A bare p only says incompatibility with zero; the CI on d bounds the plausibly real gap. Always report both.
+Answer: d ≈ 0.6, CI ≈ [0.05, 1.13]; the gap may be negligible at the low end.
+
+---
+
+Q: A model's validation loss averages 3.2 nats per token. What perplexity does that imply, and why is perplexity the exponent?
+Step 1. Cross-entropy per token is the mean negative log-likelihood H = -mean(ln p(x_t)). Here H = 3.2 nats.
+Step 2. Perplexity is exp(H): exp(3.2) ≈ 24.5. The exponent converts "surprisal per token" back to an effective branching factor.
+Step 3. exp of a big number exaggerates variance — small H changes move PPL a lot, so compare models on the same tokenizer and the CI on the loss difference.
+Answer: PPL ≈ 24.5; a model with lower average NLL wins, and the gap's significance comes from the NLL difference, not the PPL ratio.
+
+---
+
+Q: Explain why a source's entropy H caps how much it can be compressed, and give a concrete floor for a quantized logit stream.
+Step 1. Shannon source coding: lossless compression cannot go below H bits per symbol on average; any code claiming otherwise must be lossy or wrong.
+Step 2. For a skewed distribution the peaky symbols dominate: H is small, so most probability mass sits in a few tokens, and more bits can be spent on those few without hurting the average.
+Step 3. That is why imatrix/Q4 keeps the high-information weights precise and lets the peaky-classifier weights go coarser — the floor H is fixed by the distribution, and you allocate bits toward it.
+Answer: H is the floor; exp(H) per-token perplexity is the model-side analog; skew (low H) is exactly what makes mixed precision worthwhile.

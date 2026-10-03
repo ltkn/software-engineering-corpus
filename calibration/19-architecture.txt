@@ -274,3 +274,49 @@ Options: Debezium now; polling with tripwire.
 Decision: polling retained; tripwire armed (10k/min sustained or relay p99 breach for a week).
 Consequences: simpler operations accepted; latency ceiling acknowledged; revisit automatic on tripwire.
 Revisit trigger: tripwire metric, reviewed monthly in the architecture log.
+
+---
+
+Decision context: Multi-tenant data isolation in the modular monolith.
+Options: shared schema with RLS (row-level), schema-per-tenant, database-per-tenant.
+Recommendation with conditions: shared schema + RLS for B2B SaaS with many small tenants; schema-per-tenant when compliance forces per-tenant backups; database-per-tenant only past the tenancy volume where per-tenant operations teams are justified. The RLS policy derives tenant from the gateway-set session variable, never from the request body.
+Reversibility note: Shared-schema is cheap to reverse logically (RLS off), schema-per-tenant is expensive because data moves.
+Verification: The cross-tenant battery from 08 runs against the shared schema: omit, empty, foreign, and array tenant inputs each return zero rows; the RLS fixture test fails CI on a missing policy.
+
+---
+
+Decision context: How catalog events reach the search service.
+Options: polling the outbox table on an interval vs a CDC stream via Debezium vs direct dual-write from the service.
+Recommendation with conditions: outbox plus polling first — the business write and the event row commit atomically, and the relay cadence matches a search-ranking tolerance of a few seconds. Flip to Debezium when the lag SLO is sub-second and the team can run a connector. Dual-write is rejected: it is not atomic and produces silent divergence.
+Reversibility note: Outbox-to-CDC is a relay swap, additive; dual-write is a reconciliation swamp.
+Verification: End-to-end latency from commits to search index updated is measured p99; the relay backlog is a first-class alert; killing Debezium's connector in staging surfaces the documented runbook, not a silent stall.
+
+---
+
+Decision context: Cross-service workflow between orders, payments, and fulfillment.
+Options: orchestrated saga with compensations, choreographed saga, or 2PC.
+Recommendation with conditions: orchestrated saga. 2PC needs an always-available lock coordinator and blocks participant resources during the vote, which payment gateways do not expose. The orchestrator owns the state machine and the compensation table; each step is idempotent on the idempotency key from 06.
+Reversibility note: The orchestrator can be swapped for choreography later because the state machine and compensation table are the portable artifacts.
+Verification: Fault drill: kill a motor close to the payment step, assert compensation runs without replay of the authorize call; the idempotency log shows one authorize, one void.
+
+---
+
+Decision context: Concurrency model for the order-checkout service at peak.
+Options: virtual threads with blocking I/O, reactive streams with backpressure, and a hybrid where the web layer is virtual-threaded and the streaming path stays reactive.
+Recommendation with conditions: virtual threads where the workload is I/O-fan-out and latency-sensitive; keep the streaming path reactive where backpressure is the explicit overflow policy. Do not mix async-reactive at call boundaries: the handler either returns a value or a reactive type, not both. The pinning rule from 10 applies — no synchronized blocks on hot virtual threads; evidence is a JFR pinning event count of zero.
+Reversibility note: The web layer's concurrency model is a JVM flag; the change is one deploy, one JFR alert, and a rollback flag away.
+Verification: Load at 2x p99 target holds p95 flat, JFR pinning events zero, and the reactive streaming path carries its own backpressure alert.
+
+---
+
+Decision context: Model an LLM dependency inside checkout recovery.
+Options: the recovery service embeds the LLM SDK directly, the SDK is wrapped in a service, or the LLM sits behind a port with a deterministic fallback.
+Recommendation with conditions: port plus deterministic fallback. The port hides provider details; the fallback answers the bounded set of recovery questions without the model; timeout and spend caps sit at the port boundary and fail-closed.
+Verification: Provider swap drill: set the port to return the canned fallback and confirm checkout recovery still answers the bounded questions; spend and latency metrics alarm at one taste of the cap.
+
+---
+
+Decision context: A v1 endpoint ships a field that v2 wants to remove.
+Options: remove and break clients, keep forever, or execute expand-contract: add column in v2, backfill, dual-write, then drop after a declared window.
+Recommendation with conditions: expand-contract. The contract doc carries a deprecation date; the backfill is idempotent; the drop needs a reviewed migration ticket and a rehearsal in staging with a copy of production-shaped data. Removing eagerly is rejected: a panicked revert under traffic is the worst outcome.
+Verification: The deprecated field's write path emits a deprecation log counted per client; drop proceeds only after the count is zero for a full observation window.

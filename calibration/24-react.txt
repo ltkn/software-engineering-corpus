@@ -131,3 +131,39 @@ Snippet: useEffect(fn, [a, b]) becomes watch([() => a, () => b], fn) or a comput
 Vue parallel: computed preferred where the effect only derives; watch where side effects genuinely occur.
 Translator pitfall: every useEffect becoming watchEffect, reintroducing the race patterns the original code had already fixed with arrays.
 Check: derivation-vs-effect classification per translated effect; race fixture (slow-then-fast) green post-translation.
+
+---
+
+Concept: React Compiler's automatic memoization and what it means for the code you read.
+Snippet:
+function Filters({ items, query }) {
+  const visible = items.filter(i => i.title.includes(query));   // no useMemo needed with the Compiler
+  const sorted = useMemo(() => [...visible].sort((a,b) => a.title.localeCompare(b.title)), [visible]); // still fine, but not load-bearing
+  return <List rows={sorted} />;
+}
+Vue parallel: computed() replaces both useMemo and most useCallback use cases, always — the Compiler moves React toward that model.
+Translator pitfall: removing useMemo/useCallback during a port breaks a translator that assumed manual memoization; keep them until the app opts into the Compiler on both sides.
+Check: release-build profiling confirms renders only change where props actually changed; the Compiler's report in the React DevTools tab is green for the hot screen.
+
+---
+
+Concept: useEffectEvent (previously experimental) for reading latest state inside a stable effect handler.
+Snippet:
+function useChatJoined(roomId: string, onMessage: (m: Message) => void) {
+  const onMessageLatest = useEffectEvent(onMessage);
+  useEffect(() => {
+    const conn = connect(roomId, m => onMessageLatest(m));
+    return () => conn.close();
+  }, [roomId]);
+}
+Vue parallel: a watchEffect that reads refs outside its source list still invalidates the effect — Vue's reactivity tracks correctly by default; useEffectEvent is the React analogue achieved imperatively.
+Translator pitfall: wrapping the callback in another useCallback to "stabilize" it recreates the stale-closure class of bug the API was designed to prevent.
+Check: roomId changes restart the connection (effect cleanup); the onMessageLatest ref points at the newest render's closure without re-subscribing.
+
+---
+
+Concept: Server Components and the Flight protocol as the security boundary only.
+Snippet: none — recognition only; no RSC code is produced in this corpus.
+Vue parallel: none; the server/client split is an RSC-specific concern, and in Vue the equivalent data boundary is Nuxt's data fetching plus a server route.
+Translator pitfall: interpreting the Flight RPC surface as a framework feature to port — it is the protocol where CVE-2025-55182 (React2Shell) lived; see 06 for the deserialization-in-flight lesson.
+Check: production React apps treat RSC payloads as untrusted input at any second-tier service that forwards them.

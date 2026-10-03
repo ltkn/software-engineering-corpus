@@ -185,3 +185,20 @@ Goal: Dependency vulnerability scanning for Python environments.
 Wiring: lockfile audit in CI (pip-audit or equivalent) with severity SLA matching the main policy; base-image Python patched via rebuilds.
 Why: transitive PyPI dependencies carry CVEs like any other supply chain; EOL interpreters stop receiving fixes entirely.
 Verification: audit gate on criticals past SLA; interpreter EOL check (3.10-class runtimes rejected).
+
+---
+
+Goal: Package corpus tooling scripts without drifting lockfiles.
+Why: PEP 723 inline script metadata plus one standard lock file means a single script pins its own environment. PEP 735 dependency groups keep dev-only deps out of production installs, and the standard lock file format (PEP 751) lets any conforming tool resolve the same graph.
+snippet:
+# script header block (PEP 723), shown inside a comment fence:
+# /// script
+# requires-python = ">=3.13"
+# dependencies = ["click", "httpx"]
+# ///
+pip install uv && uv lock       # uv.lock IS the PEP 751 lock file
+uv sync --group dev             # dev group excluded from prod images
+legacy/counter form:
+requirements.txt + pip install --user every CLI run, with a comment "last updated 2024".
+pitfall: Two lock files in the same repo (pipenv + uv, or conda env YAML mixed in) silently diverge on patch-level updates.
+verification: `uv lock --check` passes on a fresh clone, and a clean venv from the lockfile runs the script's tests on the first try.

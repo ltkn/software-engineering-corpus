@@ -541,3 +541,17 @@ Modern form: opens com.acme.users.entities to org.hibernate.orm.core, org.junit.
 Why: reflection needs explicit doors; test-only doors must not leak into the shipped descriptor where they widen every deployment's attack surface.
 Counter-pattern: opens ... to all unnamed modules "until we figure it out", permanent since 2023.
 Check: opens audit lists each entry with owner and reason; unnamed opens fail the build.
+
+---
+
+Concept: JDK 25's small-but-binding additions, with status labels (JEP numbers verified against the 2026-10 ledger). Record-constructor and flexible-constructor work rides JEP 513; compact object headers JEP 519 is a product option with a per-workload footprint effect; generational Shenandoah finalizes in 25 (JEP 521) alongside G1/ZGC for selection heuristics; JFR gains CPU-time profiling (JEP 509, experimental, Linux-only), cooperative sampling (JEP 518), and method timing/tracing (JEP 520); JEP 510 adds the KDF API; PEM encodings remain preview (JEP 470).
+Why: These are the migration-surface items teams trip on when moving tests, benchmarks, and startup code to 25. Each carries the JEP number plus status so a code review can resolve "is this stable?" in one lookup.
+Counter-pattern: Treating JEP 519 as a free footprint win (measure the workload first) or the JFR additions as stable APIs (they carry preview flags).
+Verification: `java --enable-preview` for preview items only; benchmark-derived footprint delta on the same workload; JMH harness with forks and Blackhole for the JIT-adjacent claims.
+
+---
+
+Concept: The preview neighbor chain through JDK 27, so a "latest idiom" never claims finality before it has it. Primitive patterns fifth preview in 26/27 (JEP 532); stable values renamed Lazy Constants, third preview in 27 (JEP 531); PEM third preview in 27 (JEP 538); post-quantum hybrid key exchange for TLS 1.3 final in 27 (JEP 527); StructuredTaskScope continues as the seventh preview in 27 (JEP 533) and is not final in any release through 27.
+Why: Each carries its own preview flag; treating any of them as final produces code that breaks on the next non-preview flag removal.
+Counter-pattern: Writing a JEP 532-style `switch` on a value without the flag, or removing the flag after a JDK bump and losing the type-check the preview bought.
+Verification: `--enable-preview` per-release notes checked against the manifest ledger; a CI matrix on 25/26/27 confirms the same flag set compiles and runs.

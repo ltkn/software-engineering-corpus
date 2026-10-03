@@ -111,7 +111,7 @@ Answer: 25 m/s.
 
 Passage: Copyists charged by the line, so abbreviations flourished in manuscripts: suspensions dropped endings, contractions removed middles. Readers of the period parsed them fluently, but modern editors expanding them must guess, and two editions of one chronicle can differ on every tenth word.
 Q1: Why did charging by the line encourage abbreviation?
-Answer: Fewer lines per page of content meant less writing for the same text, directly raising the copyist's effective rate.
+Answer: Fewer lines per page of content meant less writing for the same text, directly raising the copyist's effective rate. This infers the incentive from the stated pricing method.
 Q2: Why do modern editions disagree?
 Answer: Because expansion requires guessing the dropped letters, and different editors guess differently where the manuscript is ambiguous. This follows from the stated need to guess.
 
@@ -254,3 +254,28 @@ Answer: 1048576 (2^20); megabytes (MB) in SI usage mean 1000000, so state which 
 Passage: Clipper ships sacrificed cargo space for sail area and narrow hulls, betting speed premiums against bulk rates. For tea and wool seasons where first cargo set the price, the bet paid; for coal and guano it never could, and clippers avoided those trades entirely.
 Q: Why did the same ship win tea and lose coal?
 Answer: Because tea paid a speed premium that rewarded fast hulls while coal paid by bulk weight, where narrow fast hulls carried less per voyage at higher cost. This infers the rate-structure difference from the stated trade selection.
+
+---
+
+Summarize in one sentence: The ferry schedule was rewritten twice in a week. A berthing dispute with the port authority pushed sailings to a leased pier downstream; when that pier's depth proved insufficient for the new ferry's draft, sailings moved again to the older terminal, restoring the original hourly rhythm but adding a ten-minute shuttle leg for the extra distance.
+Summary: A berthing dispute briefly moved sailings to an ill-suited pier, after which they returned to the old terminal with an added shuttle leg.
+
+---
+
+Summarize in one sentence: The apprentice loom weavers were paid per finished bolt, so they were paid only after delivery, and a spoiled bolt meant the whole bolt's labor went unpaid; consequently they cross-checked each warps's tension before investing the day's weaving, and the mill's rejected-bolt rate fell even before any new equipment arrived.
+Summary: Bolt-rate pay made weavers personally bear spoilage risk, so they added a tension check that cut rejects before any new equipment.
+
+---
+
+Q: Fermi estimate: roughly how many piano tuners are working in a mid-size city of half a million people?
+Answer: Assume 250,000 households, about 4% own a piano, that's ~10,000 pianos; each is tuned roughly once a year, ~10,000 tunings/year; a full-time tuner does ~4 tunings/day, ~250/year, so ~40 tuners. The answer lands in the tens, not the hundreds or the single digits.
+
+---
+
+Q: Order of magnitude: how many liters of fuel does a single-engine cargo ship burn crossing the Atlantic?
+Answer: A handymax-class vessel burns on the order of tens of tonnes of fuel per day; a transatlantic passage is on the order of two weeks. Tens of tonnes/day × ~14 days ≈ several hundred tonnes ≈ roughly half a million to a million liters. Millions, not thousands.
+
+---
+
+Q: Sanity-check this claim with a unit conversion: "Parking costs more per month than my mortgage. The lot charges $400 per week and my mortgage is $1,600 per month."
+Answer: $400/week × ~4.33 weeks/month ≈ $1,730/month, which is slightly more than $1,600 — so the claim is plausible, but only barely; one forgotten-week changes the answer. Always convert to a common period before comparing.
