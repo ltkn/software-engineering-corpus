@@ -8,6 +8,8 @@ Goal: Q4–Q8 quants that keep our stack (Java/Spring, TS 6→7, Vue/TanStack, P
 
 26 UTF-8 `.txt` files ordered by criticality. All filled; see SPEC.md for per-file scope and actuals.
 
+Generated using AI Muse Spark 1.3, Sonnet 5.5 and Qwen3.8-27B.
+
 Baselines (state of the art): Java 25 LTS, Spring Boot 4.1 / Framework 7, TS 7 with 6-compat, Postgres 18, Kafka 4.3 KRaft-only, Vue 3 + TanStack Query v5.
 
 ```text
