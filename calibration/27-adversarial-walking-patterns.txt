@@ -1,5 +1,4 @@
 # 27-adversarial-walking-patterns.txt
-# version v2026-10-04
 # shape: mirror of 08-api-pentest (Surface target → Fixture → How it fails → Passing bar → Failing evidence → Impact → Remediation pointer → Regression test)
 
 Surface target: Java.

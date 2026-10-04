@@ -1,0 +1,16 @@
+# 30-experimentation-and-flagging.txt
+# shape: mirror of 18-testing strategy (What to test → minimal example → why this level → anti-pattern → verification)
+
+What to test: A dark rollout of a retrieval assistant over the synthetic bloomberg feed.
+Minimal example: session-replication snapshots, control group sees the historical path, treatment group sees the assistant when tracing depends on parity.
+Why this level: causal contrast requires group isolation that the rest of the pipeline does not offer; the histogram discipline of 20 applies to both sides.
+Anti-pattern: merging the comparison into a normal metrics aggregate and claiming success from one side with average sentiment.
+Verification: Metrics are partitioned by flag value, the SLO pass barfrom 18 applies to both sides, and you spend in telemetry only on the segment the test claims.
+
+---
+
+What to test: A billable metric moving on a new consumer path.
+Minimal example: 7 days of controlled sliced sample vs a historic baseline at the same point in the season.
+Why this level: the delta claim is killed by seasonal structure; apply Bonferroni or BH from 03 before the result counts.
+Anti-pattern: reading the new path's average latency through a metric built for peak-day reporting; histogram overlap looks like success because it isn't the failure metric.
+Verification: the m-stack sample uses the same window dates and the readout slop check fails on duplicate weekend data slicing.

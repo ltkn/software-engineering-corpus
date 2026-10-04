@@ -4,11 +4,11 @@ Domain-focused calibration corpus for GGUF-quantized coding models and coding ag
 
 Goal: Q4–Q8 quants that keep our stack (Java/Spring, TS 6→7, Vue/TanStack, Postgres, Kafka) with strong security — and keep reasoning first. Custom `llama-imatrix` beats generic WikiText; Q4 gains most, Q8 ignores imatrix (baseline only).
 
-26 UTF-8 `.txt` sources in the bundle-scope set (01-26), plus 27/28 adversarial-hygiene categories weighted at share 2/1 in `manifest.json`.
+26 UTF-8 `.txt` sources in the bundle-scope set (01-26), the two adversarial-hygiene categories (27/28) weighted at share 2/1, plus 29/30 fenced-v0 experiments (29-llm-integration, 30-experimentation-and-flagging) at share 0 in `manifest.json`.
 
 ## Corpus
 
-26 UTF-8 `.txt` files ordered by criticality, plus the fenced 27-28 adversarial category pair. All filled; see SPEC.md for per-file scope and actuals.
+26 UTF-8 `.txt` files ordered by criticality, plus the adversarial 27-28 category pair, plus the fenced experimental 29-30 pair. All filled; see SPEC.md for per-file scope and actuals.
 
 Generated using AI Muse Spark 1.3, Sonnet 5.5 and Qwen3.8-27B.
 
@@ -43,7 +43,9 @@ calibration/
 ├── 25-privacy-gdpr.txt
 ├── 26-ecommerce.txt
 ├── 27-adversarial-walking-patterns.txt
-└── 28-invariant-exploitation.txt
+├── 28-invariant-exploitation.txt
+├── 29-llm-integration.txt
+└── 30-experimentation-and-flagging.txt
 ```
 
 Format: plain blocks separated by blank-line `---` blank-line. No frontmatter or headings in `.txt`. Mix per file: real code, why-explanations, bad→diagnosis→fix, short agent traces. No secrets.
