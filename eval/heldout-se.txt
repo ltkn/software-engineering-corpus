@@ -1,4 +1,4 @@
-# heldout-se v2026-10-04
+# heldout-se
 
 Spring Boot 4.1 layer interaction note. The integration stack uses a repository layer that prefers JdbcTemplate batch paths for the hot write path, while JPA with Hibernate 7 stays for the import-heavy endpoints where the row object is already a fully-formed graph. A test class marked WebMvcTest imports only the web slice, so an aggregate dependency from the controller to the authz service Bean must be pinned with @MockitoBean at the field level; the older @MockBean forms were removed, and a failing loader complains with annotation-not-found rather than silently skipping the mock. A smoke run of the migrations at container startup uses Testcontainers 2.0's testcontainers-postgresql 2.0.5 with the relocated org.testcontainers.postgresql.PostgreSQLContainer; the older artifact path is deprecated but still compiles until 2.1.
 

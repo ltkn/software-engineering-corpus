@@ -690,4 +690,4 @@ Boundaries: webhook and idempotency mechanics defer to 14 (and 13 for the event 
 
 ## Status
 
-All 26 bundle-scope files are scoped and implemented. 27/28 adversarial-hygiene categories are weighted in. SPEC holds per-file scope and actuals; counts of both sizes are in manifest.json.
+All 26 bundle-scope files are scoped and implemented. 27/28 adversarial-hygiene categories are weighted in the share table. SPEC holds per-file scope and actuals; counts of both sizes are in manifest.json. `29`/`30` are fenced-v0 (share 0) and counted only in the file inventory.

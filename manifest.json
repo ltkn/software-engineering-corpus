@@ -12,7 +12,7 @@
   },
   "bundle": {
     "target_tokens": "200k-250k weighted",
-    "blocks_counted": 1110,
+    "blocks_counted": 1115,
     "unweighted_estimate": "~106k (2.3k recorded + ~104k est incl. 01-25 patches)",
     "eval": [
       "eval/heldout-se.txt",
@@ -215,6 +215,20 @@
       "blocks": 4,
       "tokens": "est ~0.4k tokens",
       "share": 1.0,
+      "code_forward_target": null
+    },
+    {
+      "id": "29-llm-integration",
+      "blocks": 3,
+      "tokens": "est ~0.4k tokens",
+      "share": 0,
+      "code_forward_target": null
+    },
+    {
+      "id": "30-experimentation-and-flagging",
+      "blocks": 2,
+      "tokens": "est ~0.3k tokens",
+      "share": 0,
       "code_forward_target": null
     }
   ],
