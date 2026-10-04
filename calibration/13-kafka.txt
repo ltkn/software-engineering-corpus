@@ -338,3 +338,15 @@ sasl.oauthbearer.jwt.validator.class=org.apache.kafka.common.security.oauthbeare
 Why: private_key_jwt keeps the secret off the wire; BrokerJwtValidator validates signature, issuer, and audience, which is the thing CVE-2026-33557 (4.1.0–4.1.1) got wrong — the default DefaultJwtValidator accepted any well-formed JWT. Do not run 4.1.0/4.1.1 without explicitly setting the broker validator.
 Canonical failure: Kicking the client with an unsigned or wrong-audience JWT, and watching the broker accept it, means the broker is on the weak default validator.
 Verify: A signed assertion from the registered client authenticates; a self-signed or wrong-azd assertion is rejected and the validator class in the broker log is BrokerJwtValidator.
+
+---
+
+Legacy: ZooKeeper-era settings (`zookeeper.connect`, `inter.broker.protocol.version`, `reserved.broker.max.id`) left in server.properties on a KRaft broker.
+Replacement: strip them; `node.id`, `process.roles`, and `controller.listener.names` cover the KRaft layout.
+Symptom: The broker refuses to start with "zookeeper.connect is not a recognized configuration".
+
+---
+
+Legacy: Handover settings with a classic rebalancer while claiming exactly-once for cross-partition transactions.
+Replacement: the new consumer group protocol (`group.protocol=consumer`) and a unique `transactional.id` per producer instance.
+Symptom: Rebalance storms on every `max.poll.interval.ms` expiration, plus periodic `ProducerFencedException` once a second producer joins with the same id.

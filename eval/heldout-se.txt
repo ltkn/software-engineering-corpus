@@ -1,0 +1,56 @@
+# heldout-se v2026-10-04
+
+Spring Boot 4.1 layer interaction note. The integration stack uses a repository layer that prefers JdbcTemplate batch paths for the hot write path, while JPA with Hibernate 7 stays for the import-heavy endpoints where the row object is already a fully-formed graph. A test class marked WebMvcTest imports only the web slice, so an aggregate dependency from the controller to the authz service Bean must be pinned with @MockitoBean at the field level; the older @MockBean forms were removed, and a failing loader complains with annotation-not-found rather than silently skipping the mock. A smoke run of the migrations at container startup uses Testcontainers 2.0's testcontainers-postgresql 2.0.5 with the relocated org.testcontainers.postgresql.PostgreSQLContainer; the older artifact path is deprecated but still compiles until 2.1.
+
+---
+
+Postgres 18 posture note. `initdb` now turns data checksums on by default, so `pg_upgrade` from a 17 cluster whose data files lacked checksums only succeeds once the target cluster is initialized with `initdb --no-data-checksums`; this is not a DBA decision afterwards, the check happens before the first checkpoint. The same major version preserves planner statistics through `pg_upgrade` when the stat file moves, which flattened the Monday-after-upgrade incident class into an alert on zero-plan regressions. The OAuth-oauth-style auth declaration is noted but not required for this deployment, as the client traffic is all IAM-credentialed server-side code.
+
+---
+
+Kafka 4.3.1 note. `process.roles=broker,controller`, `node.id`, `controller.listener.names`. `inter.broker.protocol.version` has not been a valid key since 4.0 and the boot logs fail closed with the version gone. Producer idempotence plus unique transactional.id is the write path; the broker auto-generates ids starting with KRaft 4, so one fencing id per pod name is the convention that keeps `ProducerFencedException` from turning into split brain during the rolling restart. SASL/OAUTHBEARER with private_key_jwt assertions is wired through `sasl.oauthbearer.assertion.algorithm=RS256`, and the broker validates the assertion with BrokerJwtValidator, the class from CVE-2026-33557 that is the fix for 4.1.0/4.1.1.
+
+---
+
+Frontend note. The Vue app on 3.5.43 renders in a Nuxt 3 shell, provides session state at the SPA root, and hydrates the first-route page exactly from dehydrated queries. TanStack Query v5 keys hold the tenant tuple so invalidation only touches that surface; the v4-style callbacks removed from useQuery were retired from the app code, and the remaining callbacks now live on the mutation. The TS side passes tsc 6 and tsc 7 because strict is on, stableTypeOrdering is on, and moduleResolution is set to bundler with paths aliases that don't depend on baseUrl. Legacy OpenSSL configurations in the Nginx frontend isolate the last TLS 1.2 client into a dedicated server block; new spawns use TLSv1.3 and HSTS only, with OCSP stapling removed as no longer meaningful.
+
+---
+
+ZGC remains the steady-state heap choice; the JDK-level default is G1 when no flag is present, which is why a built image explicitly sets `-XX:+UseZGC` when the workload's p99 tail is driven by compaction stalls. Compact object headers (JEP 519, product option in 25) cut footprint in our heap-dump sample roughly 5% after a week, but only after the workload's benchmark showed a full GC percentage that jmap confirmed changed.StructuredTaskScope remains preview through JDK 27; production code uses ExecutorService with a wrapped executor and a scope so the open() factories can be substituted without type-level churn.
+
+---
+
+The auth oidc configuration has been reviewed against RFC 9700, the current browser code protection guide for PKCE S256. The server is a custom one using Spring Security 7.1 as the authorization server, with one client id registered for the mobile client, one for the web. Required scopes on exchanges are teethually audited; claims validation is exact-match on issuer, audience, expiry with 60 seconds of skew, and a nonce checked on the login flow. No implicit or ROPC client is registered.
+
+---
+
+The tenant isolation question comes up directly in code review. Every domain type exposes its tenant claim on creation, the JDBC insert and the row-level security policy reads the tenant from the session, and the gateway sets the session variable from the verified principal rather than the request body. Queries that forget to set it see zero rows, which the support path pages as a denial rather than a bug because the user knows the invariant: an empty answer from the app is the policy working.
+
+---
+
+Container network policy note. The K8s cluster runs the AWS cloud vpc (10.x pods, 172.16.x nodes), with default-deny-all ingress and egress per namespace, explicitly allowing DNS to the cluster solver in kube-system, and outbound egress to the only two endpoints the service needs: the managed database and the message bus. The six-case egress battery runs on every probe build; a service that needs a new endpoint asks the network team and that ask is a code review.
+
+---
+
+A compact multi-tenant service decouples its request hot path from a background worker through Postgres, not a separate queue. The orders table carries the tenant's dimension on every row, and a partial index on `(tenant_id, created_at) WHERE status = 'NEW'` keeps the worker's polling query under the percentile that users can feel. The worker side is a single `FOR UPDATE SKIP LOCKED` polling loop that claims up to 64 rows per batch and writes back through the same connection, which keeps downstream reads linearisable with the status transition. This pattern is deliberately not replaced with Kafka for the first year of the product because the worker is already in the deployment namespace and the latency loss to a broker was measured as real, not imagined.
+
+---
+
+A preserving category block mirrors the 27/28 fenced grammar without reusing their topic names. Surface: a graph-adjacent internal service exposes projection writes for a derived cache. Weak-looking: the validity window of the cache view accepts a body timestamp from the caller instead of the row's own. Fix-immediately: correlate on the session's actual bounds and route callers into a product update that enforces last-modified as authoritative. Where-to-check: a log line showing cache entries whose stored timestamps precede the most recent ingestion batch. Regression: a fixture ingestion passes timestamp-skew probe and asserts the cache rejects inconsistent windows.
+
+---
+
+The negotiation between the two groups shows up in review comments more often than the code itself. Reservations are the exception: the reservation row holds a soft TTL, and the pointer to the reservation record has a covering index on the reservation id because every release-from-reservation path hits it first. The code that creates a reservation is the only path that mutates the inventory counter, and it does so in a single transaction so a balance never goters out-of-sync between inventory and reservation numbers. A failing compensating path emits an exception annotated with the reservation id, which is the signal the ops dashboard uses to count them.
+
+---
+
+The export service is two services pretending to be one, because the import gate consumes orders through a keyed channel with SQL source evidence, while the report exporter batches rows into Parquet by partition and writes to the data lake within ten minutes of the status change. The export job is transaction-aware: its watermark only advances after the files behind the marker are durable, which makes the retries idempotent enough for a daily job. Row-level security is what holds the multi-tenant fence while the same company migrates through the org's Consolidated path.
+
+
+---
+
+The routing table expresses the post-2026-03 posture, where the old ingress-nginx has been retired and anything new arrives on Gateway API against a shared gateway. The one existing service that predates the retirement stays on the legacy path with an explicit bare-annotation exception written into the manifest; it is the single remaining counterexample a new team member will hit when copying a template.
+
+---
+
+The import job is a single forwarding rule from SQL source evidence, running under the same KRaft quorum as the export exporter so a failover affects both phases. Batch sizing is the usual pitfall: a cursor-backed reader at Spring Batch chunk 500 was tried, and the steady 2M-row run held flat at 380Mi instead of the old in-memory list at 2G. The resume token lives in the last-seen per partition and replays from the same token after a crash, which makes kill -9 drills a registered trust-path rather than a lucky recovery.

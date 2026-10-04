@@ -327,3 +327,15 @@ Cache-Control: public, max-age=300, stale-while-revalidate=600   # catalog reads
 Why: RFC 9111 lets stale-while-revalidate serve one stale response while revalidating — that is a UX win for catalog, a data-integrity loss for session state. The failure mode is cargo-culting the same Cache-Control onto user-specific and shared payloads alike.
 Versioning/compat note: when the cache key changes (e.g., adding a user dimension), the ETag and the Cache-Control tier must move together or conditional requests never validate.
 Verification: a probe asserts the user-specific route never returns a shared Cache-Control; a concurrent stale-while-revalidate window yields exactly one stale response per key.
+
+---
+
+Legacy: X-RateLimit-* headers on 200s only, with no reset semantics agreed with clients.
+Replacement: IETF draft-v11 RateLimit/RateLimit-Policy alongside the legacy trio through a full deprecation window.
+Symptom: Client libraries silently wait on a different source of truth and schedule retries against a limit the server no longer enforces.
+
+---
+
+Legacy: A bespoke `X-Signature` header wrapping a body-only HMAC.
+Replacement: RFC 9421 message signatures binding method, path, and content digest.
+Symptom: A captured signature header replays successfully against a different path, because only the body was covered.
