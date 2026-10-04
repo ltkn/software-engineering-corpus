@@ -555,3 +555,15 @@ Concept: The preview neighbor chain through JDK 27, so a "latest idiom" never cl
 Why: Each carries its own preview flag; treating any of them as final produces code that breaks on the next non-preview flag removal.
 Counter-pattern: Writing a JEP 532-style `switch` on a value without the flag, or removing the flag after a JDK bump and losing the type-check the preview bought.
 Verification: `--enable-preview` per-release notes checked against the manifest ledger; a CI matrix on 25/26/27 confirms the same flag set compiles and runs.
+
+---
+
+Legacy: `java.util.Date`/`Calendar` manual field math for the shipping window.
+Replacement: `java.time` — `LocalDate`/`ZonedDateTime` with duration arithmetic, and DST-gap tests at the zone-boundary meeting window.
+Symptom: Subtraction breaks across a DST shift and the handoff window is flagged wrong twice a year.
+
+---
+
+Legacy: `new Thread` per request handler in 2010-era HTTP servers.
+Replacement: `newVirtualThreadPerTaskExecutor` (JDK 21+) or a bounded reactive stack; thread-per-task on virtual threads keeps blocking I/O code idiomatic.
+Symptom: Thread pools exhaust under I/O fan-out and the service needs reactive rewrites to survive load it would otherwise handle.

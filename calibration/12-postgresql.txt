@@ -498,3 +498,15 @@ host all all 0.0.0.0/0 scram-sha-256
 Reading: MD5 password authentication is deprecated in 18 and scheduled for removal; SCRAM-SHA-256 is the required successor. Password hashes need to be re-stored at the SCRAM format, which the role can do transparently on next login when the password is re-entered.
 Pitfall: Editing pg_hba.conf to scram-sha-256 without migrating stored hashes, locking the role out on next connect.
 Verification: After hash migration, a login with the old DSN succeeds on the SCRAM line; a psql `set sslmode=verify-full` check confirms TLS on every connection string used by the app role.
+
+---
+
+Legacy: OFFSET default for user-facing paging on a write-heavy table.
+Replacement: keyset pagination on the composite index (tenant_id, created_at, id).
+Symptom: page 400 costs 900ms with a Seq Scan discarding 10k rows, and the gap widens with every insert.
+
+---
+
+Legacy: `md5` password entries in pg_hba.conf still honored by older drivers.
+Replacement: scram-sha-256 everywhere; rewrite stored hashes at next login.
+Symptom: PG 18 deprecation warnings in the server log followed by silent authentication failures when a driver finally drops md5.

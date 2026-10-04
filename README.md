@@ -4,9 +4,11 @@ Domain-focused calibration corpus for GGUF-quantized coding models and coding ag
 
 Goal: Q4–Q8 quants that keep our stack (Java/Spring, TS 6→7, Vue/TanStack, Postgres, Kafka) with strong security — and keep reasoning first. Custom `llama-imatrix` beats generic WikiText; Q4 gains most, Q8 ignores imatrix (baseline only).
 
+26 UTF-8 `.txt` sources in the bundle-scope set (01-26), plus 27/28 adversarial-hygiene categories weighted at share 2/1 in `manifest.json`.
+
 ## Corpus
 
-26 UTF-8 `.txt` files ordered by criticality. All filled; see SPEC.md for per-file scope and actuals.
+26 UTF-8 `.txt` files ordered by criticality, plus the fenced 27-28 adversarial category pair. All filled; see SPEC.md for per-file scope and actuals.
 
 Generated using AI Muse Spark 1.3, Sonnet 5.5 and Qwen3.8-27B.
 
@@ -39,7 +41,9 @@ calibration/
 ├── 23-finance-quant.txt
 ├── 24-react.txt
 ├── 25-privacy-gdpr.txt
-└── 26-ecommerce.txt
+├── 26-ecommerce.txt
+├── 27-adversarial-walking-patterns.txt
+└── 28-invariant-exploitation.txt
 ```
 
 Format: plain blocks separated by blank-line `---` blank-line. No frontmatter or headings in `.txt`. Mix per file: real code, why-explanations, bad→diagnosis→fix, short agent traces. No secrets.
@@ -76,6 +80,30 @@ cat calibration/*.txt > /tmp/calibration-se.txt
 
 `eval/` is never part of the bundle. Never truncate with `--chunks` for a real imatrix.
 
+## Qwen 3.8 Flash Next — first target
+
+A practical note before the first real run. We are going for a small, honest quant, roughly Q3, with some important layers kept at Q8_0 instead of Q3. Keep `token_embd` and `output.weight` (and usually `attn_v`/`ffn_down`) at `q8_0`; "Q8s here" is a gradual promotion, so measure `attn_gate`, `attn_output`, and `ssm_out` before promoting them too.
+
+Before any quant build on this exact base, run the counter:
+`scripts/count_tokens.sh /path/to/Qwen3.8-Flash-Next.gguf --update-manifest`
+It rewrites `manifest.json`'s per-file token counts, the bundle estimate, and the tokenizer pin (`name`, `model_path`, `command`, `as_of`). Re-run after every corpus change, then commit the updated manifest.
+
+Qwen 3.8 Flash Next has hybrid sliding-window layers, and the upstream llama.cpp work on quantizing that cache has been buggy this year — ngram-mod speculative decoding together with `q8_0` KV cache had a real cache-reuse regression (issue #23589, fixed via PR #24110), and SWA KV quantization got reverted and re-landed. So if you want ngram-mod on, do it on the dedicated PR branch and re-check before merging; a plain master ngram-mod plus SWA `q8_0` KV is not a safe default today.
+
+Bundle expectation: the corpus est is ~106k tokens (~2.3k confirmed recorded), so the fixed SHA pins and eval sets matter more than raw size until measured counts come in.
+
+## Building quants — step order
+
+Follow in order, rerun earlier steps when later ones move. The steps assume the llama.cpp binaries (`llama-tokenize`, `llama-imatrix`, `llama-quantize`, `llama-perplexity`) are on `PATH`; set `LLAMA_BIN=` if a single binary lives elsewhere.
+
+1. Corpus change. Edit `calibration/*.txt` and/or the SPEC; keep block delimiters clean.
+2. Measure. `scripts/count_tokens.sh <path-to-model.gguf> --update-manifest` recounts every file against the pinned base tokenizer and rewrites `manifest.json` counts plus the tokenizer pin. Re-run whenever any source file changes. For the code-forward ratio lint, run `python3 scripts/audit_code_forward.py` — it rewrites `AUDIT.md` per file and is part of every corpus edit, not a once-ever step.
+3. Bundle. `cat calibration/*.txt > /tmp/calibration-se.txt` (or the weighted layout once weights are chosen).
+4. imatrix. `./llama-imatrix -m model-F16.gguf -f /tmp/calibration-se.txt -o imatrix-se.gguf --chunk 512 -ngl 99`.
+5. Quantize. `./llama-quantize --imatrix imatrix-se.gguf model-F16.gguf model-Q*.gguf <TYPE>` — keep `token_embd`, `output.weight`, and the imatrix winners at `q8_0` via `--tensor-type`.
+6. Evaluate. `./llama-perplexity` on `eval/heldout-se.txt` and `eval/heldout-general.txt`, plus the perplexity-vs-F16 logit KL per file. Never ship a Q3/Q4 without this.
+7. Tune. Move manifest weights at most ±25% per iteration, log the reason, and rerun 2–6. The recompute gate is `scripts/recompute_gate.py` and should be part of the corpus edit chain; any new claim in 03/23 goes in its task table.
+
 ## Layout
 
 ```text
@@ -84,6 +112,9 @@ cat calibration/*.txt > /tmp/calibration-se.txt
 ├── eval/          # heldout-se.txt, heldout-general.txt
 ├── manifest.json  # tokens, weights, license (next)
 ├── SPEC.md        # agreed scope per file
+├── TODO.md        # next high-level steps
+├── AUDIT.md       # per-file code-forward audit
+├── scripts/       # count_tokens.sh, audit_code_forward.py, recompute_gate.py
 ├── README.md
 └── .gitignore
 ```

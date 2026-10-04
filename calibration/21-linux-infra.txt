@@ -270,3 +270,15 @@ Why: Recent OpenSSH defaults to a hybrid key exchange that resists the harvest-n
 Command: ssh -Q kex | grep -i post-quantum
 Canonical failure: A legacy JumpHost advertises only curve25519-sha256@libssh.org and the session silently downgrades; without logging the negotiated exchange, the downgrade never surfaces.
 Verify: `ssh -vv` shows a hybrid exchange name; the bastion logs the same value into the audit record for that session.
+
+---
+
+Legacy: New ingress-nginx manifests for a service launched in 2026.
+Replacement: Gateway API HTTPRoute on the existing gateway.
+Symptom: The deploy succeeds, but the retired controller never programs routes, so traffic 404s with no error attached to the event.
+
+---
+
+Legacy: Tests run against whatever JDK ships on the runner image.
+Replacement: Maven wrapper toolchain pins (`.mvn/jvm.config` `-Djdk.toolchain.fetch`) plus a workflow matrix across JDK 25 and 26.
+Symptom: The same branch is green in CI and red on a developer machine three months later because the runner image refreshed.

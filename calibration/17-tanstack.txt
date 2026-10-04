@@ -281,3 +281,15 @@ const m = useMutation({
 });
 misconfiguration: optimistic rows keyed to a different tuple survive the invalidation and linger as phantom rows.
 verification: A mutation test with a mocked 409 asserts the optimistic row is rolled back, the prev cache payload is restored, and a simultaneous background-refresh returns one page, not a duplicate.
+
+---
+
+Legacy: useQuery([version], fn, { cacheTime, onSuccess, onError, loading }) hard-coded from v4.
+Replacement: the v5 object-only signature with gcTime, isPending, and onSuccess/onError removed from useQuery.
+Symptom: Type errors on every v4 call site for the rename, and at runtime the onSuccess callback silently never fires.
+
+---
+
+Legacy: A Pinia store that copies the query result and treats itself as the source of truth.
+Replacement: keep the query authoritative; Pinia holds UI-local state only.
+Symptom: Invalidation fans out to two copies inconsistently and the UI renders a phantom list that never reconciles with the cache.

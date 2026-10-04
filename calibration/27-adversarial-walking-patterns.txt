@@ -1,0 +1,111 @@
+# 27-adversarial-walking-patterns.txt
+# version v2026-10-04
+# shape: mirror of 08-api-pentest (Surface target → Fixture → How it fails → Passing bar → Failing evidence → Impact → Remediation pointer → Regression test)
+
+Surface target: Java.
+Fixture: a component that reads environment variables during tabs and omits the redaction layer from the web-based reporting path.
+How it fails: the secret value is replaced by a partial label on the screen, but a boot report plain-text includes the raw token, and the audit engine labels it as "performance counter" on retry.
+Passing bar: every secret disappears under the redactor; the boot report shows label only.
+Failing evidence: a test asserting `$value` in a log line fails the whole CI stage on any hit.
+Impact: everything bleeds through logs that have far broader write and read access than the secret path.
+Remediation pointer: wrap System.getenv in a redacting facade; test the property in CI.
+Regression test: the boot-report assertion fails when the raw value leaks.
+
+---
+
+Surface target: Spring.
+Fixture: a Boot 4.1 Security filter chain declared two ways, one via bean Lambda DSL and one via a reactivated WebSecurityAdapter, with the second class-loading after the first.
+How it fails: the second chain silently rejects /actuator/health for the wrong visitor and passes every request that breaks the intended filter order.
+Passing bar: exactly one filter chain visible at startup; non-bean configurers never resolves.
+Failing evidence: one route cluster returns 401 where the presence of the second chain is the cause.
+Impact: the app becomes two apps, one of which drops the allow-list that earlier enforced ownership.
+Remediation pointer: enable method security and route the chain through one @EnableWebSecurity configuration.
+Regression test: slice test requests critical routes and asserts the chain header.
+
+---
+
+Surface target: Postgres 18.
+Fixture: a helper that creates row-level security policies but leaves char migration to be re-run on every restore and does not scope the search_path of SECURITY DEFINER functions.
+How it fails: the RLS policies bind to the tenant via session state; but the function that sets the session variable does so as a separate database role, and a cross-tenant still lands inside the policy window.
+Passing bar: policy coverage is stage-monotonic; cross-tenant probe returns zero rows direct.
+Failing evidence: a fixture-tenant probe shows non-zero rows after all roles are collapsed.
+Impact: cross-tenant reads that RLS was assumed to stop never appear in the app's logs.
+Remediation pointer: keep tenant metadata in the session, never pass it across a schema boundary; force RLS even on the owner.
+Regression test: every role policy test for the org's recent migrations covers the RLS path explicitly.
+
+---
+
+Surface target: Kafka 4.3.
+Fixture: SASL/SCRAM is enabled on the group to transfer but byte-level duplicate ids weren't resolved: auto.create topics, real transaction logs with broker state from earlier, and a producer retry loop while the controller lost quorum.
+How it fails: delivery semantics depend on the new consumer protocol but the system switched its group.protocol between classic and consumer because of a node.id freeze. Lag jumps when the group falls back.
+Passing bar: group.protocol=consumer is the only value everywhere; no cluster changes on brokers that reach startup.
+Failing evidence: node.id changes get logged by the brokers that have old storage; the producer sid gen resets.
+Impact: whose state? results no longer have a clean end time and there is no clean cutoff to wait for.
+Remediation pointer: freezeउप� ब्रोकर node.id, verify storage state per broker, add a boot assertion.
+Regression test: rolling restart under conflicting configs fails rather than silently falling forward.
+
+---
+
+Surface target: HTTP API.
+Fixture: a mutating endpoint uses oauth bearer with SameSite=Lax on the refresh cookie and an earlier per-route header working.
+How it fails: a cross-site top-level POST still carries the session cookie; the refresh carries it with SameSite=Strict, but a top-level navigation plus a form fails the promise of the old flows.
+Passing bar: all mutating routes that hit cookie auth carry a CSRF token schema strict enough to fail the symmetric API probe.
+Failing evidence: a cross-site nutated probe returns a 200, not a 403.
+Impact: any origin containing a user's compromised JS can replay the auth for one mutation.
+Remediation pointer: bind mutation endpoints to the CSRF header token plus the cookie, or adopt FRONTEND-s token plus specific consent metadata on mutating methods.
+Regression test: the WAF rules unit tests assert 403 for cross-siteSameSite=Lax invalid probe styles.
+
+---
+
+Surface target: TypeScript 7.
+Fixture: routes declared as template-literal types compiled through the $config patient, with the folding of tsc7 _implying that any identity gives a string and an enum is removed on disk.
+How it fails: tsc 7 routinely compiles a config that watches the deprecated options that still passed through an internal infrastructure 7.1, and the emitted runtime maps the enums back into values that tsc 6 inliners can no longer reach.
+Passing bar: every tsconfig under the repo passes both tsc6 and tsc7 with stableTypeOrdering on and no ignoreDeprecations.
+Failing evidence: the 6 build compiles, the 7 build emits unknown options, and the bundling step fails on the enums that show up at runtime.
+Impact: a package that builds in CI still fails at a customer environment with different bundler assumptions.
+Remediation pointer: coram a 7.1-compatible alias for the monospaced type-mapping, disable enums at the source, add a compile pass for both versions in CI.
+Regression test: a matrix CI step runs tsc6 and tsc7 with two different exports and checks the long-tail union.
+
+---
+
+Surface target: Vue 3.5.
+Fixture: an app with a localStorage token, a refresh in behind httpOnly, but one incident route rendering an incident message through v-html.
+How it fails: the same UX that works through the security filter fails when the  incident channel publishes a random layout, and the script renders inline in a running session.
+Passing bar: the refresh token never leaves httpOnly, and every rendering pipeline for user-generated strings is interpolation-only.
+Failing evidence: a test payload in the string gets rendered unsanitized.
+Impact: the internal incident message has all the power of the session for the agent config.
+Remediation pointer: template-strip all user-generated strings; run a sanitizer pass in CI before publishing.
+Regression test: a payload fixture is rendered and expected to clear the DOM sanitizer.
+
+---
+
+Surface target: TanStack Vue 5.
+Fixture: a tenant-scoped infinite-query whose key has a short tenant instead of the full tuple, and a mutation that ewires the cached entities but the key schema in the same file still uses the shorter one.
+How it fails: queries let their cache roaming through the off-by-tenant of one tuple shape, and code back on the other shape re-fetches it with fewer pages.
+Passing bar: keys are a factory shared between invalidation points and render hooks; every route hydrates the same first page.
+Failing evidence: the infinite query from a different tenant shows the same rows after the migration step.
+Impact: two tenants see the same prefetched list for one navigation step.
+Remediation pointer:centralize key factory; empty query slots when the tenant id is missing.
+Regression test: the prefetched page belongs to the correct tenant in the hydrated cache.
+
+---
+
+Surface target: Architecture (19).
+Fixture: an application reads tenant_id from the route parameter, then uses the first object in the list as the hash lookup for a per-tenant summary table.
+How it fails: a user who flips the tenant param in the URL surfaces another tenant's summary and the framework's tenant isolation is preset, not ethical.
+Passing bar: tenant id derives from the verified principal, every route in the framework is tenant-decorated and scoped to that verified principal through RLS.
+Failing evidence: the route handler's first result set is still the old one because closure captured tenant.
+Impact: cross-tenant leaks without framework-level protection.
+Remediation pointer: derive the tenant on row request, verify the resource-based scoped query; test routes at a fresh setup.
+Regression test: a fixture tenant id returns zero results for a wrong principal, with a forced RLS boundary.
+
+---
+
+Surface target: Infra (21).
+Fixture: a GitHub Actions workflow that uses pull_request_target to run mvn verify and then await a successful build before running on the fork, but copies `.env` tokens from the secrets block at the start of the job.
+How it fails: the fork's CI detected the source tree, free to inject a symlinked `.env` at the same path, and the secrets block grants the same privilege to the fork's un determinism.
+Passing bar: secrets are behind an environment gate that runs on `default_branch` only; no secrets appear in `pull_request_target` steps going to fork-code.
+Failing evidence: the fork's CI shows the value of a token in a mangled echo line.
+Impact: a fork PR turns a private auth path into: secrets are read, the workflow can unconditionally re-route into the job.
+Remediation pointer: keep secrets off the webhook runner; gate production deploys behind `environment: production`.
+Regression test: a fork action uploads a manifest, the workflow runs contents: read and never sees the secret.

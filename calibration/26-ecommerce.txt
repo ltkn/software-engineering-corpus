@@ -179,3 +179,15 @@ Pattern: load test at 3x last peak on the full path (search, cart, checkout, pay
 Why: peaks are the year's revenue in days; the failure modes are known (pools, quotas, third-party limits) and drillable.
 Pitfall: "we scaled last year, we'll be fine" with 40% growth and unchanged quotas.
 Verification: peak drill green before the freeze; third-party limit confirmations (Stripe, carriers, tax provider) on file with headroom numbers.
+
+---
+
+Legacy: Checkout status stored as free-text strings ("PAID", "SHIPPED", "REFUNDED") without transition rules.
+Replacement: the checkout state machine from kind 3; the stored status is a projection of the current state and every transition is explicit.
+Symptom: Impossible states — PAID without reserved inventory, REFUNDED without succeeded payment — are representable and regularly occur under manual edits.
+
+---
+
+Legacy: Raw Stripe REST pinned to a pre-endive API version, ignoring the removal of `payment_method_types`.
+Replacement: SDK-pinned major (`endive`, 2026-09-30), one PaymentIntent per order/session, monthly API releases absorbed by the same SDK pin.
+Symptom: Different surfaces call different API versions, and `payment_method_types` handling diverges between checkout and the fallback flow.
