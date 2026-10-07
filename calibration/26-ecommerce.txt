@@ -191,3 +191,123 @@ Symptom: Impossible states — PAID without reserved inventory, REFUNDED without
 Legacy: Raw Stripe REST pinned to a pre-endive API version, ignoring the removal of `payment_method_types`.
 Replacement: SDK-pinned major (`endive`, 2026-09-30), one PaymentIntent per order/session, monthly API releases absorbed by the same SDK pin.
 Symptom: Different surfaces call different API versions, and `payment_method_types` handling diverges between checkout and the fallback flow.
+
+---
+
+Goal: Order creation idempotent across retries and double-clicks.
+Pattern: client-generated idempotency key per checkout attempt carried through order creation; retried requests return the existing order, never a sibling.
+Why: networks retry and customers double-click; without keys every retry is a potential duplicate charge and twin shipment.
+Pitfall: dedupe by (customer, total, minute) heuristics, merging two genuinely separate same-minute orders.
+Verification: retry-storm drill (same key, 50 attempts) yields one order and one authorization; key-absence on creation fails review.
+
+---
+
+Goal: Capture amount reconciled against the checkout snapshot.
+Pattern: authorized total vs final capturable total compared at capture time; drift beyond tolerance (tax recalculation, partial stock loss) re-consents or re-authorizes before capture.
+Why: snapshots promise a total; capture moves the money — silent drift between the two is a dispute factory.
+Pitfall: capturing whatever the current cart computes, charging more than the consented snapshot.
+Verification: drift drill (price/tax change mid-checkout) re-consents; capture-without-reconciliation probe denied.
+
+---
+
+Goal: Partial fulfillment with backorders as explicit states, not silence.
+Pattern: line-level fulfillment states (fulfilled, partial, backordered with ETA, canceled) communicated per line; capture follows shipped value, remainder re-authorized or released.
+Why: multi-line orders rarely ship whole; pretending otherwise strands money and inventory in limbo.
+Pitfall: holding full capture while one line backorders for six weeks, then refunding under dispute pressure.
+Verification: partial-ship test (captured amount matches shipped lines); backorder ETA communicated and updated, not static.
+
+---
+
+Goal: Dropship purchase orders linked to sales orders.
+Pattern: supplier purchase order created from the sales line with the same identity chain; supplier tracking and exceptions flow back to the customer-facing order.
+Why: dropship breaks the warehouse assumption; without linkage the customer order shows "processing" while the supplier never received it.
+Pitfall: email-to-supplier dropshipping with no system linkage, exceptions discovered via customer complaints.
+Verification: supplier-exception drill surfaces on the customer order within the contracted window; unlinked supplier sends fail the audit.
+
+---
+
+Goal: Promotion stacking governed by interaction rules, not accident.
+Pattern: stackability declared per promotion (combinable, exclusive, capped-total-benefit); engine evaluates the declared interaction, best-legal-stack or first-match per documented policy.
+Why: individual promotions are each sane; ungoverned combinations are where the profitable exploit lives.
+Pitfall: two 30%-off campaigns stacking to 51% off plus free shipping, discovered by deal forums before finance.
+Verification: stacking-matrix test (every pair of live promotions); uncapped-combination probe denied by the engine.
+
+---
+
+Goal: Gift cards and store credit as ledger money, not coupon codes.
+Pattern: stored-value accounts with issuance, redemption, partial use, and expiry per jurisdiction; balances as ledger entries, never as discount lines.
+Why: gift money is liability, not marketing spend; coupon-shaped credit corrupts both accounting and the promotion engine.
+Pitfall: gift codes as 100%-off coupons, combinable with promotions and unreconcilable at audit.
+Verification: liability-reconciliation test (outstanding balances tie to the ledger); coupon-stacking probe on stored value denied.
+
+---
+
+Goal: Multi-currency pricing with the FX decision made explicit.
+Pattern: presentment currency per market, FX rate locked at checkout snapshot with the lock timestamp recorded; refunds use the locked rate, not the current one.
+Why: floating FX between display and capture moves money across the border of consent; locked rates make totals promises again.
+Pitfall: charging in home currency at capture-time rates, customers disputing "a different number than shown".
+Verification: rate-move drill (FX shifts 3% mid-checkout) charges the locked total; refund-amount test uses the lock, provably.
+
+---
+
+Goal: Checkout-adjacent abuse contained without punishing customers.
+Pattern: velocity and device-risk signals on login, coupon-probing, and gift-card redemption endpoints; step-up or throttle on anomaly, silent pass on normal.
+Why: credential stuffing and card testing probe exactly these endpoints; uniform CAPTCHAs tax every real customer for the attackers' behavior.
+Pitfall: CAPTCHA on every checkout after one card-testing incident, conversion dropping while testing moves to the gift endpoint.
+Verification: stuffing drill (credential list) contained without customer-visible friction; friction-rate dashboard reviewed with conversion.
+
+---
+
+Goal: Channel price lists as overlays on one pricing truth.
+Pattern: market/channel price lists (currency, rounding, local promotions) layered over the canonical price; the engine resolves truth plus overlay deterministically.
+Why: markets genuinely differ; forked price tables diverge exactly like forked catalogs.
+Pitfall: per-market price columns edited by hand, Black Friday differing by market with no record of intent.
+Verification: list-coverage test (every market resolves every SKU); divergence audit (unexplained market deltas fail).
+
+---
+
+Goal: Zero-results search recovered, not abandoned.
+Pattern: no-match pages with spelling correction, broader-category fallback, and contact/a-request options; zero-result queries logged as merchandising input.
+Why: failed searches are demand statements; dead ends waste the highest-intent traffic on the site.
+Pitfall: "0 results" dead end, the query never logged, the missing product never ranged.
+Verification: zero-result fixture recovers (correction or fallback shown); query-log review per cycle feeds ranging decisions.
+
+---
+
+Goal: Brand gating against counterfeit with evidence, not vibes.
+Pattern: brand-approval workflow (authorization documents, test buys, listing audits) before and during seller tenure; violations suspend with the evidence packet attached.
+Why: counterfeit destroys buyer trust market-wide; post-hoc takedowns after chargebacks are the most expensive possible enforcement.
+Pitfall: reactive takedowns only, high-risk categories ungated until the first chargeback wave.
+Verification: test-buy failure suspends with evidence; ungated-brand probe denied at listing time.
+
+---
+
+Goal: Dispute representment as a workflow with evidence assembly.
+Pattern: representment packet (order record, tracking delivery proof, terms snapshot at purchase, customer communication log) assembled automatically at dispute open; win/loss recorded per reason code to tune the flow.
+Why: representment windows are short and evidence scattered; manual assembly misses the window by default.
+Pitfall: representment "handled" by whoever sees the email, evidence partial, winnable disputes lost by default.
+Verification: representment-timeliness test (packet complete within the window); reason-code win-rate reviewed per quarter.
+
+---
+
+Goal: Warranty separated from returns by contract, not by mood.
+Pattern: return window (change-of-mind, short) vs warranty period (defect, long) as distinct flows with distinct outcomes (refund vs repair/replace); serial or proof-of-purchase gates warranty.
+Why: conflated flows refund defects that should repair and repair buyer's-remorse that should refund — margin leaks both directions.
+Pitfall: one "returns" flow handling everything, warranty claims refunded at full price two years in.
+Verification: flow-routing test (defect vs remorse take different paths); warranty-without-proof probe denied per policy.
+
+---
+
+Goal: Carrier delivery events driving customer notifications.
+Pattern: carrier tracking webhooks (or polled tracking normalized to events) mapped to customer messages (shipped, out-for-delivery, delivered, exception); exception events open support context automatically.
+Why: "where is my order" is the top support query and the answer already exists in carrier systems.
+Pitfall: notifying only on internal ship events, customers asking about parcels the carrier already shows as delayed.
+Verification: exception drill (carrier delay) notifies before the customer asks; tracking-completeness asserted per multi-parcel order.
+
+---
+
+Goal: Flash-sale backpressure by design, not by outage.
+Pattern: virtual waiting room or queue tokens for predicted-over-capacity drops; queue position communicated; checkout capacity shed load in documented order (browse stays, checkout queues, payment never races).
+Why: known-demand spikes are the one outage class fully preventable by design; first-come-first-served without a queue is a lottery plus a crash.
+Pitfall: "the site was slow for an hour" as the post-mortem for a planned drop, with oversell as the encore.
+Verification: load drill at 2x expected drop traffic queues gracefully; shed-order test (payment path never degraded first).

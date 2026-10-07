@@ -98,3 +98,99 @@ Concept: Adjacent EU regimes as explicit recognition-only references, never deve
 Rule: One responsible line each: the EU Data Act (2023/2854) grants access rights to connected-device data; NIS2 (2022/2555) extends incident-reporting obligations to significant entities; the Cyber Resilience Act (2024/2847) obliges manufacturers to support and report vulnerabilities in products; the AI Act (2024/1689) imposes transparency and risk obligations on AI systems. None of these program-specific duties are owned by this corpus — counsel, security, or the specific-product team owns them.
 Practice: Cross-reference, never coopt: gdpr blocks stay purely GDPR-mechanics; the four references above are the only touch points.
 Verification: Grep proves each of the four names appears once, as a pointer, not as glossed content.
+
+---
+
+Concept: Consent withdrawal propagated downstream, not just recorded.
+Rule: withdrawal for a purpose stops that purpose's processing everywhere, including processors and sub-processors holding the data.
+Violation: banner records "marketing: withdrawn" while the email vendor keeps sending from last month's export.
+Practice: withdrawal event fanned out to every processor in the purpose's chain with per-vendor acknowledgement; exports regenerated, not patched.
+Verification: withdrawal drill asserts vendor silence within the contracted window; unacknowledged fan-out is a finding.
+
+---
+
+Concept: Legitimate-interest balancing as a written test, not a label.
+Rule: purpose, necessity (no milder means), and balancing (subject's interests vs controller's) documented before processing starts.
+Violation: "legitimate interest: analytics" with no assessment, covering full clickstream plus keystroke timings.
+Practice: three-part assessment per purpose, signed, with the milder-means analysis explicit (aggregates vs raw events).
+Verification: assessment present per legitimate-interest purpose; keystroke-level collection under a balancing test fails review.
+
+---
+
+Concept: ML feature stores and embeddings on the deletion map.
+Rule: derived stores (profiles, embeddings, training slices) are stores like any other: registered with deletion paths, erased on request.
+Violation: account deleted while its embedding row keeps personalizing and its events remain in the next training export.
+Practice: feature store keyed by subject id with tombstone propagation; training exports rebuilt from live data, never from frozen snapshots containing erased subjects.
+Verification: post-erasure probe includes the feature store and the export manifest; lingering vector is a finding.
+
+---
+
+Concept: Records of processing (RoPA) maintained as a living register.
+Rule: processing inventory (purposes, data classes, recipients, retention, transfers) current per flow, owned, reviewed on change.
+Violation: RoPA written once for launch, missing four launches and two vendors two years later.
+Practice: RoPA entry updated in the same change that ships the feature; ownership named per entry.
+Verification: RoPA-to-code drift audit per quarter (every personal-data flow appears); feature without a RoPA entry blocked like a missing test.
+
+---
+
+Concept: Telemetry and log retention in rolling windows, not forever.
+Rule: logs and traces carrying identifiers kept to the window the debugging need justifies (days to weeks), then dropped or aggregated identifier-free.
+Violation: seven years of debug logs with user ids "because storage is cheap", each a breach-scope multiplier.
+Practice: retention windows per log class in the logging config; aggregation jobs strip identifiers past the window; access to raw windows gated.
+Verification: oldest-record probe per log class within its window; identifier presence past the window is a finding.
+
+---
+
+Concept: Processor breach notification upward without undue delay.
+Rule: processors notify the controller promptly on becoming aware of a breach, with the facts needed for the 72-hour clock — the controller's clock does not wait for the processor's root cause.
+Violation: vendor's "preliminary investigation" consuming five days of the controller's 72 hours.
+Practice: DPA terms fix notification timing and content (nature, categories, approximate subjects, contact point); vendor incidents paged to the DPO path.
+Verification: vendor-notification drill timed from vendor awareness to controller receipt; missing DPA timing clause blocks procurement.
+
+---
+
+Concept: Third-party data redacted from access responses.
+Rule: other people's personal data (messages from other users, shared-document co-authors) excluded or redacted in the requester's export.
+Violation: full message thread exported including the other party's content, creating a breach inside a compliance response.
+Practice: per-field third-party flags in the export pipeline; co-authored content exported as the requester's contributions only.
+Verification: export fixture with mixed authorship redacts correctly; unflagged third-party field is a finding.
+
+---
+
+Concept: Age assurance proportionate to the risk, not blanket ID checks.
+Rule: where the product could attract children, age-gating with the least intrusive effective means; no general identity collection as a side effect.
+Violation: full ID verification for a newsletter signup, storing scans indefinitely.
+Practice: tiered assurance (self-declaration, hard gate only where required); verification artifacts deleted after the decision.
+Verification: artifact-retention probe (nothing kept post-decision); blanket ID collection fails the minimization review.
+
+---
+
+Concept: Legal holds suspend erasure openly, with scope and expiry.
+Rule: litigation or investigation hold pauses deletion for the held records only, documented with matter, scope, and review date — never a silent global freeze.
+Violation: "legal hold" invoked with no matter named, erasure queue stalled for two years across all data.
+Practice: hold register (matter, custodian scope, expiry/review); erasure resumes automatically at release; holds reviewed, not renewed by inertia.
+Verification: hold register reviewed per quarter; expired hold still blocking erasure is a finding.
+
+---
+
+Concept: New products ship default-private with telemetry opt-in.
+Rule: defaults collect the minimum; behavioral telemetry requires explicit opt-in, stated before collection starts.
+Violation: full session replay on by default, opt-out buried three menus deep.
+Practice: default-off telemetry flags; opt-in screen naming exactly what is collected and why; settings change stops collection, not just display.
+Verification: fresh-install probe (defaults private, no telemetry egress); opt-out-then-use test shows zero collection traffic.
+
+---
+
+Concept: Sub-processor changes announced with objection rights honored.
+Rule: new sub-processors notified in advance with the window to object exercised in practice, not buried in a terms update.
+Violation: analytics sub-processor swapped silently; objection right discovered after a year of processing.
+Practice: change notice per engagement with data scope and mechanism carried over; objection path tested (one real objection honored per cycle if raised).
+Verification: sub-processor list diffed against notices per quarter; silent swap is a finding.
+
+---
+
+Concept: Analytics identity kept pseudonymous with the key held apart.
+Rule: analytics identifiers unlinkable without a separately-held key; the key lives outside the analytics system with its own access control and retention.
+Violation: analytics id equals the account id, every dashboard query one join from identity.
+Practice: keyed pseudonyms per analytics domain; key store isolated; re-identification requires the documented approval, logged.
+Verification: join-probe (analytics id alone resolves nothing); key-access log reviewed; shared-key analytics fails review.

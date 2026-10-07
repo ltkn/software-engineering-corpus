@@ -639,7 +639,7 @@ Content, 4 kinds:
 
 Shape per block: Concept → short snippet → Vue parallel where one exists → translator pitfall → check.
 
-Budget: compact. Bundle share 1%. Retention weight only. est ~1.9k tokens, 18 blocks (added React Compiler memoization model, useEffectEvent, and the RSC/Flight boundary note including the React2Shell CVE).
+Budget: compact. Bundle share 1%. Retention weight only. est ~1.9k tokens, 18 blocks (added React Compiler memoization model, useEffectEvent, and the RSC/Flight boundary note including the React2Shell CVE); est ~3.1k, 30 blocks after the se2 expansion (+12 hooks/keys/context and porting-recognition blocks).
 
 Boundaries: depth lives in 16/17 (Vue/Query); no React ecosystem depth (no Next.js, no React Server Components beyond a boundary note). If a block has no Vue parallel or migration value, it does not belong here.
 
@@ -660,7 +660,7 @@ Content, 6 kinds:
 
 Shape per block: Concept → rule → practice → verification (drill, matrix review, or audit evidence).
 
-Budget: ~12 blocks, compact and fenced. Est ~1.4k tokens, 13 blocks. Bundle share 1.5%. The six SPEC kinds all map to a topic; the adjacent-regime pointer block completes the spec.
+Budget: ~12 blocks, compact and fenced. Est ~1.4k tokens, 13 blocks; est ~2.7k, 25 blocks after the se2 expansion (+12 consent/erasure/processor/breach-practice blocks). Bundle share 1.5%. The six SPEC kinds all map to a topic; the adjacent-regime pointer block completes the spec.
 
 Boundaries: vulnerability classes are 06; hygiene habits are 09; telemetry specifics are 20; backup mechanics are 12. No jurisdiction-specific legal advice beyond GDPR mechanics — counsel owns interpretation. Neighboring EU regimes (Data Act, NIS2, CRA, AI Act) get one cross-reference line each and no content.
 
@@ -682,7 +682,7 @@ Content, 7 kinds:
 
 Shape per block: Goal → pattern → why (with the better-than-platform reasoning where it matters) → pitfall with its cost → verification (test, drill, or audit).
 
-Budget: ~25 blocks, dense but fenced. Est ~2.3k tokens, 23 blocks before the 2026-10 Legacy-pair patch; est ~2.5k, 25 blocks. Bundle share 2%.
+Budget: ~25 blocks, dense but fenced. Est ~2.3k tokens, 23 blocks before the 2026-10 Legacy-pair patch; est ~2.5k, 25 blocks; est ~4.3k, 40 blocks after the se2 expansion (+15 checkout/inventory/payment/operations blocks). Bundle share 2%.
 
 Boundaries: webhook and idempotency mechanics defer to 14 (and 13 for the event handoff). GDPR constrains this file via 25 (erasure vs order history, marketing consent); finance math stays in 23. No real account data, no live keys — textbook mechanics only.
 
