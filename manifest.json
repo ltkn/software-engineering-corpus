@@ -184,22 +184,22 @@
     },
     {
       "id": "24-react",
-      "blocks": 18,
-      "tokens": "est ~1.9k",
+      "blocks": 30,
+      "tokens": "est ~3.1k",
       "share": 1.0,
       "code_forward_target": null
     },
     {
       "id": "25-privacy-gdpr",
-      "blocks": 13,
-      "tokens": "est ~1.4k",
+      "blocks": 25,
+      "tokens": "est ~2.7k",
       "share": 1.5,
       "code_forward_target": null
     },
     {
       "id": "26-ecommerce",
-      "blocks": 25,
-      "tokens": "est ~2.5k",
+      "blocks": 40,
+      "tokens": "est ~4.3k",
       "share": 2.0,
       "code_forward_target": null
     },
