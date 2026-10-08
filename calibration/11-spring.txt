@@ -267,6 +267,10 @@ Goal: Actuator exposure discipline.
 Wiring: health and info public behind the load balancer; metrics, env, and mappings on the admin port with authentication; shutdown endpoint disabled.
 Why: operators need liveness; attackers must not get the bean inventory.
 Misconfiguration: full actuator on the public port justifying "we have auth on the app anyway".
+management.server.port=8081
+management.endpoints.web.exposure.include=health,info,metrics,prometheus
+management.endpoint.health.show-details=when_authorized
+Three lines in `application.properties` decide whether the heap dump, the environment and the config props are reachable from the internet; the block above is what happens when they are not there.
 Verification: anonymous-probe test asserts 404/401 per actuator path; config audit in CI.
 
 ---
@@ -283,6 +287,9 @@ Goal: Externalized configuration with validated startup.
 Wiring: config tree per environment from the secret manager and files, @ConfigurationProperties records validated at boot, unknown-property failure on.
 Why: misconfiguration fails at startup with a field name, not at 2am with a NullPointer.
 Misconfiguration: lenient binding hiding a misspelled property for months.
+`Failed to bind properties under 'spring.datasource.hikari.maximum-pool-size' to int:`
+`    Reason: failed to convert java.lang.String @property value '1O' to java.lang.Integer`
+A letter O in a config file, and the process refuses to start. The lenient variant — the property simply not being read — is the worse one, because it starts and runs with the pool size nobody chose.
 Verification: boot test per environment with the real property files; unknown-property probe fails fast.
 
 ---
@@ -464,6 +471,7 @@ class RiskClient(RiskHttpService http) {
 Why: the resilience annotations live in the framework in Boot 4, so the policy is declarative, visible in one place, and testable without a thread-pool wrapper. Backoff without jitter turns a recovery into a synchronised retry storm; the limit exists so a slow dependency is shed rather than allowed to occupy the whole worker pool.
 Misconfiguration: retrying a non-idempotent POST without an idempotency key, so a timeout becomes a duplicate charge; or `@Retryable` on a method called from within its own bean, where the proxy never sees the call and the annotation silently does nothing.
 Verification: a test with the dependency stubbed to time out twice then succeed asserts one successful call and three attempts, with the same idempotency key on all three; a concurrency test asserts no more than 20 in flight; the contract test records which failures are retryable.
+The framework's retry metrics are what make the policy observable, tagged by policy and outcome on the metrics endpoint, e.g. `spring_retry_retry{name="riskClient.evaluate",outcome="RECOVERED"}` — plot it against the dependency's p99 and a retry policy turns into a capacity signal long before it becomes an error-budget problem.
 
 ---
 
@@ -479,6 +487,7 @@ management.endpoint.health.probes.enabled=true
 spring.mvc.async.request-timeout=60s
 Why: SSE needs the whole path unbuffered — the proxy must not coalesce chunks, the application must not hold a worker per stream, and the stream must end. Reactive here is justified by long-lived, many-idle connections, which is exactly the case where virtual threads are the wrong tool; a blocking controller returning `SseEmitter` while holding a request thread does not scale with the connection count.
 Misconfiguration: the edge buffering responses so events arrive in bunches; no heartbeat or idle timeout, so dead streams accumulate; authorization checked at subscribe time only, so a token revoked mid-stream keeps streaming for an hour (the probe for this is 08 kind 9).
+The symptom is measurable before it is arguable: `curl -N https://api.test/orders/42/events` delivers ten events in one read after 11.8 s instead of the first at 0.4 s. `X-Accel-Buffering: no` on the response and buffering off for that route at the proxy are the two switches, and the end-to-end test through the real proxy is what proves both are set.
 Verification: an end-to-end test through the real proxy asserts first-event latency under one second and event delivery within the stated window; a test asserting the stream closes on revocation within one event cycle; the stream's tenant filter is asserted by a cross-tenant fixture.
 
 ---
@@ -535,3 +544,4 @@ void returnsProblemDetailOnCrossTenantRead(RestTestClient client) {
 Why: the `RestTestClient` style is the direction for Boot 4 tests — real serialization, real status mapping, no `MockMvc` string plumbing for assertions that should read like the contract. It catches the class of defect a mocked call cannot: the mapping from exception to problem details, and the header the client actually depends on.
 Misconfiguration: a mock-heavy slice that asserts internal calls rather than the response, so the test survives a change to the wire format; or a full-context test per assertion, so the suite is slow and gets skipped.
 Verification: the slice runs without the database by stubbing the repository, asserts status, content type and the problem-details shape, and the security slice covers the same route for anonymous, owner, same-tenant stranger and foreign principal.
+When it fails the output is the review comment: `Status expected:<403> but was:<200>` with the response body printed underneath — the ownership bug named in one line, on the wire format the client actually parses.

@@ -717,6 +717,7 @@ Failure: after the Security 6 to Security 7 migration, compilation stops on `htt
 Legacy: this is the upgrade-delta class, not a new configuration. `authorizeRequests` and the adapter base class were removed in Security 7; the pre-7 chain shape is the stale form.
 Diagnosis: the removed API had two successors depending on what the old code did: the lambda DSL filter chain for chain configuration, and a `SecurityFilterChain` bean for anything the adapter built. Both errors come from one cause and fixing only the first leaves the second hidden behind it.
 Fix: rewrite the chain as a lambda DSL `SecurityFilterChain` bean, move the adapter's method-security extras to `@EnableMethodSecurity` plus explicit `@PreAuthorize` on the resource methods, and keep exactly one chain for the application's route space (27 carries the two-chains failure this leaves behind when half-migrated).
+`error: cannot find symbol` / `symbol:   method authorizeHttpRequests(java.util.function.Consumer)` — the migration message that names the *shape* of the change, which is why reading the compiler beats reading a blog post.
 Verify: `./gradlew :app:compileJava` clean; the security slice asserts the intended status per route cluster, and the startup log names one filter chain.
 
 ---
@@ -751,5 +752,7 @@ Verify: route status Accepted=True with the resolved parent, `kubectl get gatewa
 
 Failure: no error anywhere. `GET /checkout/summary` p99 moved from 480 ms to 610 ms over one release and the error budget burn tripled; CPU is flat, database connections are flat, no new alerts.
 Diagnosis: recorded JFR profiles from the last known-good build and the current one, diffed the flame graphs, and one frame grew from 4% to 19% — `CollectionInitializeException` aside, the real signal was the JDBC statement count per request, up from 3 to 34. A `@EntityGraph` was dropped from the repository method during a cleanup, so Hibernate 7 now issues one select per order line instead of a join fetch, and the cost only appears with real carts.
+`GET /checkout/summary p99=612ms` on the dashboard, and the database's own account of the same minute:
+`logs/postgresql-2026-10-07.csv: duration: 588.412 ms  statement: SELECT l.* FROM order_lines l WHERE l.order_id = $1` repeated 41 times for one request, same `application_name=orders-api`, same connection.
 Fix: restore the fetch plan on the repository method with an explicit join fetch, and add the assertion the release lacked: statement count per request as a metric with a threshold, not a manual review of query logs.
 Verify: EXPLAIN shows the join restored; statement-count metric reads 3 at p99 in the load rehearsal; p99 back under 500 ms on the same load shape for two consecutive days.

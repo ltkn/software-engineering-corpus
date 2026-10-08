@@ -313,6 +313,7 @@ Why: v5 types the error as `Error | null`, so every consumer either narrows or c
 Pitfall: throwing strings or plain objects from the fetch layer, which turns `instanceof` into a folklore ritual; or catching inside the query function so the query reports success with empty data and the error state is never rendered.
 Verification: a test with a stubbed 401 asserts the rendered state and that the code is `unauthorized`, and a type-level assertion pins `error` to the narrowed union (15's expect-type habit).
 
+`AssertionError: expected 'unauthorized' to be 'unknown' — received code from ApiError { code: 'unknown', status: undefined }` — the failure that says the fetch layer threw a string, which is the exact mistake this block exists to prevent.
 ---
 
 Goal: Shape a response for the view without re-fetching or double-rendering.

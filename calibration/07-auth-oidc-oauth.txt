@@ -146,6 +146,7 @@ Participants: client, authorization server.
 Sequence: each refresh response issues a new refresh token and invalidates the old; presenting an already-used token triggers reuse detection.
 Invariant: at most one live refresh token per chain; a fork in the chain means compromise.
 Validation: rotation with reuse detection is the RFC-mandated baseline for public clients (sender-constrained refresh or rotation/replay detection per RFC 9700); the seconds-scale grace for concurrency races plus revoke-the-family-and-alert on reuse is our deployment policy on top of that mandate, not itself normative.
+`POST /oauth/token {"grant_type":"refresh_token","refresh_token":"rt_02…","client_id":"spa"}` → `400 {"error":"invalid_grant","error_description":"refresh token reuse detected","grant_family":"gf_77"}` and the whole family is revoked — the second presentation of a rotated token is the theft signal, and the response that says so is what makes it investigable instead of mysterious.
 Failure: infinite-reuse refresh tokens let stolen credentials persist for months undetected.
 Remediation: rotation default on; reuse revokes the grant family and pages, never silently re-issues.
 Regression test: reused refresh token revokes the family and fires the alert; concurrent-legitimate race tolerated within the grace window.
@@ -484,6 +485,7 @@ Participants: resource server (RP-less), client (ID token).
 Sequence: Resource server validates the access token: issuer, audience (the resource identifier), expiry, token_use or typ, signature, and the resource-indicator binding to the request. The client validates the ID token: issuer, audience (its own client_id), nonce matches the transaction, auth_time if required, exp/iat, alg matches the approved set.
 Invariant: an ID token is never accepted as an access token and vice versa; audiences are exact and explicit.
 Validation: alg fixed or allow-listed per client; typ or token_use claims cross-checked; no plaintext "none"; JWKS fetched with bound caching and rotation overlap.
+`WWW-Authenticate: Bearer error="invalid_token", error_description="signature verification failed", error_uri="https://kty.test/errs/jwt-signature"` with `Cache-Control: no-store` — the header that tells the client whether to refresh, to re-authenticate, or to stop, and the reason a 401 without it teaches the client to guess.
 Failure: Accepting an ID token at the API gets you a user, not a delegated caller; accepting an access token as identity lets a resource server impersonate the client.
 Remediation: Distinct audience values (api://users vs the client_id) and distinct issuer/type expectations per checkpoint; shared library enforces the split.
 Regression test: The same JWT presented at the wrong checkpoint is rejected with the same class of error; audience mismatch cases covered; none-alg case fails closed.

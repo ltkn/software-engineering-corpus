@@ -25,6 +25,8 @@ Verification: cardinality budget test on label sets; route-template (not raw-pat
 
 Signal needed: USE metrics per resource (pools, queues, disks, brokers).
 Schema: utilization (percent saturation), saturation (queue depth/wait time), errors (timeout/exhaustion counts) for Hikari pools, Kafka consumer lag, disk volumes, connection counts.
+`{"@timestamp":"2026-10-07T02:14:05.412Z","log.level":"WARN","service.name":"orders-api","process.thread.name":"virtual-41","logger":"com.zaxxer.hikari.pool.HikariPool","message":"Connection is not available, request timed out after 30000ms (total=10, active=10, idle=0, waiting=41)"}`
+Saturation arriving as a user-facing timeout three layers later: the pool log is the cause, the SLO burn is the symptom, and the pair is only readable because both carry `service.name` and a trace id.
 Incident reading: saturation rising while utilization looks fine names the queue as the bottleneck before latency alarms fire.
 Anti-pattern: CPU-only dashboards declaring "all green" during a pool-exhaustion outage.
 Verification: saturation alert per resource with runbook; pool-exhaustion drill fires the right alert, not a generic page.
@@ -65,6 +67,12 @@ Verification: error-trace completeness test (every error id traceable); cost-per
 
 Signal needed: exemplars linking metrics to traces.
 Schema: histogram buckets carrying exemplar trace ids for slow observations.
+`http_server_request_duration_seconds_bucket{otel_scope_name="orders-api",http_route="/v1/orders/{id}",le="0.25"} 412 # {trace_id="4bf92f3577b34da6a3ce929d0e0e4736",span_id="00f067aa0ba902b7"} 0.248331`
+The exposition line is the feature: sample the bucket, get a trace id you can open, no extra sampling budget.
+receivers: { otlp: { protocols: { http: { endpoint: "0.0.0.0:4318" } } } }
+processors: { memory_limiter: { limit_mib: 1024 }, batch: { send_batch_size: 8192 } }
+exporters: { otlphttp: { endpoint: "https://telemetry.test:4318" } }
+The collector's own config is telemetry infrastructure and gets reviewed like it: an unset memory limiter is how a trace pipeline takes down the node it runs on.
 Incident reading: click the p99 bucket, land on the exact slow trace — metric-to-trace in one hop instead of time-range guessing.
 Anti-pattern: metrics and traces as parallel universes joined by timestamps and hope.
 Verification: exemplar presence test on histogram metrics; drill measures metric-to-trace time under a minute.
@@ -81,6 +89,17 @@ Verification: SLI-to-incident mapping review (each past incident would have burn
 
 Signal needed: error-budget policy gating deploys.
 Schema: burn-rate alerts (fast burn pages, slow burn tickets) wired into the deploy pipeline; freeze on fast burn.
+- alert: OrdersApiAvailabilityFastBurn
+  expr: (sum(rate(slo:http_requests_good{service="orders-api"}[5m])) / sum(rate(slo:http_requests_total{service="orders-api"}[5m]))) < 0.99856
+  for: 5m
+  labels: {severity: page, slo: orders-api-availability, burn_rate: "14.4x", window: "1h/5m"}
+  annotations: {runbook: "https://runbooks.test/orders-api-availability", request_page: "oncall-platform"}
+The `burn_rate` and `window` labels are what let one routing table separate page from ticket without four copies of the same expression.
+management.tracing.sampling.probability=0.05
+management.otlp.tracing.endpoint=https://otel-collector.test:4318/v1/traces
+logging.pattern.level=%5p [${baggage.tenant:unknown},%X{traceId:-},%X{spanId:-}]
+management.opentelemetry.resource-attributes.service.name=orders-api
+The properties that decide whether the three signals join up at all: one sampler setting, one export endpoint, one log pattern carrying the ids, one resource attribute naming the service.
 Why: deploys during active incidents compound; the pipeline must know the service is already bleeding.
 Anti-pattern: deploy train running through a SEV with nobody connecting the two systems.
 Verification: simulated-burn drill asserts the freeze triggers; deploy log shows the gate decision per release.

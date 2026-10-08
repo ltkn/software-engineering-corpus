@@ -350,6 +350,7 @@ POST /reports  -> 202 Accepted
 GET  /operations/op_7f3 -> { "status": "in_progress" | "succeeded" | "failed",
                              "result": "/reports/r_88", "error": { "code": "source.timeout" } }
 HEAD /reports/r_88 -> 200 with Content-Length once ready; 404 while not yet visible
+`Location: /operations/op_7f3` and `Retry-After: 5` on the 202, then `Link: <https://api.test/reports/r_88>; rel="result"` on the finished operation — three headers that let a client poll, back off and leave without parsing prose.
 Why: 202 with an operation resource moves the wait out of the connection, so a slow report costs a poll rather than a gateway timeout and a client that disappears does not cancel the work by accident. `Retry-After` gives the poller a server-supplied cadence, and the `Location` of the result is separate from the operation's own URI so the result can be cached or downloaded once while the operation record stays queryable.
 Versioning note: the operation shape is part of the contract — add fields freely, never change what `status` values mean, and give each terminal failure a stable code so clients can branch on it instead of parsing prose.
 Verification: contract test asserts 202 plus a resolvable `Location`; a test drives an operation to each terminal state; the polling client honours `Retry-After` in a fake-clock test rather than hard-coding a sleep.

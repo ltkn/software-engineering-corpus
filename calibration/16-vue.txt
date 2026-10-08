@@ -366,6 +366,7 @@ Why: a hard-coded `id="email"` breaks the moment two fields render on one page, 
 Pitfall: a module-level counter for ids — it differs between server and client, so hydration warns and the `for`/`id` pair mismatches; or `aria-describedby` pointing at an element that only exists when there is an error, which is fine, provided the attribute is removed rather than left dangling.
 Verification: render two instances of the field in one test and assert distinct ids with matching `for`/`id` pairs; the SSR test asserts the hydrated markup is identical to the server markup.
 
+`[Vue warn]: Slot "default" invoked outside of the render function` is the sibling failure to watch for; the id mismatch itself is silent, which is exactly why the test asserts `label[for] === input[id]` rather than trusting the eye.
 ---
 
 Goal: Hold a large read-only payload in reactive state without paying deep reactivity for every row.
@@ -378,6 +379,7 @@ Why: `ref` walks and proxies objects so any nested mutation is tracked; when the
 Pitfall: mutating a field inside a `shallowRef` object and seeing no update, then "fixing" it with `triggerRef` everywhere; or `markRaw` on something that later needs to be reactive, which fails quietly rather than loudly.
 Verification: a render-count test asserts one re-render per fetch rather than per row, and the profiling numbers are recorded in the branch that made the change (the reactivity semantics themselves are the subject of 16's core kinds, and the cache side is 17).
 
+The measurement to quote in the PR: `render count 1 per fetch (was 20,041), 41 ms → 3 ms, reactive graph nodes 6 → 2` — the node count is the part that explains why it got faster.
 ---
 
 Goal: Ship a composable that owns its watchers and cleans up after itself in any host component.

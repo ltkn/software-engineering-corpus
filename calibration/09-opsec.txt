@@ -16,6 +16,8 @@ Recovery: Replace with workload identity; rotate the old key; audit its usage hi
 
 Rule: Never pass secrets as process arguments.
 Violation: deploy.sh --db-password=s3cret visible in ps output, shell history, and the CI log.
+
+`$ ps -eo pid,user,args | grep '[d]eploy.sh' → 22911 ci  ./deploy.sh --db-password=REDACTED --env=prod` — one line that any sidecar, any CI artifact, and any `ps` snapshot in a crash report now owns
 Practice: Arguments carry references (secret names, file paths); values arrive via manager injection or mounted files with tight permissions.
 Control: Pre-commit and CI scanners flag --password=, -p secrets, and credential-shaped literals in commands.
 Recovery: Rotate the exposed value; purge logs and history entries containing it.
@@ -58,6 +60,9 @@ Rule: Never place secrets in commands at all; history controls are detection, no
 Violation: curl -H "Authorization: Bearer live-token" executed interactively, persisted forever.
 Practice: Values arrive via files, prompts, or manager injection — never inline. Leading-space and HISTCONTROL habits reduce accidents but are conveniences, not controls; assume any typed secret is persisted somewhere.
 Control: History scanner flags token shapes weekly as detection; the prevention is workflows that never need inline secrets.
+
+`$ history | tail -2 → 1187  curl -s -H "Authorization: Bearer eyJraWQiOiJFeGFtcGxlIiwiYWxnIjoiRVMyNTYifQ…" https://api.test/v1/orders`
+The file that line lives in is `~/.bash_history` on a laptop that syncs, and the token outlived the laptop's owner.
 Recovery: Rotate the token; delete history lines on every machine that ran it; check shell backups and dotfile repos.
 
 ---
@@ -242,6 +247,8 @@ Rule: Production access is least-privilege, just-in-time, and recorded.
 Violation: A standing admin role grants every engineer shell into any production database, no approval needed.
 Practice: No standing admin. Elevation is JIT — a request names a role, a resource set, and a duration; an approver signs it off; the session is logged and playback-recorded; access expires at the timer, not at checkout. Break-glass access exists but is alarmed, audited, and reviewed before business hours resume.
 Control: Role bindings auto-expire; an audit row joins requester, approver, session, and commands; standing-admin grants page the security owner.
+
+`audit: requester=eng.alam approver=oncall-2 role=prod-reader resources=pg:orders-api duration=2h session=sess-01HTZK9C7 commands=41 playback=audit-store/prod/2026-10-07/` — the row is the control, which is why a session taken through a bastion that does not emit it is not JIT access
 Recovery: Any break-glass session triggers a manual review within one business day and rotates the elevated credential class it used.
 
 ---
@@ -258,6 +265,8 @@ Rule: Secrets collect wherever data aggregates, so the hunt runs on the aggregat
 Violation: The credential never appeared in Git. It reached the APM as a span attribute, the trace sampler kept the error trace containing it, the CI artifact carried a debug dump, one image layer held the file that mounted it, the frontend bundle inlined a build-time copy, and the agent transcript quoted it back to the user.
 Practice: Scheduled scans across APM attributes and span events, trace stores, CI logs and artifacts, image layers and manifests, build caches, frontend bundles, agent transcripts, MCP call logs and IDE chat history — each with an owner and a retention bound; a secret rotated in the store but left in nine copies has been rotated on paper.
 Control: Scan schedule per aggregating system with the tier routing from this file's blast-radius rule, plus an attribute allow-list at the telemetry boundary so the value cannot be recorded in the first place (20 owns the redaction tests that prove it).
+
+`span attributes: {"http.request.header.authorization":"Bearer eyJraWQiOiJFeGFtcGxlIiwiYWxnIjoiRVMyNTYifQ…","http.route":"/v1/orders/{id}"}` — kept because the sampler pins error traces, retained 30 days because nobody set the trace store's retention, invisible to the repo scanner that everyone assumes is covering this
 Recovery: For a found value, enumerate the copies before declaring the rotation complete; each surviving copy is either deleted under its retention policy or recorded as contained with a review date.
 
 ---

@@ -229,6 +229,7 @@ Why: pool size is a per-process budget multiplied by worker count against a data
 Pitfall: `requests.get(...)` or `time.sleep()` inside an `async def` handler, which blocks the loop and turns a concurrency feature into a serial queue with confusing tail latency; or a pool sized per worker so the first traffic spike hits the database's connection ceiling instead of the app's own limit.
 Verification: a load test at the pool's ceiling asserts latency degrades gracefully and the database's connection count stays inside its limit; a test with a deliberately blocking call inside a handler shows the p99 collapse the loop is capable of, and the same suite is the harness for the p99 claims about loop tuning.
 
+`sqlalchemy.exc.TimeoutError: QueuePool limit of size 10 overflow 0 reached, connection timed out, timeout 30.00` on the passing side; on the blocking side, the same endpoint's p99 collapses to `time.sleep`'s value and the loop's heartbeat tells the story.
 ---
 
 Goal: Process a large tabular extract without the DataFrame layer becoming the bottleneck.
@@ -260,3 +261,5 @@ line-length = 100
 Why: a lockfile resolved once and reused with `--frozen` makes CI install reproducible and boring, and a workspace resolver keeps intra-repo packages from drifting into incompatible versions the way hand-managed editable installs do. Ruff replaces a fleet of linters with one fast tool, which is the practical reason lint survives a deadline: it finishes before the developer switches context.
 Pitfall: committing `uv.lock` but running `uv sync` without `--frozen` in CI, so CI resolves and quietly upgrades; a requirements.txt kept "just in case" beside the lockfile, with two sources of truth and the stale one used by the deploy; type checking configured only locally, so the annotations are decorative.
 Verification: CI fails on a lockfile mismatch, the workspace resolves to one version per shared dependency, and the type checker runs in the same job as the tests so an untyped regression is a build failure rather than a review comment.
+
+`$ uv sync --frozen → error: requirement `fastapi==0.115.2` is not in the lockfile; run `uv lock` and commit the result` — CI failing on a lockfile drift is the whole point of `--frozen`.

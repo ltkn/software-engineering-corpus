@@ -76,6 +76,7 @@ Why: clients abandon pages post-payment; only webhooks reliably observe completi
 Pitfall: fulfilling on client-side success callback, shipping nothing to customers who closed the tab (plus replaying deliveries double-shipping).
 Verification: five-case delivery battery (unsigned, wrong version, replay, tamper, out-of-order); closed-tab drill still fulfills exactly once.
 
+`POST /webhooks/payments` with `Stripe-Signature: t=1759847645,v1=REDACTED` and body `{"type":"payment_intent.canceled","data":{"object":{"id":"pi_3NEXAMPLE","status":"canceled"}}}` — delivered twice, as designed, which is why the handler's answer is an idempotent state transition plus a timestamp-tie-break, not a log line.
 ---
 
 Goal: Refunds, disputes, and chargebacks as first-class flows.
@@ -328,6 +329,7 @@ Why: Each step is idempotent because each will be retried, and because the inter
 Pitfall: Charging before reserving, which sells stock that does not exist under load; a compensation path that releases stock and captures payment in the same retry loop, so a partial failure re-releases stock someone else now holds; and treating a 5xx from the PSP as "failed" rather than "unknown", which is how a double charge happens (the idempotency contract is 14's, the invariant enforcement is 28's).
 Verification: Chaos drill kills the process between each pair of steps and asserts stock, payment and order states reconcile to a legal state with the operator queue empty afterwards; a concurrency test sells the last unit to two checkouts and asserts exactly one capture succeeds.
 
+`orders: state=reserved payment=authorized stock=released compensation=release_reservation reason=payment-unknown-5xx` in the order's own event stream — the state an operator reads at 3 a.m. should name the compensation that ran and the one that still has to.
 ---
 
 Goal: Run a promotion engine whose output is explainable line by line, and whose money never disagrees with the ledger.

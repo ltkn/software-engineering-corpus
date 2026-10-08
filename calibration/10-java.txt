@@ -319,6 +319,9 @@ Modern form: prefer ReentrantLock over synchronized on virtual-thread hot paths;
 Why: a pinned virtual thread occupies its carrier exclusively, collapsing the many-to-few ratio back toward one-to-one.
 Counter-pattern: synchronized LRU cache on every request of a virtual-thread service (from 02's canonical incident).
 Check: JFR virtual-thread-pinned events at zero in load tests; pinning alert in production telemetry.
+`jfr print --events jdk.VirtualThreadPinned app.jfr` is the honest form of the claim:
+`jdk.VirtualThreadPinned  duration=1.92s  eventThread="virtual-41"  stack="com.example.orders.RiskCache.lookup(RiskCache.java:64)"`
+One event with a `synchronized` frame in it explains a p99 that no pool or queue metric shows; `jdk.tracePinnedThreads=full` names the same monitor in the log when JFR is not attached.
 
 ---
 
@@ -343,6 +346,7 @@ try (var scope = StructuredTaskScope.open()) {
 Why: sibling tasks share one lifetime and one failure policy; join-or-throw replaces manual latch plus error aggregation.
 Counter-pattern: raw exeuctor plus CountDownLatch with hand-rolled exception collection that drops half the failures.
 Check: child-failure test asserts the scope throws with all failures visible; preview-flag documented in the build file.
+The build must also carry the two notes the compiler emits — `Note: Some input files use preview features of Java SE 25.` and `Note: Recompile with -Xlint:preview for details.` — because a preview API in a build log that shows no preview flag means someone compiled it somewhere it will not survive.
 
 ---
 
@@ -389,6 +393,7 @@ Check: GC logs plus pause histograms decide; switch only on measured pause viola
 Concept: JFR plus async-profiler as the diagnostic pair. Tooling practice.
 Modern form: continuous JFR (allocation, lock, I/O events) in production at low overhead; async-profiler wall/cpu/flame sampling for deep dives.
 Why: JFR sees JVM internals (TLAB, safepoints, pinned threads); profilers see where wall time goes; together they separate "slow code" from "waiting code".
+`jcmd 1 JFR.start name=wall settings=profile duration=60s` then `jfr print --events jdk.GCPause,jdk.JavaMonitorEnter,jdk.VirtualThreadPinned wall.jfr` — the three event types that separate "the JVM stopped the world" from "my lock is contended" from "a virtual thread pinned a carrier", which is a distinction a flame graph alone will not make for you.
 Counter-pattern: heap-dump-first debugging for a latency problem, answering a memory question nobody asked.
 Check: incident runbook names both tools with the exact event sets; overhead budget asserted under 2%.
 

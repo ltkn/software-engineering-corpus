@@ -25,6 +25,7 @@ Regression control: Each invariant owns at least one automated test; the invaria
 Concept: API1:2023 Broken Object Level Authorization (OWASP API Security Top 10, 2023 revision; still the current API list as of 2026-10). Authorization must be checked per object, not per session.
 Vulnerable pattern:
 getUser(id) { return users.findById(id).orElseThrow(); }
+`GET /v1/orders?id=1001..1400` with tenant A's token returning tenant B's rows: no forged parameter, no bug in the query planner, just a `WHERE` clause that never mentioned who is asking.
 Why it fails: Authentication proves who calls, not what they may see; any authenticated id enumerates other tenants.
 Remediation (Spring anchor):
 @PreAuthorize("@authz.canReadUser(authentication, #id)")
@@ -43,6 +44,7 @@ Regression control: Token-lifetime assertion in config tests; contract test on 4
 
 Concept: API3:2023 Broken Object Property Level Authorization (covers the 2019 excessive-data-exposure and mass-assignment entries). Authorization must cover properties, not just objects.
 Vulnerable pattern: User update endpoint binds the whole entity, so role: "admin" in the JSON silently promotes the caller.
+`PATCH /v1/users/me {"role":"admin","tier":"gold"}` answered with 204 — the DTO had the field, the binder had the setter, and the authorization layer had never heard of `role`.
 Why it fails: Object-level checks pass (own profile) while a writable property escapes the model.
 Remediation: Property allow-lists on write (DTOs with exactly the settable fields, never the entity) and projection DTOs on read. This file is the mechanism home; assessment technique lives in 08.
 Regression control: Mass-assignment test posts an admin flag and asserts it ignored; response-shape test asserts no sensitive fields leak.
@@ -75,6 +77,7 @@ Regression control: Abuse-case test replays the profitable loop and asserts the 
 
 Concept: API7:2023 Server-Side Request Forgery. The server fetches attacker-chosen URLs.
 Vulnerable pattern: Webhook registration accepts any callback URL; the fetcher follows redirects into 169.254.169.254 and reads cloud credentials.
+`GET /v1/reports/fetch?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/` — one line that is a valid URL, a valid feature and a credential read, in that order.
 Why it fails: Server-side requests inherit the server's network position and credentials; user input controls the destination.
 Remediation: URL allow-lists, deny private and metadata ranges by resolved IP (re-resolve, check each redirect hop), no credential ambient to the fetcher. Spring anchor: RestClient with a validating request interceptor, never the raw URL.
 Regression control: SSRF test battery (metadata IP, redirect-to-private, DNS rebinding) runs against every URL-accepting endpoint.

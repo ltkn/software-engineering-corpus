@@ -291,6 +291,7 @@ Vue parallel: `const input = ref<HTMLInputElement | null>(null)` with `<input re
 Translator pitfall: writing `inputRef.current!.focus()` in an effect that runs after a conditional render, which makes the assertion a lie and the crash appear somewhere else; or in the other direction, assuming Vue checks `ref="eml"` against `input`, which it does not.
 Check: `strictNullChecks` is on and no `current!` survives review; a test unmounts the component and calls the handler through a held reference to prove the null path is handled, and the Vue counterpart asserts the template ref name matches the variable in the same file.
 
+`src/Field.tsx:22:5 - error TS18047: 'inputRef.current' is possibly 'null'.` — the compiler refusing the assertion is the check; where the line passes only because of a `!`, the unmount test is the check instead.
 ---
 
 Concept: React 19's form hooks give an optimistic pending state without a mutation library; Vue's answer to the same problem is still `useMutation`, because Vue has no action-to-transition binding.
