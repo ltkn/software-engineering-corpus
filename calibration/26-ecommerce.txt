@@ -311,3 +311,35 @@ Pattern: virtual waiting room or queue tokens for predicted-over-capacity drops;
 Why: known-demand spikes are the one outage class fully preventable by design; first-come-first-served without a queue is a lottery plus a crash.
 Pitfall: "the site was slow for an hour" as the post-mortem for a planned drop, with oversell as the encore.
 Verification: load drill at 2x expected drop traffic queues gracefully; shed-order test (payment path never degraded first).
+
+---
+
+Goal: Merge a guest cart into the authenticated cart on sign-in without losing either side or silently re-pricing the customer.
+Pattern: Both carts are real aggregates with their own identity; sign-in runs an explicit merge that unions lines by SKU and offer, keeps the higher-priority price for a duplicated line, applies the authenticated customer's price list and promotions, and writes a merge record naming both source carts. The loser cart is tombstoned with a pointer, never deleted, so the pre-merge state is still readable during the session (the guest-identity model itself is the neighbouring record's).
+Why: The merge is a business event with a customer-visible consequence — a price that changes on sign-in is a support ticket and, where the price list differs, a legal offer question. Doing it in one place makes it testable; doing it in the frontend makes it a per-channel rumour.
+Pitfall: Merging by "authenticated cart wins", which silently discards a guest line the customer added two minutes ago, or re-running promotion eligibility after the merge without checking minimum-basket rules, so the discount the guest saw disappears at sign-in with no explanation.
+Verification: A test with overlapping and disjoint lines asserts line counts, the chosen unit prices, the applied promotions, and that the merge record identifies both carts; an edge test covers the same SKU added on both sides with different offers, and the PII in the guest cart's saved address follows the erasure path (25).
+
+---
+
+Goal: Take payment for a multi-item order where stock, payment and fulfilment cannot all be one transaction.
+Pattern: Reserve stock with an expiry, create a payment intent against the reserved basket, settle on capture, then release reservations that were never captured. Compensation is explicit per step: release reservation, void or refund payment, and an order state that records which compensations ran — including the compound state "reservation released and payment authorised but not captured", which is the one that needs an operator.
+Why: Each step is idempotent because each will be retried, and because the interesting failures are the half-states: the reservation is short-lived so a long checkout loses stock, and a payment captured after the stock was released promises an item that is already sold to someone else. The state machine is where that collision is decided rather than left to whoever notices.
+Pitfall: Charging before reserving, which sells stock that does not exist under load; a compensation path that releases stock and captures payment in the same retry loop, so a partial failure re-releases stock someone else now holds; and treating a 5xx from the PSP as "failed" rather than "unknown", which is how a double charge happens (the idempotency contract is 14's, the invariant enforcement is 28's).
+Verification: Chaos drill kills the process between each pair of steps and asserts stock, payment and order states reconcile to a legal state with the operator queue empty afterwards; a concurrency test sells the last unit to two checkouts and asserts exactly one capture succeeds.
+
+---
+
+Goal: Run a promotion engine whose output is explainable line by line, and whose money never disagrees with the ledger.
+Pattern: Rules are ordered and explicit about stacking — which combinators win, which are exclusive, per-line versus basket-level, shipping versus item discount — and each applied rule is recorded on the order as an audit trail: rule id, version, scope, amount, and the basket it was evaluated against. Money is integral minor units with a single rounding function, applied once, at a defined point in the calculation.
+Why: The audit trail is what answers "why was this customer charged this" without re-running the engine and hoping for the same result, and a versioned rule keeps the answer valid after the rule changes. A single rounding point is what makes the sum of line discounts equal the basket discount, which is the invariant the ledger reconciliation depends on.
+Pitfall: Rounding per line and then summing, so the basket total disagrees with the payment by a cent and the reconciliation job grows an exception list; "non-stackable" implemented as evaluation order in a loop, so adding a campaign silently changes which promotion wins for existing customers.
+Verification: Invariance tests assert sum(line discounts) equals basket discount and that the recorded per-rule amounts sum to the total discount, over generated baskets including odd quantities and fractional unit prices; a rule-order test asserts a new campaign cannot change the outcome for an existing basket unless a test says so explicitly (the promotion engine's contract in 26 stays a single testable surface).
+
+---
+
+Goal: Decide the delivery promise at checkout and keep it honest through payment and fulfilment.
+Pattern: Availability is computed from on-hand minus reserved, with backorder and partial-shipment policy as explicit per-line attributes; the checkout response carries the promise per line and for the shipment, with the promise's inputs recorded on the order so a later dispute can be answered with what was known at the time.
+Why: The promise is an offer, and the two failure modes are both expensive: promising a single shipment when stock forces two (the customer reads the later part as lost), and promising a date computed from a stock figure that another checkout has already consumed. Recording the inputs separates "we were wrong" from "we were dishonest", which are different fixes.
+Pitfall: Recomputing availability after payment for the confirmation email, so the email promises something the checkout did not; treating backorder as a boolean on the product when it is a property of the variant, the customer segment and the destination; releasing the promise's stock only on capture, so the promise outlives the reservation.
+Verification: A test with the last unit contested by two checkouts asserts one gets the in-stock promise and the other gets the backorder promise before payment, not after; a reconciliation check compares promised dates against shipped dates per lane and the drift is reviewed as a data-quality issue, not as a fulfilment exception.

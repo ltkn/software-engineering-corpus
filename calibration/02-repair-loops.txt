@@ -711,3 +711,45 @@ Fix: Give every integration test its own tenant/database or a transactional roll
 Verify:
 50 consecutive parallel runs green, no inter-test leakage
 
+---
+
+Failure: after the Security 6 to Security 7 migration, compilation stops on `httpSecurity.authorizeRequests(HttpServletRequestRequest)` — cannot resolve method — and a second error points at a class extending `WebSecurityConfigurerAdapter`.
+Legacy: this is the upgrade-delta class, not a new configuration. `authorizeRequests` and the adapter base class were removed in Security 7; the pre-7 chain shape is the stale form.
+Diagnosis: the removed API had two successors depending on what the old code did: the lambda DSL filter chain for chain configuration, and a `SecurityFilterChain` bean for anything the adapter built. Both errors come from one cause and fixing only the first leaves the second hidden behind it.
+Fix: rewrite the chain as a lambda DSL `SecurityFilterChain` bean, move the adapter's method-security extras to `@EnableMethodSecurity` plus explicit `@PreAuthorize` on the resource methods, and keep exactly one chain for the application's route space (27 carries the two-chains failure this leaves behind when half-migrated).
+Verify: `./gradlew :app:compileJava` clean; the security slice asserts the intended status per route cluster, and the startup log names one filter chain.
+
+---
+
+Failure: error TS5023: Unknown compiler option 'suppressImplicitAnyIndexErrors'. Reported at tsconfig.json:14, and the build stops before type-checking a single file.
+Diagnosis: TypeScript 7 promotes removed and deprecated flags to hard errors instead of warnings, which is intentional: a flag that silently does nothing has been quietly changing what the compiler checked. The option was carrying a legacy index-signature access pattern in two files.
+Fix: delete the flag and fix the two call sites with a narrowing guard or an explicit `Record<string, unknown>` shape, so the safety comes from the types and not from an opt-out.
+Verify: the dual matrix step runs `tsc6 --noEmit` and `tsc7 --noEmit`; both clean, with no `ignoreDeprecations` in either config, and `stableTypeOrdering` on in both.
+
+---
+
+Failure: node --experimental-strip-types scripts/report.ts exits with ERR_INVALID_TYPESCRIPT_SYNTAX, pointing at `enum SortMode` on line 6. The same file builds fine through the bundler in CI.
+Diagnosis: native type stripping deletes type syntax; it does not transform it. An enum emits runtime code, so stripping cannot produce a valid program, which is exactly the class of divergence `erasableSyntaxOnly` exists to catch before it reaches a runtime.
+Fix: replace the enum with a const object plus a union type derived from it, and enable `erasableSyntaxOnly` in the shared base config so the next one fails at the type-check instead of at process start.
+Verify: `node --experimental-strip-types scripts/report.ts` runs; `tsc7 --noEmit` clean with `erasableSyntaxOnly` on; the CI step that builds the scripts runs the strip path, not only the bundler.
+
+---
+
+Failure: consumer throws UnsupportedVersionError on group join in staging after the client library was bumped ahead of the brokers; the same image works in dev, which was rolled to the newer minor first.
+Diagnosis: the newer client defaults to the newer group protocol, and the older broker in staging has not been rolled yet, so the join request the client considers standard is rejected at the protocol level. Nothing is wrong with the group, the topic, or the ACLs, which is why the lag dashboards stay flat while the consumer loop dies.
+Fix: either hold the client on the classic protocol until the broker fleet has rolled, or roll the brokers first. The version-skew direction is the decision to make explicitly — the fleet rolls before the clients, never the reverse — and it belongs in the runbook next to the roll order.
+Verify: consumer joins and commits in staging on the mixed fleet; `kafka-consumer-groups --describe` shows one group with the intended protocol and no repeated rebalances; the runbook states the roll order.
+
+---
+
+Failure: `kubectl get httproute checkout -o wide` shows Accepted=False, Reason=NoMatchingParent, and the gateway reports the route as not attached; browser traffic gets a 404 from the gateway with no upstream hit in any service log.
+Diagnosis: the route's `parentRefs` name a Gateway in a different namespace without a corresponding `namespace` field, and reference a listener by a `sectionName` that the Gateway renamed during the certificate rotation work. A route that matches no parent is admitted-but-unattached, which is a silent state, not an error state.
+Fix: set `parentRefs.group` and `kind` explicitly, add the parent namespace, and pin the `sectionName` to a listener name that the platform team owns; the listener rename is what should have failed loudly.
+Verify: route status Accepted=True with the resolved parent, `kubectl get gateway` shows ProgramsAdmitted=True, and the smoke request returns 200 from the service. Route-not-attached is on the alert list with the reason attached, not just the 404.
+
+---
+
+Failure: no error anywhere. `GET /checkout/summary` p99 moved from 480 ms to 610 ms over one release and the error budget burn tripled; CPU is flat, database connections are flat, no new alerts.
+Diagnosis: recorded JFR profiles from the last known-good build and the current one, diffed the flame graphs, and one frame grew from 4% to 19% — `CollectionInitializeException` aside, the real signal was the JDBC statement count per request, up from 3 to 34. A `@EntityGraph` was dropped from the repository method during a cleanup, so Hibernate 7 now issues one select per order line instead of a join fetch, and the cost only appears with real carts.
+Fix: restore the fetch plan on the repository method with an explicit join fetch, and add the assertion the release lacked: statement count per request as a metric with a threshold, not a manual review of query logs.
+Verify: EXPLAIN shows the join restored; statement-count metric reads 3 at p99 in the load rehearsal; p99 back under 500 ms on the same load shape for two consecutive days.

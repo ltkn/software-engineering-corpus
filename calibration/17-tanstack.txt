@@ -293,3 +293,86 @@ Symptom: Type errors on every v4 call site for the rename, and at runtime the on
 Legacy: A Pinia store that copies the query result and treats itself as the source of truth.
 Replacement: keep the query authoritative; Pinia holds UI-local state only.
 Symptom: Invalidation fans out to two copies inconsistently and the UI renders a phantom list that never reconciles with the cache.
+
+---
+
+Goal: Fail a query with a typed error the UI can branch on, instead of `unknown` at every call site.
+Wiring:
+class ApiError extends Error {
+    constructor(readonly code: 'unauthorized'|'not_found'|'rate_limited'|'validation'|'server',
+                readonly status: number, readonly requestId?: string) { super(code) }
+}
+async function fetchOrder(id: string): Promise<Order> {
+    const res = await http.get(`/orders/${id}`)
+    if (!res.ok) throw new ApiError(mapStatus(res.status), res.status, res.headers.get('request-id'))
+    return orderSchema.parse(await res.json())          // unknown-first, then parsed (15)
+}
+const { error } = useQuery({ queryKey: orderKeys.detail(id), queryFn: ({ signal }) => fetchOrder(id, signal) })
+const code = computed(() => error.value instanceof ApiError ? error.value.code : 'unknown')
+Why: v5 types the error as `Error | null`, so every consumer either narrows or casts. Narrowing once, at the query function boundary, means the UI branches on a domain code rather than on message text, and the request id rides along so a screenshot becomes a log lookup.
+Pitfall: throwing strings or plain objects from the fetch layer, which turns `instanceof` into a folklore ritual; or catching inside the query function so the query reports success with empty data and the error state is never rendered.
+Verification: a test with a stubbed 401 asserts the rendered state and that the code is `unauthorized`, and a type-level assertion pins `error` to the narrowed union (15's expect-type habit).
+
+---
+
+Goal: Shape a response for the view without re-fetching or double-rendering.
+Wiring:
+const { data } = useQuery({
+    ...orderListOptions(tenantId),
+    select: (page) => ({ rows: page.items.map(toRow), count: page.total }),
+    structuralSharing: false,            // only when the derived shape must be referentially fresh
+})
+Why: `select` runs on the cached value, so the network shape stays cacheable while the view gets what it needs — and it runs again on each cache update, which is where the cost hides. Structural sharing keeps unchanged branches referentially equal, so a `computed` or a table memo survives a background refetch instead of re-rendering the whole list.
+Pitfall: returning a fresh object from `select` on a large list while keeping structural sharing on, which fights itself; putting the derivation in a `computed` over raw data and paying it on every render instead of once per cache update; using `select` to filter by tenant and forgetting that the *cache* still holds the whole page (the filter belongs to the key and to the query).
+Verification: a render-count test asserts the table renders once per real data change, not once per background refetch; a test asserts the selected shape is what the component consumes, and the key includes everything the data depends on.
+
+---
+
+Goal: Warm the next screen without duplicating in-flight requests or writing to the wrong cache slot.
+Wiring:
+function prefetchOrder(id: string) {
+    queryClient.prefetchQuery(orderOptions(id)).catch(() => {})   // failure is a miss, not an error state
+}
+onPointerEnter(() => prefetchOrder(row.id))
+function refreshAllOrders() { queryClient.invalidateQueries({ queryKey: orderKeys.all(tenantId), exact: false }) }
+const fresh = await queryClient.fetchQuery(orderOptions(id))      // imperative read, no component involved
+Why: `prefetchQuery` and `fetchQuery` go through the same deduplication and staleness rules as a mounted query, so a hover prefetch cannot stampede, and its failure is invisible to the UI until a component actually reads the cache. Invalidation by key prefix is the only safe bulk refresh, which is why the key is a factory with the tenant in it.
+Pitfall: prefetching with a key built at the call site instead of from the factory, so the cache fills with an orphan entry the component never reads; swallowing errors in a global handler so a prefetch failure pages like a user-visible error; invalidating with `refetchType: 'all'` on a screen with ten infinite queries and paying for all of them.
+Verification: a network-assertion test asserts one request per hover burst per id; a test asserts the prefetched entry is what the mounted query reads without a second request; the key factory is the only place keys are constructed, enforced by lint or review.
+
+---
+
+Goal: Own table state explicitly when sorting, filtering and paging are server-side.
+Wiring:
+const sorting = ref<SortingState>([{ id: 'created_at', desc: true }])
+const pagination = ref<PaginationState>({ pageIndex: 0, pageSize: 25 })
+const table = useVueTable({
+    get data() { return query.data.value?.items ?? [] },
+    get columns() { return columns },
+    get sorting() { return sorting.value },
+    onSortingChange: updater => { sorting.value = applyUpdater(updater, sorting.value); pagination.value.pageIndex = 0 },
+    manualSorting: true, manualPagination: true, manualFiltering: true,
+})
+const query = useInfiniteQuery({
+    queryKey: orderKeys.list(tenantId, toRaw(sorting.value)),
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+    initialPageParam: undefined as string | undefined,
+})
+Why: with `manual*` on, TanStack Table stops pretending it owns the data and becomes a view-model over the server contract; the state that changes the request lives in one place and feeds the query key, so a sort change is a new key, a new cache slot, and page zero — which is what the server's cursor semantics actually allow.
+Pitfall: leaving `manualSorting` off with server data, so a click re-sorts one page and calls it sorted; or keying the query on a reactive proxy so every keystroke in a filter box forks a new cache entry (debounce the key input, not the request).
+Verification: a test asserts a sort change resets to page zero and issues exactly one request with the sort in the key; a test with the fake server asserts the pages concatenate into the same order the server produced (the invariant is 18's, the server-side evidence is 12's).
+
+---
+
+Goal: Detect a contract change at the boundary rather than in a rendered screen.
+Wiring:
+const shapeTest = `
+{ "results": "#array", "total": "#number", "nextCursor": "#string?",
+  "results[].": { "id": "#string", "total": { "cents": "#number", "currency": "#string" } } }`
+test('order page keeps its wire shape', async () => {
+    const page = await fetchOrders(tenant)
+    expect(page).toMatchShapeOf(shapeTest)      // or a zod/valibot schema parse (15)
+})
+Why: the frontend's types are generated or inferred, so a server change that keeps the type valid but changes the meaning — `total` moving from cents to a money object, a cursor becoming nullable — passes compilation and breaks rendering. A shape test at the boundary is the cheapest place to see it, and it fails for the right reason in the pipeline where it happened.
+Pitfall: snapshotting a whole response with timestamps and ids in it, so every run diffs and the snapshot is blindly updated — which is how the drift got through last time.
+Verification: the shape test runs against a stub server *and* against the staging contract suite; the same fixture feeds the backend's contract test, so one drift fails both sides (contract practice in 14, suite discipline in 18).

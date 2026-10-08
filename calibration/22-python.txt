@@ -202,3 +202,61 @@ legacy/counter form:
 requirements.txt + pip install --user every CLI run, with a comment "last updated 2024".
 pitfall: Two lock files in the same repo (pipenv + uv, or conda env YAML mixed in) silently diverge on patch-level updates.
 verification: `uv lock --check` passes on a fresh clone, and a clean venv from the lockfile runs the script's tests on the first try.
+
+---
+
+Goal: Know where the free-threaded CPython line actually is before planning a migration around it.
+Wiring:
+Interpreter: cpython 3.13 with the experimental `--disable-gil` build; 3.14 improves the free-threaded build's performance and stability — read the release notes for the version you install rather than a summary in a corpus.
+C extension compatibility: any dependency with a C extension is the migration's critical path, not your own code.
+Version gate in the project: requires-python = ">=3.12" for the deployed service; the free-threaded build is evaluated in a branch, not in the runtime contract.
+Why: the GIL is a scalability limit for CPU-bound Python threads and its removal is a real change, but an experimental build with extension-incompatible dependencies is a research project, not a deployment target. The correct posture is a measured answer to "is our bottleneck CPU-bound in Python", because for an I/O-bound FastAPI service the GIL is not the constraint and the migration buys a compatibility problem instead of throughput.
+Pitfall: quoting a free-threaded speedup number as a property of "Python 3.14" when the gain belongs to a specific build, workload and dependency set; or assuming `multiprocessing` was the only option for CPU-bound work and never measuring the alternative.
+Verification: the branch build runs the full test suite plus the profiling scenario, extension imports are checked on import, and the decision is recorded with the versions, the build flags and the measured numbers (the version-discipline habit is shared with 03's date-stamped claims).
+
+---
+
+Goal: Serve an async HTTP endpoint without exhausting the database or blocking the event loop.
+Wiring:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.pool = await asyncpg.create_pool(dsn, min_size=2, max_size=10, command_timeout=5)
+    yield
+    await app.state.pool.close()
+app = FastAPI(lifespan=lifespan)
+uvicorn app:app --workers 4 --loop uvloop        # single-threaded worker model
+Why: pool size is a per-process budget multiplied by worker count against a database limit, so `max_size=10` with four workers is forty connections the server may not have; the lifespan handler owns that budget and closes it, which matters when a graceful shutdown should not strand connections. `uvloop` and free-threading are different answers to different problems — the first makes the event loop faster, the second removes a lock that an I/O-bound service rarely hits.
+Pitfall: `requests.get(...)` or `time.sleep()` inside an `async def` handler, which blocks the loop and turns a concurrency feature into a serial queue with confusing tail latency; or a pool sized per worker so the first traffic spike hits the database's connection ceiling instead of the app's own limit.
+Verification: a load test at the pool's ceiling asserts latency degrades gracefully and the database's connection count stays inside its limit; a test with a deliberately blocking call inside a handler shows the p99 collapse the loop is capable of, and the same suite is the harness for the p99 claims about loop tuning.
+
+---
+
+Goal: Process a large tabular extract without the DataFrame layer becoming the bottleneck.
+Wiring:
+import polars as pl
+df = pl.scan_parquet("s3://analytics/extract/orders-2026-10.parquet")     # lazy
+out = (df.filter(pl.col("tenant_id").is_not_null())
+         .with_columns(pl.col("amount").cast(pl.Decimal(18, 2)))
+         .group_by("tenant_id").agg(pl.col("amount").sum())
+         .collect(streaming=True))
+Cross-check: the same query in DuckDB over the same files, and the row counts reconciled before either is trusted.
+Why: lazy evaluation lets the engine push projections and predicates into the Parquet read, so the work is bounded by the columns and row groups actually needed, and the columnar memory layout is what makes the aggregate cheap. Decimal instead of float for money, because a float total that reconciles to the cent is luck, not a design.
+Pitfall: `df.filter(...).collect()` on a scan of the whole file when one column was needed, which reads everything; mixing pandas string semantics into a columnar API and getting a silently different null behaviour; float sums compared with `==` after a long pipeline.
+Verification: the output reconciles against the DuckDB query and against a 100-row hand-computed fixture, and the plan's row-group count is checked so the projection pushdown is real rather than assumed.
+
+---
+
+Goal: Make dependency resolution and linting fast enough that developers do not route around them.
+Wiring:
+[project]
+requires-python = ">=3.12"
+dependencies = ["fastapi>=0.115", "asyncpg>=0.30", "pydantic>=2.9"]
+[tool.uv.workspace]
+members = ["services/*", "libs/*"]
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+# CI: uv sync --frozen && uv run pytest -q && uv run ruff check && uv run mypy
+Why: a lockfile resolved once and reused with `--frozen` makes CI install reproducible and boring, and a workspace resolver keeps intra-repo packages from drifting into incompatible versions the way hand-managed editable installs do. Ruff replaces a fleet of linters with one fast tool, which is the practical reason lint survives a deadline: it finishes before the developer switches context.
+Pitfall: committing `uv.lock` but running `uv sync` without `--frozen` in CI, so CI resolves and quietly upgrades; a requirements.txt kept "just in case" beside the lockfile, with two sources of truth and the stale one used by the deploy; type checking configured only locally, so the annotations are decorative.
+Verification: CI fails on a lockfile mismatch, the workspace resolves to one version per shared dependency, and the type checker runs in the same job as the tests so an untyped regression is a build failure rather than a review comment.

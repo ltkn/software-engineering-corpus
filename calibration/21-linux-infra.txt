@@ -282,3 +282,62 @@ Symptom: The deploy succeeds, but the retired controller never programs routes, 
 Legacy: Tests run against whatever JDK ships on the runner image.
 Replacement: Maven wrapper toolchain pins (`.mvn/jvm.config` `-Djdk.toolchain.fetch`) plus a workflow matrix across JDK 25 and 26.
 Symptom: The same branch is green in CI and red on a developer machine three months later because the runner image refreshed.
+
+---
+
+Goal: Diagnose periodic multi-hundred-millisecond p99 spikes on a CPU-limited container while utilisation looks low.
+Wiring:
+container_cpu_cfs_throttled_periods_total, container_cpu_cfs_throttled_seconds_total   # per container
+resources: { requests: { cpu: "750m", memory: "1Gi" }, limits: { memory: "1Gi" } }     # cpu limit omitted where policy allows
+Reading: a CPU limit is a quota per CFS period; a process that spends it early is throttled until the period rolls over, so utilisation averages low while latency shows a sawtooth at the period boundary. Requests decide scheduling, limits decide throttling, and a runtime that sizes its thread pool from visible CPUs plans for CPUs it never gets.
+Misconfiguration: requests copied from a placeholder, which makes every autoscaling ratio fiction; memory left unlimited, so a leak evicts the pod instead of being noticed; "utilisation is 20%" read as exonerating evidence.
+Verification: throttled periods per second near zero under the same load, p99 flat across a period boundary, and the OOMKill counter silent through a load test.
+
+---
+
+Goal: Roll out without 502s and without a pod claiming it can serve when it cannot.
+Wiring:
+startupProbe:  { httpGet: { path: /readyz, port: http }, failureThreshold: 30, periodSeconds: 2 }
+readinessProbe:{ httpGet: { path: /readyz, port: http }, periodSeconds: 5, failureThreshold: 3 }
+livenessProbe: { httpGet: { path: /healthz, port: http }, periodSeconds: 10 }
+minReadySeconds: 15; strategy: { maxSurge: 1, maxUnavailable: 0 }
+lifecycle.preStop.exec.command: ["/bin/sh","-c","sleep 5"]
+Why: readiness gates traffic and must reflect the dependencies a request needs; liveness asks only whether the process is wedged; the startup probe keeps a slow warm-up from racing the readiness period. Endpoint removal and SIGTERM are independent, so the preStop sleep covers the window where a terminating pod is still receiving connections — which is where the 502s live.
+Misconfiguration: readiness probing the whole dependency graph, so a cache outage stops all traffic cluster-wide; liveness on the same endpoint as readiness, so a saturated pod is killed and restarted instead of merely taken out of rotation; `:latest` images, which make the previous revision meaningless.
+Verification: pod deletion under load yields zero 5xx; a test with the cache dependency down shows readiness failing while liveness holds; a slow-starting container passes via the startup probe rather than by guessing an `initialDelaySeconds`.
+
+---
+
+Goal: Survive a node drain or scale-down without taking a dependency with it, and scale on something honest.
+Wiring:
+podDisruptionBudget: { minAvailable: 80% }
+topologySpreadConstraints: [ { topologyKey: kubernetes.io/hostname, maxSkew: 1, whenUnsatisfiable: ScheduleAnyway } ]
+metrics: { type: Pods, metrics: [ { metricName: http_requests_in_flight } ] }   # not cpu
+behavior.scaleDown.stabilizationWindowSeconds: 300
+Why: a PDB bounds voluntary disruption only — a node failure ignores it, which is what the spread constraint is for — and target utilisation is a ratio against the *request*, so a placeholder request turns the control loop into a random walk. For an I/O-bound service, CPU tracks nothing that saturates; in-flight requests or queue depth do.
+Misconfiguration: one PDB for a workload with three replicas on one node; `whenUnsatisfiable: DoNotSchedule` on a cluster with too few nodes, so an upgrade cannot place anything; scale-down left untuned, so a burst buys a fleet that immediately shrinks back and drops the tail.
+Verification: a node drain is a non-event at the SLO, a load test in both directions reproduces the predicted replica count, and a rehearsal proves the scale-down does not thrash.
+
+---
+
+Goal: Restart a queue consumer without dropping work, duplicating a batch, or being killed mid-message.
+Wiring:
+terminationGracePeriodSeconds: 120
+lifecycle.preStop.exec.command: ["/bin/sh","-c","touch /var/run/drain && while pgrep -f consumer >/dev/null; do sleep 1; done"]
+SIGTERM handler: stop polling -> finish current batch -> commit offsets -> close()
+Why: kubelet escalates to SIGKILL at the grace period, so the period is a contract with the worst-case batch duration rather than a default. `close()` is what leaves the consumer group cleanly; a killed process makes every peer wait out the session timeout, and the uncommitted batch is redelivered to someone else.
+Misconfiguration: grace period shorter than the batch, producing a restart that looks like a duplicate-message bug; offsets committed before processing so a kill loses messages silently; a preStop hook that stops work while the pod is still in the endpoint list for the service's own HTTP path.
+Verification: a rolling restart under load drops nothing, duplicates within the bounded commit window only, and rebalances exactly once per restarted pod; committed offsets match processed counts at the end of the drill (semantics in 13, evidence discipline in 18).
+
+---
+
+Goal: Make a failed deploy reversible in one command, with the rollback rehearsed instead of improvised.
+Wiring:
+image: registry.internal/orders-api:2026.10.07-142-a3f9c1d   # immutable tag, never :latest
+helm upgrade --atomic --timeout 5m orders-api ./chart --wait
+kubectl apply --server-side --field-manager=pipeline -f deploy/
+kubectl rollout history deploy/orders-api; kubectl rollout undo deploy/orders-api --to-revision=7
+serviceAccountName: orders-api; automountServiceAccountToken: false
+Why: a rollback only means something if the previous revision still refers to the previous image, which `:latest` plus `IfNotPresent` or `Always` destroys; `--atomic` rolls back on a failed upgrade so a half-applied release does not sit in production; server-side apply removes the client-side merge conflicts that surface during the incident. The service account token is mounted only when something reads the API, because an unneeded token is an credential in a pod that can be read.
+Misconfiguration: secrets referenced without declaring whether they are optional, so a missing one appears as a crash loop on first traffic; rollback performed by re-running the pipeline, which re-resolves `:latest` and redeploys the broken build with a green check; no recorded revision, so "the last good one" is a guess.
+Verification: a drill deploys a deliberately broken image and the automatic rollback fires with an alert; a second drill rehearses a manual undo to a named revision under a time budget; the deploy record names the revision, the tag and the diff.

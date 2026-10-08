@@ -450,3 +450,88 @@ Goal: Harden outbound HTTP against SSRF on Boot 4.1 without writing a custom fil
 Context: Boot 4.1 ships InetAddressFilter for the embedded HTTP client and RestClient-capable defaults; unconfigured, a service-to-service call follows redirects to the link-local metadata service.
 Fix: Enable InetAddressFilter on the client, exclude the metadata ranges at resolve time, never follow redirects across trust boundaries, and keep cloud credentials out of the JVM process.
 Verification: A fixture pointing at 169.254.169.254 fails the client call before the network; redirect to a private range returns the documented denial.
+
+---
+
+Goal: Wrap one flaky outbound call with retry and concurrency limits without hand-rolling a decorator.
+Wiring:
+@Service
+class RiskClient(RiskHttpService http) {
+    @Retryable(maxAttempts = 3, backoff = @Backoff(delay = 200, multiplier = 2, maxDelay = 2000), jitter = true)
+    @ConcurrencyLimit(maxConcurrentCalls = 20)
+    RiskDecision evaluate(RiskRequest r) { return http.evaluate(r); }
+}
+Why: the resilience annotations live in the framework in Boot 4, so the policy is declarative, visible in one place, and testable without a thread-pool wrapper. Backoff without jitter turns a recovery into a synchronised retry storm; the limit exists so a slow dependency is shed rather than allowed to occupy the whole worker pool.
+Misconfiguration: retrying a non-idempotent POST without an idempotency key, so a timeout becomes a duplicate charge; or `@Retryable` on a method called from within its own bean, where the proxy never sees the call and the annotation silently does nothing.
+Verification: a test with the dependency stubbed to time out twice then succeed asserts one successful call and three attempts, with the same idempotency key on all three; a concurrency test asserts no more than 20 in flight; the contract test records which failures are retryable.
+
+---
+
+Goal: Serve an event stream from a Boot 4.1 service without the edge buffering it into a useless batch.
+Wiring:
+@GetMapping(path = "/orders/{id}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+Flux<ServerSentEvent<OrderEvent>> stream(@PathVariable UUID id) {
+    return events.forOrder(id)                                        // tenant-scoped, ownership-checked
+            .timeout(Duration.ofMinutes(10))
+            .onErrorResume(e -> Flux.just(doneEvent()));
+}
+management.endpoint.health.probes.enabled=true
+spring.mvc.async.request-timeout=60s
+Why: SSE needs the whole path unbuffered — the proxy must not coalesce chunks, the application must not hold a worker per stream, and the stream must end. Reactive here is justified by long-lived, many-idle connections, which is exactly the case where virtual threads are the wrong tool; a blocking controller returning `SseEmitter` while holding a request thread does not scale with the connection count.
+Misconfiguration: the edge buffering responses so events arrive in bunches; no heartbeat or idle timeout, so dead streams accumulate; authorization checked at subscribe time only, so a token revoked mid-stream keeps streaming for an hour (the probe for this is 08 kind 9).
+Verification: an end-to-end test through the real proxy asserts first-event latency under one second and event delivery within the stated window; a test asserting the stream closes on revocation within one event cycle; the stream's tenant filter is asserted by a cross-tenant fixture.
+
+---
+
+Goal: Version an HTTP API in the framework instead of in a URI-string convention every controller invents.
+Wiring:
+spring.mvc.problemdetails.enabled=true
+// header versioning, both versions live behind one handler set
+@GetMapping(path = "/orders/{id}", version = "2", produces = "application/json")
+ProblemDetail with type, title, status, detail, instance, plus a `version` property
+Versioning note: additive changes stay versionless; a breaking change lands as a new version with both served, and the old one carries `Deprecation` and `Sunset` plus a `Link: rel="successor-version"` so a client can discover the exit without reading a blog post.
+Why: framework-level versioning puts the negotiation in one place where the media type, the header, and the documentation agree; a URI convention only works while every controller author reads the same wiki page.
+Misconfiguration: version strings parsed ad hoc in each controller, so a client sending `Accept-Version: 2` gets v1 silently; or a breaking change shipped under the same version because "the frontend already deployed".
+Verification: a contract test asserts each version's response shape and that the sunset headers appear on the deprecated version; the OpenAPI document lists both, and the CI diff gate fails on a breaking change with no version bump.
+
+---
+
+Goal: Make nullability part of the public contract of a service module.
+Wiring:
+@NullMarked
+package com.example.orders.api;
+import org.jspecify.annotations.NullMarked;
+public interface OrderQuery {
+    OrderSummary find(UUID id);                    // non-null by module default
+    @Nullable OrderSummary findIfPresent(UUID id); // explicit exception
+}
+Why: Boot 4's JSpecify alignment means nullability is checked where the annotations exist, so a module boundary says what it means and the compiler carries the message instead of the code review. `@NullMarked` on the package flips the default so the exceptions are the interesting part, which is the opposite of a wall of `Optional` wrappers that hide which call is genuinely optional.
+Misconfiguration: sprinkling `@Nullable` everywhere "to be safe", which says nothing; or annotating the API but consuming it through a raw interface compiled without the annotations, where the check silently stops.
+Verification: the module's compile step fails on an unhandled null path in a consumer test, and a review rule requires every new public type in the package to fall under `@NullMarked` (language-level semantics stay in 10).
+
+---
+
+Goal: Keep module boundaries inside the monolith enforced by a build, not by good intentions.
+Wiring:
+@ApplicationModuleTest
+class OrderModuleTest { void exposesOnlyItsApi() {} }
+// Architecture-style check over the module graph
+@Bean ApplicationModuleVerificationVerifier verifier() { return new ApplicationModuleVerificationVerifier(); }
+Why: Spring Modulith reads the intended architecture from the package structure and fails the build when an internal type is reached across a boundary, which turns a review comment into a compile-time signal. Module-local events plus a published-event table give the same outbox discipline as a service boundary, at a fraction of the operational cost, so the eventual extraction has a seam already cut.
+Misconfiguration: `usesInternalTypes` whitelisted until the check enforces nothing, or two modules sharing a table so the boundary is a package rename with a foreign key through it.
+Verification: `ApplicationModules.of(...).verify()` runs in the build and fails on a deliberate cross-boundary import; the published-event test asserts an event is stored exactly once per state change and that the relay has not been bypassed (rationale in 19, relay mechanics in 13).
+
+---
+
+Goal: Assert an HTTP contract from the test side without assembling a template by hand.
+Wiring:
+@Test
+void returnsProblemDetailOnCrossTenantRead(RestTestClient client) {
+    client.get().uri("/orders/{id}", otherTenantOrderId).exchange()
+          .expectStatus().isForbidden()
+          .expectBody().jsonPath("$.title").isEqualTo("Forbidden")
+          .jsonPath("$.type").exists();
+}
+Why: the `RestTestClient` style is the direction for Boot 4 tests — real serialization, real status mapping, no `MockMvc` string plumbing for assertions that should read like the contract. It catches the class of defect a mocked call cannot: the mapping from exception to problem details, and the header the client actually depends on.
+Misconfiguration: a mock-heavy slice that asserts internal calls rather than the response, so the test survives a change to the wire format; or a full-context test per assertion, so the suite is slow and gets skipped.
+Verification: the slice runs without the database by stubbing the repository, asserts status, content type and the problem-details shape, and the security slice covers the same route for anonymous, owner, same-tenant stranger and foreign principal.

@@ -408,3 +408,53 @@ Plan: 1. Mark the vacuous test. 2. Strengthen its assertion. 3. Re-verify the re
 Decisions: The passing-on-broken-code test cannot merge; the fix replaces its assertion with the real invariant, then the red-green pair (fail on parent, pass on branch) is recorded in the PR. Mutation-score spot check replaces blanket mutation runs for speed.
 Verification: All four fail on the parent commit and pass on the branch; PR checklist requires the red-green note.
 Outcome: The suite now has teeth; the vacuous test is gone.
+
+---
+
+Goal: Continue yesterday's work on the invoice reissue flow in a fresh session without re-deriving the design.
+Context: Multi-session change, three of five commits pushed, no description beyond the branch name.
+Investigation: Read the branch's commits and the open diff first, then the scratch note in the change folder, then the failing test list. Diff is the source of truth; the note is a map, not the territory.
+Plan: 1. Re-run the failing tests to confirm the note's claims are still true. 2. Finish the webhook-driven transition. 3. Add the reversibility check on the migration. 4. Write the PR body with the rollback first.
+Decisions: The note says the state machine was left mid-edit and that `REISSUE_PENDING` has no exit transition yet; confirmed against the code, so the note is trustworthy and I did not spend the session re-reading the whole module. Deliberately not doing: the payment-client refactor the note mentions, because it is unrelated to this change set and would hide the interesting diff.
+Verification: Same three tests as yesterday, same failures, then green after step 2; migration replayed against a snapshot in the local container and reversed cleanly.
+Outcome: Handoff note rewritten before ending the session — decisions, current state of the change set, next step, open questions — no raw logs and no secrets in it, since durable conventions belong in the repo's instruction file rather than in the note.
+
+---
+
+Goal: Two agents working the same repository in parallel: one on the Kafka relay, one on the schema change.
+Context: Single checkout, shared build directory, both tasks touching generated sources.
+Investigation: `git status` shows both agents' edits interleaved in one working tree, and the second agent's test run consumed the first agent's half-written migration.
+Plan: 1. Stop and unstage nothing in the shared tree. 2. Give each task its own worktree from the same base commit. 3. Re-run each task's checks in its own tree. 4. Rebase the schema change first, because the relay depends on the new subject naming.
+Decisions: A merge conflict between the two agent branches is treated as a decision point, not as a chore: the shared generated file means the two tasks were not independent in the first place, and that fact is worth surfacing rather than silently resolving. Never share a mutable working tree between agents — the alternative cost was a wasted hour and a wrong test result.
+Verification: Both worktrees green independently; the combined tree green after the ordered rebase; the conflict resolution recorded in the PR description with the reason for the ordering.
+Outcome: Slower start, and the first honest signal about task independence the team has had.
+
+---
+
+Goal: Add a regression test for the ownership fix an agent just wrote.
+Context: The fix changes one predicate in the authorization bean; the agent also produced a test that asserts the new behaviour.
+Investigation: Read the test before running it. It calls the endpoint as the owner and asserts 200 — which passed before the fix as well, so it would have stayed green against the broken code.
+Plan: 1. Check the test out against the pre-fix commit and confirm it passes there, proving it is not a regression test. 2. Add the missing case: same tenant, different owner, expects 403. 3. Re-run against pre-fix (red) and post-fix (green). 4. Keep the owner positive case as the companion assertion.
+Decisions: A generated test earns its place by failing before the fix, so red-green is proven and not assumed; the alternative — trusting a green test on a bug that was just fixed — is how tautological assertions reach the suite.
+Verification: `git stash` of the fix turns the new assertion red with a readable failure; unstash turns it green; mutation check by hand (invert the ownership predicate) also kills the test.
+Outcome: Two assertions in one test method pair, plus the discipline recorded in the repo's test conventions so the next agent meets it in writing.
+
+---
+
+Goal: Ship a contract change that the frontend consumes, without the frontend landing blind.
+Context: `GET /orders/{id}` gains `fulfilment` and renames `shipment_eta` to `delivery.eta`. Vue client with TanStack Query v5 reads both fields.
+Investigation: OpenAPI diff generated from the branch; grep of the frontend for both field names; one consumer outside the frontend (the reporting export) found by searching the org-wide codehost, which the repo-local grep missed.
+Plan: 1. Land the additive half first (new nested object, populated). 2. Post the contract diff and wait for the frontend slice before removing anything. 3. Remove the old field in a follow-up with a sunset header. 4. Update the reporting export in the same PR as its own change, not hidden inside the backend PR.
+Decisions: The contract-diff gate runs before the frontend slice rather than after the backend merge, because a removal discovered post-merge becomes an outage review instead of a diff comment. Declining to fold the reporting export into this change set: different owner, different review, and it would have made the rollback coarser.
+Verification: Contract test asserts both old and new fields present during the window; response-shape test in the frontend fails when the field is removed early, which is the intended signal.
+Outcome: Two-step landing, no flag, rollback is a single revert per step.
+
+---
+
+Goal: Estimate the work to move the audit log onto append-only storage.
+Context: Product asked "how long until this is done"; the storage engine, the retention policy and the erasure obligation are all unresolved.
+Investigation: Read the current schema and the deletion path; found that two features read the audit table expecting mutable rows and one support screen edits notes in place.
+Plan: 1. Answer with the shape of the work and the two unknowns that gate it, not a date. 2. Propose a spike to settle the append-only engine choice, timeboxed. 3. Name what would change the estimate: whether in-place edits are a feature or a bug.
+Decisions: Declining to estimate here is the correct output; the honest version is "a date needs the engine decision and a ruling on the edit screens, and I can have the spike findings by Thursday". A number produced now would be a guess wearing a spreadsheet, and it would be held to.
+Verification: Spike produces a comparison of append-only options with the write-amplification numbers, plus a list of the two call sites that assume mutability.
+Outcome: No estimate shipped, two questions opened, and the schedule question defused until the answers exist.

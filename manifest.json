@@ -12,226 +12,235 @@
   },
   "bundle": {
     "target_tokens": "200k-250k weighted",
-    "blocks_counted": 1115,
-    "unweighted_estimate": "~106k (2.3k recorded + ~104k est incl. 01-25 patches)",
+    "blocks_counted": 1330,
+    "unweighted_estimate": "~169k est of 1330 counted blocks (bytes/5.5 pre-check, 2026-10-07 proportional expansion pass; ~664k as sum(tokens x weight))",
     "eval": [
       "eval/heldout-se.txt",
-      "eval/heldout-general.txt"
-    ]
+      "eval/heldout-general.txt",
+      "eval/heldout-offensive.txt"
+    ],
+    "target_note": "target_tokens is the unweighted corpus estimate; sum(tokens x weight) is the effective training volume the imatrix pass reads. See SPEC Bundle arithmetic."
   },
   "weights_rule": "bundle tokens = sum(file tokens x weight); weights move +/-25% per iteration, logged, never by editing sources",
   "files": [
     {
       "id": "01-instruction-following",
-      "blocks": 97,
-      "tokens": "est ~8.5k",
+      "blocks": 105,
+      "tokens": "est ~9.3k (pre-check 50.1 KB, 2026-10-07)",
       "share": 4.5,
       "code_forward_target": null
     },
     {
       "id": "02-repair-loops",
-      "blocks": 65,
-      "tokens": "est ~6k",
+      "blocks": 71,
+      "tokens": "est ~7.0k (pre-check 37.7 KB, 2026-10-07)",
       "share": 4.5,
       "code_forward_target": null
     },
     {
       "id": "03-math-logic-cot",
-      "blocks": 55,
-      "tokens": "est ~6.3k",
+      "blocks": 60,
+      "tokens": "est ~6.4k (pre-check 34.4 KB, 2026-10-07)",
       "share": 5.5,
       "code_forward_target": null
     },
     {
       "id": "04-general-reasoning",
-      "blocks": 56,
-      "tokens": "est ~3.4k",
+      "blocks": 60,
+      "tokens": "est ~3.6k (pre-check 19.4 KB, 2026-10-07)",
       "share": 2.0,
       "code_forward_target": null
     },
     {
       "id": "05-agentic-coding",
-      "blocks": 43,
-      "tokens": "est ~6.7k",
+      "blocks": 48,
+      "tokens": "est ~7.8k (pre-check 42.1 KB, 2026-10-07)",
       "share": 5.0,
       "code_forward_target": null
     },
     {
       "id": "06-security",
-      "blocks": 51,
-      "tokens": "est ~5.7k",
-      "share": 4.5,
-      "code_forward_target": null
-    },
-    {
-      "id": "07-auth-oidc-oauth",
-      "blocks": 46,
-      "tokens": "est ~8.3k",
-      "share": 5.5,
-      "code_forward_target": null
-    },
-    {
-      "id": "08-api-pentest",
-      "blocks": 48,
-      "tokens": "est ~7.2k",
-      "share": 4.5,
-      "code_forward_target": null
-    },
-    {
-      "id": "09-opsec",
-      "blocks": 32,
-      "tokens": "est ~3.5k",
+      "blocks": 56,
+      "tokens": "est ~7.8k (pre-check 41.8 KB, 2026-10-07)",
       "share": 3.5,
       "code_forward_target": null
     },
     {
+      "id": "07-auth-oidc-oauth",
+      "blocks": 51,
+      "tokens": "est ~10.7k (pre-check 57.3 KB, 2026-10-07)",
+      "share": 5.0,
+      "code_forward_target": null
+    },
+    {
+      "id": "08-api-pentest",
+      "blocks": 53,
+      "tokens": "est ~9.1k (pre-check 49.1 KB, 2026-10-07)",
+      "share": 3.5,
+      "code_forward_target": null
+    },
+    {
+      "id": "09-opsec",
+      "blocks": 36,
+      "tokens": "est ~4.3k (pre-check 23.2 KB, 2026-10-07)",
+      "share": 3.0,
+      "code_forward_target": null
+    },
+    {
       "id": "10-java",
-      "blocks": 61,
-      "tokens": "est ~6.5k",
+      "blocks": 69,
+      "tokens": "est ~8.4k (pre-check 44.9 KB, 2026-10-07)",
       "share": 7.5,
       "code_forward_target": ">=40%"
     },
     {
       "id": "11-spring",
-      "blocks": 53,
-      "tokens": "est ~5.1k",
+      "blocks": 59,
+      "tokens": "est ~6.4k (pre-check 34.5 KB, 2026-10-07)",
       "share": 7.0,
       "code_forward_target": ">=40%"
     },
     {
       "id": "12-postgresql",
-      "blocks": 54,
-      "tokens": "est ~5.7k",
+      "blocks": 60,
+      "tokens": "est ~6.9k (pre-check 37.1 KB, 2026-10-07)",
       "share": 6.0,
       "code_forward_target": ">=40%"
     },
     {
       "id": "13-kafka",
-      "blocks": 44,
-      "tokens": "est ~4.8k",
+      "blocks": 49,
+      "tokens": "est ~5.9k (pre-check 31.9 KB, 2026-10-07)",
       "share": 4.5,
       "code_forward_target": ">=35%"
     },
     {
       "id": "14-http-api",
-      "blocks": 41,
-      "tokens": "est ~4.4k",
+      "blocks": 45,
+      "tokens": "est ~5.3k (pre-check 28.5 KB, 2026-10-07)",
       "share": 3.5,
       "code_forward_target": ">=15%"
     },
     {
       "id": "15-typescript",
-      "blocks": 37,
-      "tokens": "est ~3.6k",
+      "blocks": 42,
+      "tokens": "est ~4.9k (pre-check 26.2 KB, 2026-10-07)",
       "share": 4.0,
       "code_forward_target": ">=45%"
     },
     {
       "id": "16-vue",
-      "blocks": 37,
-      "tokens": "est ~3.5k",
+      "blocks": 42,
+      "tokens": "est ~4.7k (pre-check 25.1 KB, 2026-10-07)",
       "share": 3.5,
       "code_forward_target": ">=40%"
     },
     {
       "id": "17-tanstack",
-      "blocks": 33,
-      "tokens": "est ~3.5k",
+      "blocks": 38,
+      "tokens": "est ~4.7k (pre-check 25.3 KB, 2026-10-07)",
       "share": 3.0,
       "code_forward_target": ">=35%"
     },
     {
       "id": "18-testing",
-      "blocks": 35,
-      "tokens": "est ~3.2k",
+      "blocks": 40,
+      "tokens": "est ~4.3k (pre-check 22.8 KB, 2026-10-07)",
       "share": 3.0,
       "code_forward_target": ">=25%"
     },
     {
       "id": "19-architecture",
-      "blocks": 41,
-      "tokens": "est ~4.3k",
+      "blocks": 46,
+      "tokens": "est ~5.9k (pre-check 31.6 KB, 2026-10-07)",
       "share": 3.0,
       "code_forward_target": "<20% (prose-first by design)"
     },
     {
       "id": "20-observability",
-      "blocks": 26,
-      "tokens": "est ~2.6k",
+      "blocks": 30,
+      "tokens": "est ~3.7k (pre-check 20.0 KB, 2026-10-07)",
       "share": 2.5,
       "code_forward_target": ">=25%"
     },
     {
       "id": "21-linux-infra",
-      "blocks": 35,
-      "tokens": "est ~3.3k",
+      "blocks": 40,
+      "tokens": "est ~4.5k (pre-check 24.0 KB, 2026-10-07)",
       "share": 3.5,
       "code_forward_target": ">=45%"
     },
     {
       "id": "22-python",
-      "blocks": 25,
-      "tokens": "est ~2.4k",
+      "blocks": 29,
+      "tokens": "est ~3.4k (pre-check 18.1 KB, 2026-10-07)",
       "share": 2.5,
       "code_forward_target": ">=40%"
     },
     {
       "id": "23-finance-quant",
-      "blocks": 25,
-      "tokens": "est ~2.3k",
+      "blocks": 28,
+      "tokens": "est ~3.1k (pre-check 16.9 KB, 2026-10-07)",
       "share": 2.5,
       "code_forward_target": null
     },
     {
       "id": "24-react",
-      "blocks": 30,
-      "tokens": "est ~3.1k",
+      "blocks": 33,
+      "tokens": "est ~3.8k (pre-check 20.4 KB, 2026-10-07)",
       "share": 1.0,
       "code_forward_target": null
     },
     {
       "id": "25-privacy-gdpr",
-      "blocks": 25,
-      "tokens": "est ~2.7k",
+      "blocks": 28,
+      "tokens": "est ~3.6k (pre-check 19.3 KB, 2026-10-07)",
       "share": 1.5,
       "code_forward_target": null
     },
     {
       "id": "26-ecommerce",
-      "blocks": 40,
-      "tokens": "est ~4.3k",
+      "blocks": 44,
+      "tokens": "est ~5.4k (pre-check 29.2 KB, 2026-10-07)",
       "share": 2.0,
       "code_forward_target": null
     },
     {
       "id": "27-adversarial-walking-patterns",
       "blocks": 10,
-      "tokens": "est ~1.0k tokens",
+      "tokens": "est ~2.5k (pre-check 13.3 KB, 2026-10-07)",
       "share": 2.0,
       "code_forward_target": null
     },
     {
       "id": "28-invariant-exploitation",
-      "blocks": 4,
-      "tokens": "est ~0.4k tokens",
+      "blocks": 6,
+      "tokens": "est ~1.1k (pre-check 6.0 KB, 2026-10-07)",
       "share": 1.0,
       "code_forward_target": null
     },
     {
       "id": "29-llm-integration",
       "blocks": 3,
-      "tokens": "est ~0.4k tokens",
+      "tokens": "est ~0.4k (pre-check 2.4 KB, 2026-10-07)",
       "share": 0,
       "code_forward_target": null
     },
     {
       "id": "30-experimentation-and-flagging",
       "blocks": 2,
-      "tokens": "est ~0.3k tokens",
+      "tokens": "est ~0.3k (pre-check 1.4 KB, 2026-10-07)",
       "share": 0,
+      "code_forward_target": null
+    },
+    {
+      "id": "31-offensive-security",
+      "blocks": 47,
+      "tokens": "est ~13.7k (pre-check 73.6 KB, 2026-10-07)",
+      "share": 3.0,
       "code_forward_target": null
     }
   ],
-  "ledger": "populate at implementation: one entry per baseline {name, version, status, as-of, source}",
+  "ledger": "populate at implementation: one entry per baseline {name, version, status, as-of, source}. Stamped now: MITRE ATT&CK Enterprise v19.2 {status: current, as-of: 2026-10-07, source: attack.mitre.org} — the technique-ID vocabulary for 31 and 08.",
   "license": "TBD, must be permissive before first release"
 }

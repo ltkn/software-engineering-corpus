@@ -445,3 +445,51 @@ Step 1. Shannon source coding: lossless compression cannot go below H bits per s
 Step 2. For a skewed distribution the peaky symbols dominate: H is small, so most probability mass sits in a few tokens, and more bits can be spent on those few without hurting the average.
 Step 3. That is why imatrix/Q4 keeps the high-information weights precise and lets the peaky-classifier weights go coarser — the floor H is fixed by the distribution, and you allocate bits toward it.
 Answer: H is the floor; exp(H) per-token perplexity is the model-side analog; skew (low H) is exactly what makes mixed precision worthwhile.
+
+---
+
+Q: A checkout request fans out to 8 internal calls in parallel. Each call independently finishes within its SLO 99% of the time. What fraction of checkout requests contain at least one slow leg?
+Step 1. Independent legs, so P(all 8 fast) = 0.99^8.
+Step 2. 0.99^8 = 0.9227, so at least one slow leg appears in 1 − 0.9227 = 0.0773 of requests: 7.7%.
+Step 3. Same arithmetic at 20 legs: 0.99^20 = 0.8179, so 18.2% of requests have a slow leg, without anything becoming an error.
+Step 4. Read it as a design constraint: an aggregate endpoint cannot inherit per-dependency SLOs by hoping. Either the fast legs absorb the slow ones (cache, fallback, hedging) or the SLO is written as "99% of legs", not "99% of requests".
+Answer: 7.7% of requests at 8 legs, 18.2% at 20; per-dependency SLOs do not compose into a user-facing SLO, they multiply.
+
+---
+
+Q: Five hypotheses, p-values 0.001, 0.008, 0.039, 0.041, 0.42. Apply Benjamini–Hochberg at FDR 0.05 and compare with Bonferroni.
+Step 1. Sort ascending, they already are, and index them i = 1..5.
+Step 2. BH thresholds are (i/m)·q: 0.01, 0.02, 0.03, 0.04, 0.05.
+Step 3. Find the largest i with p(i) at or under its threshold: i=2 (0.008 ≤ 0.02); i=3 fails (0.039 > 0.03).
+Step 4. Reject the first 2 hypotheses — all with smaller p, not only those passing individually.
+Step 5. Bonferroni at 0.05/5 = 0.01 would reject only p = 0.001, because it bounds any false discovery at all rather than the expected share of them.
+Answer: BH rejects hypotheses 1 and 2; Bonferroni rejects 1. BH controls the expected false-discovery share, Bonferroni the family-wise error rate, so BH is the usual choice when the cost of one false positive is a follow-up investigation rather than a launch.
+
+---
+
+Q: 240 requests per second reach the orders service and each holds a worker for 250 ms of blocking I/O. How much concurrency is actually in flight, and what does that say about a pool of 32?
+Step 1. Little's law: L = λ·W, in-flight count equals arrival rate times time in system.
+Step 2. λ = 240/s, W = 0.25 s, so L = 60 requests in flight on average.
+Step 3. A pool of 32 can hold only half of that, so arrivals queue; the queueing delay is added latency, not an error, and it appears first in the tail.
+Step 4. Sizing the pool near the mean guarantees tail trouble, because the mean ignores burstiness: an arrival rate 2× for 10 seconds needs 120 concurrent workers.
+Step 5. Corollary that people miss: cutting W to 100 ms cuts the requirement to 24, so an I/O fix is often cheaper than a pool increase, and it does not move the pressure somewhere else.
+Answer: 60 in flight; a 32-worker pool is a queue by construction. Either the pool exceeds L with headroom for bursts, or the latency drops, or the caller accepts queueing delay in its timeout budget.
+
+---
+
+Q: Twenty-one latency samples, sorted, are given. Where does the empirical 95th percentile land, and what is the honest caveat?
+Step 1. With n = 21, the linear-interpolation index for the 95th percentile is 0.95·(n−1) + 1 = 20, so the reported p95 is the 20th smallest value, with the single largest sample above it.
+Step 2. One sample determines most of that number, so the estimate is the second-largest observation wearing a percentile's clothes.
+Step 3. A bootstrap would not add information the sample does not have; it would show how much the estimate moves under resampling, which is the point — the interval is wide.
+Step 4. To actually measure p95 rather than guess it, collect on the order of a few hundred samples, or use the histogram buckets the metrics system already keeps, whose bucket boundaries put honest bounds on any percentile read from them.
+Answer: index 20 of 21 — the second-largest sample. n = 21 cannot support a p95 claim with a tight interval, and no resampling trick manufactures the tail observations that are not there.
+
+---
+
+Q: A paginated endpoint serves page 400 at 25 rows per page. Compare rows examined by OFFSET paging with keyset paging, and name the extra requirement keyset imposes.
+Step 1. OFFSET 9975 LIMIT 25 must produce and discard 9975 rows before returning 25, so 10000 rows are touched per request: O(d + k) in the offset depth d.
+Step 2. Keyset seeks on the ordered index at the last seen position and reads 25: O(log n + k), independent of how deep the page is.
+Step 3. Ratio here: 10000 rows versus 25, four hundred times the work for the same page, and the OFFSET cost grows with depth while the keyset cost does not move.
+Step 4. The requirement keyset adds is a unique, total ordering. (created_at) alone is ambiguous when two rows share a timestamp, so the tuple must end in a tiebreak such as id, and the index must match that order.
+Step 5. Skipping the tiebreak is the classic bug: rows are dropped or repeated at page boundaries, and the test that concatenates pages and compares against a full scan is what catches it.
+Answer: 10000 rows against 25, and keyset additionally demands a unique ordering with an explicit tiebreak column, backed by an index in exactly that order.

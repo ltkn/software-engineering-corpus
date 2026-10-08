@@ -4,11 +4,11 @@ Domain-focused calibration corpus for GGUF-quantized coding models and coding ag
 
 Goal: Q4–Q8 quants that keep our stack (Java/Spring, TS 6→7, Vue/TanStack, Postgres, Kafka) with strong security — and keep reasoning first. Custom `llama-imatrix` beats generic WikiText; Q4 gains most, Q8 ignores imatrix (baseline only).
 
-26 UTF-8 `.txt` sources in the bundle-scope set (01-26), the two adversarial-hygiene categories (27/28) weighted at share 2/1, plus 29/30 fenced-v0 experiments (29-llm-integration, 30-experimentation-and-flagging) at share 0 in `manifest.json`.
+27 UTF-8 `.txt` sources in the bundle-scope set (01-26 plus 31-offensive-security), the two adversarial-hygiene categories (27/28) weighted at share 2/1, plus 29/30 fenced-v0 experiments (29-llm-integration, 30-experimentation-and-flagging) at share 0 in `manifest.json`.
 
 ## Corpus
 
-26 UTF-8 `.txt` files ordered by criticality, plus the adversarial 27-28 category pair, plus the fenced experimental 29-30 pair. All filled; see SPEC.md for per-file scope and actuals.
+27 UTF-8 `.txt` files ordered by criticality, plus the adversarial 27-28 category pair, plus the fenced experimental 29-30 pair. All filled; see SPEC.md for per-file scope and actuals.
 
 Generated using AI Muse Spark 1.3, Sonnet 5.5 and Qwen3.8-27B.
 
@@ -45,14 +45,15 @@ calibration/
 ├── 27-adversarial-walking-patterns.txt
 ├── 28-invariant-exploitation.txt
 ├── 29-llm-integration.txt
-└── 30-experimentation-and-flagging.txt
+├── 30-experimentation-and-flagging.txt
+└── 31-offensive-security.txt
 ```
 
 Format: plain blocks separated by blank-line `---` blank-line. No frontmatter or headings in `.txt`. Mix per file: real code, why-explanations, bad→diagnosis→fix, short agent traces. No secrets.
 
-Security is cross-cutting: `11` (@PreAuthorize, ownership, JWT, CSRF/CORS), `12` (roles/GRANT/RLS, SECURITY DEFINER, search_path, params), `13` (TLS/SASL/ACLs), `16` (XSS, token storage, CSP), `14` (BOLA/BFLA, auth, SSRF, resource limits). `21` spans Linux, Docker, Nginx, CI/CD, K8s (full-stack ops).
+Security is cross-cutting: `11` (@PreAuthorize, ownership, JWT, CSRF/CORS), `12` (roles/GRANT/RLS, SECURITY DEFINER, search_path, params), `13` (TLS/SASL/ACLs), `16` (XSS, token storage, CSP), `14` (BOLA/BFLA, auth, SSRF, resource limits). `21` spans Linux, Docker, Nginx, CI/CD, K8s (full-stack ops). `31` is the attacker's side of the same estate — technique, payload, chain, exfil channel, and the residue each move leaves; `06` keeps the mechanism, `08` keeps the probe. The global Realism rule in SPEC.md replaced the old "defensive only" bans: payloads appear raw and valid, tools are named, the register is a real debrief, not a hedge.
 
-Weights (default): ~65–70% stack, ~20% thinking (01–05), ~10% finance+anchor. Bundle target ~200–250k tokens. Counts in root `manifest.json`.
+Weights (default): ~65–70% stack, ~20% thinking (01–05), ~10% finance+anchor. The security band (06–09 plus 31) holds 18%, with `31` funded inside the band: 06 3.5, 07 5.0, 08 3.5, 09 3.0, 31 3.0. Bundle target ~200–250k tokens. Counts in root `manifest.json`.
 
 ## Usage
 
@@ -110,7 +111,7 @@ Follow in order, rerun earlier steps when later ones move. The steps assume the 
 
 ```text
 .
-├── calibration/   # 26 sources
+├── calibration/   # 27 sources
 ├── eval/          # heldout-se.txt, heldout-general.txt
 ├── manifest.json  # tokens, weights, license (next)
 ├── SPEC.md        # agreed scope per file

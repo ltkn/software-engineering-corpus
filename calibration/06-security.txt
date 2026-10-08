@@ -409,3 +409,43 @@ Vulnerable pattern: Two-factor via SMS OTP as the only second factor, or an opti
 Why it fails: OTP codes are replayable, phishables, and SMS depends on the carrier; an attacker who can phish a login page can often relay the second factor.
 Remediation: Prefer passkeys (FIDO2) for human primary authentication; require phishing-resistant MFA for production access and gate sensitive actions behind step-up authentication; keep recovery paths equally strong because account recovery is the usual bypass.
 Regression control: Login-flow tests confirm phishing-resistant MFA for admin; recovery flows tested for bypass attempts and logged.
+
+---
+
+Concept: The exception path is a code path with security properties, and it usually fails open. OWASP Top 10:2025 names this A10, Mishandling of Exceptional Conditions.
+Vulnerable pattern: `catch (Exception e) { log.warn("ignored", e); return List.of(); }` around an authorization lookup, plus a global handler that renders the exception message into the response body.
+Why it fails: when the authorization service times out, the empty list looks like "no rows" to the caller and the request is served with less data rather than being refused — a fail-open by accident. Meanwhile the message that reaches the client names the table, the column and sometimes the query, because the default handler had no allow-list of what a client is allowed to learn.
+Remediation: authorization and tenancy lookups fail closed — an error there is a denial, never an empty result; map exceptions to RFC 9457 problem details with an allow-listed machine code and no internal text; keep the raw exception in the log with the request id, not in the body. The stack anchor is `@RestControllerAdvice` with `ProblemDetail` (11 kind 3).
+Regression control: a test where the authorization dependency throws asserts 403 or 503 rather than 200 with empty rows, and asserts the response body contains no exception class name or SQL fragment.
+
+---
+
+Concept: Severity tells you how bad a flaw is; exploitability tells you whether it is *your* problem this week. CVSS v4.0 scores the vulnerability, EPSS estimates the likelihood of exploitation in the wild, and the CISA KEV list says someone is already doing it.
+Vulnerable pattern: a queue of 400 dependency CVEs triaged by CVSS alone, so a CVSS 9.8 in a code path that is never reached competes for the same emergency window as a CVSS 7.5 that is in the KEV list and reachable in the login flow.
+Why it fails: severity-blind triage spends the only scarce resource — the emergency patch window — on the noisiest score, and VEX matters for the same reason: an advisory that does not apply to the shipped configuration still needs a recorded "not affected" statement, because a blank record will be re-litigated at every audit.
+Remediation: a triage order that reads KEV first (exploited: emergency SLA, hours to days), then EPSS plus reachability from the service's own entry points (high: patch in the normal window; low and unreachable: record a VEX statement with the reason), then CVSS v4.0 for the residual ranking and for third-party report alignment. Anchors: SBOM plus VEX per artifact, and the SLA table lives next to the patch policy, not in a wiki page nobody opens at 2 a.m.
+Regression control: a CI check that every reported finding has a disposition (patched, VEX-not-affected with reason, or accepted risk with an owner and expiry), and a monthly report of KEV entries matching the current SBOM.
+
+---
+
+Concept: Stream-level resource exhaustion, the availability twin of request smuggling. The HTTP/2 Rapid Reset class (CVE-2023-44487, published 2023-10-10) opened many streams and reset them immediately, so the server paid setup cost with no proportional work in return.
+Vulnerable pattern: an edge that terminates HTTP/2 with a high `MAX_CONCURRENT_STREAMS` and no per-connection or per-principal stream-rate ceiling, fronting a fixed worker pool.
+Why it fails: the cost of a stream is paid before the server learns anything about the client, and a reset does not refund it. Reset is legitimate traffic — cancellation exists — so the defence cannot be "reject resets"; it has to be a budget on stream creation per connection and per source, charged whether or not the stream completes.
+Remediation: per-connection and per-identity stream concurrency and creation-rate limits at the edge, a worker pool that degrades rather than saturates, and the same ceiling modelled for WebSocket and SSE (a slow-client buffer problem wearing different clothes). Stack anchor: the edge tier in 21 kind 3, capacity in 19.
+Regression control: a load rehearsal that opens and resets streams at a fixed aggressive rate and asserts p99 and error rate stay inside the SLO for legitimate traffic, plus an alert on stream-creation rate decoupled from request completion rate.
+
+---
+
+Concept: Cache poisoning and cache deception, where the cache key and the authorization decision disagree. Unkeyed inputs plus a cache that trusts the origin's `Cache-Control` turn one user's response into another's.
+Vulnerable pattern: an edge cache keyed on path and method only, with the origin returning a per-tenant body while the vary list omits the header that carried the identity; and a "static asset" path convention where `/reports/latest.pdf` is served as if immutable because the extension says so.
+Why it fails: correctness of a cache depends on the key covering everything the response depended on. When the identity came from a header nobody keyed on, tenant B receives tenant A's body — a read that never reached the origin, so no authorization check runs and no application log line exists.
+Remediation: key on every input the response varies by, or send an explicit `Vary`; private responses carry `Cache-Control: private, no-store` where they must not be cached; unauthenticated static allow-lists by path prefix rather than by file extension; and never vary cacheability on a request header the cache does not key on. Anchors: `Vary`/`Cache-Control` semantics in 14 kind 4, edge configuration in 21 kind 3.
+Regression control: a test that fetches as tenant A then as tenant B through the real cache and asserts distinct bodies, plus a header-assertion test that private responses are not cacheable, plus a probe that a data-bearing path cannot be served from the static tier.
+
+---
+
+Concept: Time-of-check to time-of-use on a business rule: the code verifies a condition, then acts, and the world changes in between. Not a race in the locking sense — an authorization or quota decision whose evidence goes stale.
+Vulnerable pattern: read the coupon usage, compare against the cap, insert the usage row — three statements, no lock, no unique constraint, no transaction-wide guarantee beyond the default isolation level.
+Why it fails: two concurrent requests both pass the check because neither has committed its use yet, and both insert. The invariant "one use per customer" was enforced by a sequence of statements rather than by the database, and the database does not know it was supposed to be a promise.
+Remediation: express the invariant where it can actually be held — a unique constraint on (coupon, customer) so the second insert fails; or an atomic conditional update (`UPDATE … WHERE uses < cap`) whose affected-row count decides the outcome; or an explicit lock on the parent row when the check is complex. Evaluation must happen at commit time, not at request arrival. Assessment technique is 08 kind 9, the architectural framing is 19.
+Regression control: a concurrency test firing the same request N times against one coupon asserts exactly one accepted use and a specific rejection for the rest, and every check-then-act pattern in the codebase is either backed by a constraint or listed by name in the review checklist.

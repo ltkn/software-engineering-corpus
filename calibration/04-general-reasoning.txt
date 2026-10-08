@@ -279,3 +279,20 @@ Answer: A handymax-class vessel burns on the order of tens of tonnes of fuel per
 
 Q: Sanity-check this claim with a unit conversion: "Parking costs more per month than my mortgage. The lot charges $400 per week and my mortgage is $1,600 per month."
 Answer: $400/week × ~4.33 weeks/month ≈ $1,730/month, which is slightly more than $1,600 — so the claim is plausible, but only barely; one forgotten-week changes the answer. Always convert to a common period before comparing.
+
+---
+
+Mechanical clocks did not create the schedule they served. Monastic houses had already divided the day into canonical hours and had ringing bells, water clocks and hired wake-up men to enforce them, and the earliest escapement clocks were built to ring those bells without a human hand. What the mechanism changed was tolerance. A bell rung by a weight-driven clock could be relied upon to the minute rather than the quarter hour, so contracts, market openings and ferry departures began to be written against the clock face instead of against the bell. Timekeeping then drifted away from its monastic purpose and became a civic and commercial instrument, and by the fourteenth century town councils were paying for clocks as a public utility, in the same breath as walls and bridges. The lesson historians draw is not that the clock sped up commerce, but that it made a shared, verifiable schedule possible, and a shared schedule is a technology for coordinating strangers.
+
+---
+
+Genoa's notarial archives survive by the kilometre, and economic historians love them for a dull reason: notaries wrote down small transactions, not only treaties. A shipment of alum, a share in a single voyage, a dowry, a loan secured on a cargo of cloth — all survive because someone wanted a copyable, dated, witnessed record and paid a small fee for the trouble. Read together across decades, these documents show that medieval Mediterranean commerce ran on written instruments, partnership shares, insurance-like premiums and transferable claims, centuries before the textbook date for any of it. They also show how institutions fail: the archive is complete for the city, and silent about the crew, the porters and the unpaid, so a series that looks like the whole economy is really the part of it that could afford a notary.
+
+---
+
+A pavement is wet in the morning and the neighbouring pavement strip under the plane tree is dry. This suggests overnight rain with a break in the canopy rather than a burst pipe, because a leak wets from a point outward and would leave a saturated patch centred on the pipe, while rain wets everything at once except what was covered. The check that separates the two: look for a flow still running, a damp line following the kerb, and whether the dry patch is exactly the tree's shadow.
+
+---
+
+Q: A standing weekly meeting has nine attendees and runs two hours. Roughly what does it cost, and what is the cheapest honest reduction?
+A: Eighteen person-hours a week, around nine hundred a year per person in calendar terms, before the switching cost of the two hours around it. If a third of the time is status readout that one person could send in writing, six person-hours a week are recoverable by shortening the meeting to ninety minutes and moving the readout to a note, which costs nothing but the discipline of writing it.

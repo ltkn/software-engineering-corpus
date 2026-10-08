@@ -510,3 +510,82 @@ Symptom: page 400 costs 900ms with a Seq Scan discarding 10k rows, and the gap w
 Legacy: `md5` password entries in pg_hba.conf still honored by older drivers.
 Replacement: scram-sha-256 everywhere; rewrite stored hashes at next login.
 Symptom: PG 18 deprecation warnings in the server log followed by silent authentication failures when a driver finally drops md5.
+
+---
+
+Task: Query and index a document field inside a JSONB column without a full scan and without a trigger-maintained shadow table.
+SQL:
+SELECT o.id, x.value->>'sku' AS sku, (x.value->>'qty')::int AS qty
+FROM orders o
+CROSS JOIN LATERAL jsonb_to_recordset(o.payload -> 'lines') AS x(sku text, qty int)
+WHERE o.tenant_id = $1
+  AND o.payload @> '{"status":"open"}'
+  AND jsonb_path_exists(o.payload, '$.lines[*] ? (@.sku == $s)', jsonb_build_object('s', $2));
+
+CREATE INDEX ON orders USING gin ((payload -> 'status'));
+CREATE INDEX ON orders ((jsonb_path_query_array(payload, '$.lines[*].sku'))) ;
+Reading: `@>` is containment and is the operator a GIN index answers; `jsonb_to_recordset` turns an array into rows so the shape stays in the query instead of in an ORM unwrapper; the expression indexes match the exact expressions written above, which is why the expressions are written once, in one place.
+Pitfall: `payload->'lines'->0->>'sku' = $2` — no index, and a document whose first line is not the one being asked about returns the wrong answer with total confidence.
+Verification: EXPLAIN shows the GIN or expression index in use with row estimates near the actual count; a test with a two-line document asserts the query finds the second line.
+
+---
+
+Task: Rename a column on a 200-million-row table with no downtime window and no dual-write rebellion.
+SQL:
+BEGIN; ALTER TABLE orders ADD COLUMN delivery_eta timestamptz; COMMIT;
+BEGIN; ALTER TABLE orders ADD CONSTRAINT chk_eta CHECK (delivery_eta IS NULL OR delivery_eta > created_at) NOT VALID; COMMIT;
+ALTER TABLE orders VALIDATE CONSTRAINT chk_eta;
+-- deployments: writes to both, reads from old
+BEGIN; ALTER TABLE orders RENAME COLUMN ship_eta TO ship_eta_old; COMMIT;
+-- deployments: writes to new only, reads from new
+BEGIN; ALTER TABLE orders DROP COLUMN ship_eta_old; COMMIT;
+Reading: expand, migrate, contract. Every step is a separate transaction so a deploy can be rolled back to the previous shape, and `NOT VALID` then `VALIDATE` splits the cheap lock from the long scan, so the scan happens while nothing is waiting on a lock.
+Pitfall: one migration that renames and validates in a single transaction, which holds an access-exclusive lock long enough that the deploy window becomes a queue; and the "temporary" dual-read path that is still in the codebase a year later because the contract step was never scheduled.
+Verification: each step replays against a production snapshot; the old and new code versions are exercised against every intermediate schema by the deploy test, and the contract migration exists as a scheduled ticket rather than as a comment.
+
+---
+
+Task: Serve a hot read-only query from an index-only scan, then explain why it degraded after the table got busy.
+SQL:
+CREATE INDEX idx_orders_tenant_created ON orders (tenant_id, created_at) INCLUDE (status, total);
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT status, total FROM orders WHERE tenant_id = $1 AND created_at > now() - interval '7 days';
+Reading: an index-only scan answers from the index but must confirm visibility from the visibility map, so a page that has been modified since the last vacuum is fetched from the heap anyway. The plan flips from "Index Only Scan" to "Index Scan" with heap fetches climbing in EXPLAIN BUFFERS, and the shape of the query has not changed at all — only the update pattern has.
+Pitfall: treating the plan change as a planner regression and adding another index, when the actual signal is dead-tuple accumulation on a hot page range and autovacuum is not keeping up; covering the index made the win possible and made the dependency on vacuum visible.
+Verification: heap-fetches in the plan output near zero after tuning autovacuum for the table, latency restored with no new index, and a monitoring assertion on dead-tuple ratio per hot table rather than on database size alone (the failure-transcript version of this loop is 02).
+
+---
+
+Task: Read a balance and its ledger rows in one request without seeing a half-applied transfer.
+SQL:
+-- default READ COMMITTED, two statements:
+SELECT balance FROM accounts WHERE id = $1;              -- 100
+SELECT sum(amount) FROM ledger WHERE account_id = $1;    -- 90, because a transfer committed in between
+Reading: under READ COMMITTED each *statement* gets its own snapshot, so the second statement can see a commit the first did not. That is read skew: both numbers are correct and the pair never existed. It is not a bug in the query, and it is not solved by a retry.
+Pitfall: summing money in the application from separately consistent reads, then "fixing" it with a `SELECT … FOR UPDATE` that serializes the hot account, or with REPEATABLE READ everywhere, which trades the anomaly for serialization failures that the caller must be able to retry.
+Verification: the invariant (balance equals ledger sum) is enforced where it can be — one statement, or a REPEATABLE READ transaction that takes the anomaly as a retryable condition; a test that commits a transfer between the two reads proves the fix holds, with the isolation level named in the test name.
+
+---
+
+Task: Drain a job table with many workers without making them fight.
+SQL:
+UPDATE jobs SET status = 'running', worker = $1, started_at = now()
+WHERE id = (
+  SELECT id FROM jobs WHERE status = 'queued' ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED
+)
+RETURNING id, payload;
+Reading: `SKIP LOCKED` lets each worker take the next unlocked row instead of queueing behind the row another worker holds, which turns a lock convoy into parallel claiming. Doing the claim and the mark in one statement removes the window where two workers both believe they own the row, and `RETURNING` avoids the second round trip.
+Pitfall: `SELECT … FOR UPDATE` without `SKIP LOCKED` on a queue, where every worker piles onto the same head row, and the throughput collapses as workers are added; and `NOWAIT` chosen for impatience, which turns contention into errors the caller must handle anyway.
+Verification: a test with N concurrent drainers over M rows asserts every row claimed exactly once and no duplicates; the metric that matters is rows per second against worker count, which should be flat-to-rising, not falling.
+
+---
+
+Task: Change one historical segment of a row that carries a period constraint, without touching the rest of its history.
+SQL:
+UPDATE rooms WITH PERIOD FOR PERIOD booking_period,
+               PERIOD (bookfrom, bookto)
+SET rate = rate * 1.1
+WHERE room_id = $1 AND id = $2;
+Reading: `WITHOUT OVERLAPS` on the period keeps the schedule consistent at the storage layer, and `WITH PERIOD` tells the update which slice of the row's validity it is rewriting, so the database splits the row rather than the application inserting an "amendment" row and hoping readers do the arithmetic.
+Pitfall: modelling validity as two nullable timestamps maintained by triggers, then reconciling overlaps in a nightly job — the constraint becomes a report, and the report has exceptions in it by design.
+Verification: a test attempting an overlapping booking gets a constraint violation, and the period update leaves the unaffected segments byte-identical; the version-gated note applies: this is 18 syntax, checked against the target release before it is relied on (17 and earlier fall back to an exclusion constraint with `tstzrange`).

@@ -4,16 +4,16 @@ Line-shape heuristic; a block counts as code-forward when >=60% of its lines mat
 
 | file | declared target | measured | code-forward / total | status |
 | --- | ---: | ---: | ---: | --- |
-| 10-java | 40% | 98% | 62/63 | ok |
-| 11-spring | 40% | 100% | 53/53 | ok |
-| 12-postgresql | 40% | 96% | 52/54 | ok |
-| 13-kafka | 35% | 95% | 42/44 | ok |
-| 14-http-api | 15% | 12% | 5/41 | ok |
-| 15-typescript | 45% | 97% | 36/37 | ok |
-| 16-vue | 40% | 100% | 37/37 | ok |
-| 17-tanstack | 35% | 100% | 33/33 | ok |
-| 18-testing | 25% | 71% | 25/35 | ok |
-| 19-architecture | 20% | 0% | 0/41 | ok |
-| 20-observability | 25% | 88% | 23/26 | ok |
-| 21-linux-infra | 45% | 97% | 34/35 | ok |
-| 22-python | 40% | 100% | 25/25 | ok |
+| 10-java | 40% | 96% | 66/69 | ok |
+| 11-spring | 40% | 100% | 59/59 | ok |
+| 12-postgresql | 40% | 95% | 57/60 | ok |
+| 13-kafka | 35% | 90% | 44/49 | ok |
+| 14-http-api | 15% | 18% | 8/45 | ok |
+| 15-typescript | 45% | 98% | 41/42 | ok |
+| 16-vue | 40% | 100% | 42/42 | ok |
+| 17-tanstack | 35% | 100% | 38/38 | ok |
+| 18-testing | 25% | 75% | 30/40 | ok |
+| 19-architecture | 20% | 0% | 0/46 | ok |
+| 20-observability | 25% | 87% | 26/30 | ok |
+| 21-linux-infra | 45% | 98% | 39/40 | ok |
+| 22-python | 40% | 97% | 28/29 | ok |

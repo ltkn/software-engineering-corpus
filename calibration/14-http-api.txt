@@ -339,3 +339,51 @@ Symptom: Client libraries silently wait on a different source of truth and sched
 Legacy: A bespoke `X-Signature` header wrapping a body-only HMAC.
 Replacement: RFC 9421 message signatures binding method, path, and content digest.
 Symptom: A captured signature header replays successfully against a different path, because only the body was covered.
+
+---
+
+Design decision: a request that cannot finish inside the request budget returns an operation, not a longer timeout.
+Contract fragment:
+POST /reports  -> 202 Accepted
+                 Location: /operations/op_7f3
+                 Retry-After: 5
+GET  /operations/op_7f3 -> { "status": "in_progress" | "succeeded" | "failed",
+                             "result": "/reports/r_88", "error": { "code": "source.timeout" } }
+HEAD /reports/r_88 -> 200 with Content-Length once ready; 404 while not yet visible
+Why: 202 with an operation resource moves the wait out of the connection, so a slow report costs a poll rather than a gateway timeout and a client that disappears does not cancel the work by accident. `Retry-After` gives the poller a server-supplied cadence, and the `Location` of the result is separate from the operation's own URI so the result can be cached or downloaded once while the operation record stays queryable.
+Versioning note: the operation shape is part of the contract — add fields freely, never change what `status` values mean, and give each terminal failure a stable code so clients can branch on it instead of parsing prose.
+Verification: contract test asserts 202 plus a resolvable `Location`; a test drives an operation to each terminal state; the polling client honours `Retry-After` in a fake-clock test rather than hard-coding a sleep.
+
+---
+
+Design decision: a batch endpoint states its partial-failure semantics, because "some succeeded" is a different contract from "all or nothing".
+Contract fragment:
+POST /orders:batch  { "requests": [ … ], "onError": "continue" | "rollback" }
+-> 200 with { "results": [ { "status": 201, "id": "o_1" }, { "status": 422, "code": "line.sku_unknown" } ] }
+-> or 207 with per-item bodies where content types differ; 422 only when the envelope itself is bad
+Why: per-item status codes with per-item stable error codes let a client retry the failed subset safely, which requires each item to carry its own idempotency key. Deciding inside the request (`onError`) beats a house convention, because the two modes have different cost: rollback needs a transaction around everything, continue needs each item to be independently idempotent.
+Versioning note: the envelope is additive territory; the item shape is the compatible surface, so a new item-level error code is a minor change and a changed meaning for `status` is not.
+Verification: contract test covers all-accepted, mixed, and envelope-invalid; a retry test resends only the failed subset with the same keys and asserts no duplicate side effects; the size cap returns 413 with a stated limit rather than an arbitrary 400.
+
+---
+
+Design decision: correlation and trace context are part of the API, documented and echoed, not an internal logging habit.
+Contract fragment:
+traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+request-id: req_01HTZ…            (client-generated, echoed in every response and in every error body)
+Retry-After: 2
+Why: a support ticket arrives with one identifier from one system, and the whole diagnosis is whether that identifier reaches the other systems. Echoing the client's request id in the response and in the problem-details body turns "which request?" into a lookup. Trace context propagates by the standard header so intermediaries cooperate, and the request id exists because a trace id is opaque and nobody quotes it in a ticket.
+Versioning note: header names are contract. Renaming one is breaking for the clients that already parse it, so both are accepted during a window and the removal is announced the way any other sunset is.
+Verification: contract test asserts the echoed id on 2xx and on 4xx/5xx, and an integration test asserts one id resolves across gateway and service logs (schema in 20); the client library sets and reads both headers by construction, so no call site has to remember.
+
+---
+
+Design decision: retries get a budget and hedging is a policy, both expressed per endpoint rather than per call site.
+Contract fragment:
+{ "endpoint": "GET /stock/{sku}",
+  "timeoutMs": 120, "maxAttempts": 3, "backoffMs": [30, 90], "jitter": true,
+  "retryOn": ["connect-error", "429", "503"], "budgetRatio": 0.10,
+  "hedge": { "enabled": true, "percentile": 0.75, "maxInFlight": 2 } }
+Why: retries that ignore each other are how a small dependency error becomes a self-inflicted storm, so the budget — retries as a fraction of total requests — caps the amplification, and only idempotent, timeout-or-overload conditions are retryable. Hedging a read at the p75 latency is cheaper than a longer timeout for the tail, but only for reads that are cheap to duplicate; hedging a write is a duplicate-side-effect design decision, not a tuning knob.
+Versioning note: budgets belong to the client's contract with itself, so they change without a version bump — but the `Retry-After` semantics the server sends are contract and must not be silently ignored by a client that has its own cadence.
+Verification: a fault-injection test with the dependency at 30% failure asserts the retry ratio stays inside the budget and the additional load is what the model predicts; a test with a slow p99 asserts hedged reads return at about p75 without exceeding `maxInFlight` (the pattern's architectural framing is 19, the failure transcripts are 02).
