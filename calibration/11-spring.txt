@@ -545,3 +545,86 @@ Why: the `RestTestClient` style is the direction for Boot 4 tests — real seria
 Misconfiguration: a mock-heavy slice that asserts internal calls rather than the response, so the test survives a change to the wire format; or a full-context test per assertion, so the suite is slow and gets skipped.
 Verification: the slice runs without the database by stubbing the repository, asserts status, content type and the problem-details shape, and the security slice covers the same route for anonymous, owner, same-tenant stranger and foreign principal.
 When it fails the output is the review comment: `Status expected:<403> but was:<200>` with the response body printed underneath — the ownership bug named in one line, on the wire format the client actually parses.
+
+---
+
+Goal: Ship the foundation as a library with one auto-configuration entry, never a component scan from the app.
+Wiring:
+@AutoConfiguration
+@ComponentScan(basePackages = "com.example.platform")
+@EnableConfigurationProperties({CortexDbProperties.class, CortexDomainsProperties.class})
+public class CortexPlatformAutoConfiguration {}
+In META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports, one line:
+com.example.platform.CortexPlatformAutoConfiguration
+Why: the app stays a thin boot class plus app modules, so the foundation version moves in one place and no app can forget a bean package. The imports file is the public contract of what gets loaded, which a scan of an ever-wider base package never is.
+Misconfiguration: @SpringBootApplication(scanBasePackages = "com.example") in every app, silently picking up test fixtures and dormant apps; or two @AutoConfiguration classes ordering against each other with @Order instead of one entry.
+Verification: a context test asserting the auto-config loads from the jar without any scan attribute, and a test that excludes it asserting the foundation beans are absent.
+
+---
+
+Goal: Keep one @Primary DataSource that routes, with per-role pools behind it and honest autoCommit posture.
+Wiring:
+@Bean(destroyMethod = "close") HikariDataSource primaryHikari(H Pool p) { return hikari(p, "primary", false); }
+@Bean(destroyMethod = "close") HikariDataSource adminHikari(H Pool p) { return hikari(p, "admin", false); }
+@Bean(destroyMethod = "close") HikariDataSource oauth2Hikari(H Pool p) { return hikari(p, "oauth2", true); }
+@Bean(destroyMethod = "close") @SpringSessionDataSource HikariDataSource sessionHikari(H Pool p) { return hikari(p, "session", true); }
+@Bean @Primary DataSource dataSource(DataSource customizedPrimary, HikariDataSource admin) { return new CortexRoutingDataSource(customizedPrimary, admin); }
+@Bean JdbcClient jdbcClient(DataSource ds) { return JdbcClient.create(ds); }
+Why: app and admin pools run autoCommit false under Spring transactions, while SAS JDBC and Spring Session JDBC run single-statement writes with no transaction manager and need autoCommit true or their writes never commit. The routing front-end picks by AdminContext, so @PlatformAdmin work transparently uses the admin pool without a second JdbcClient.
+Misconfiguration: one pool for everything with autoCommit true, so a service @Transactional silently commits halfway; or putting the session pool behind the router, so a web-session write inherits tenant RLS vars it has no use for.
+Verification: a test asserting primary and admin are false and oauth2 and session are true from the live beans, plus a @PlatformAdmin test asserting writes land in the admin schema and a session test asserting no transaction starts on the primary pool.
+
+---
+
+Goal: Bind each SecurityFilterChain to its hosts and order them so an unclaimed path fails closed.
+Wiring:
+@Bean @Order(1) SecurityFilterChain customerSas(HttpSecurity h) { h.securityMatcher(new AndRequestMatcher(host("auth-customer.example.test"), new AntPathRequestMatcher("/oauth2/**"))); h.authorizeHttpRequests(a -> a.anyRequest().permitAll()); return h.build(); }
+@Bean @Order(4) SecurityFilterChain operatorApi(HttpSecurity h) { h.securityMatcher(host("api.example.test")); h.authorizeHttpRequests(a -> a.anyRequest().authenticated()); return h.build(); }
+@Bean @Order(8) SecurityFilterChain catchAll(HttpSecurity h) { h.securityMatcher(new NegatedRequestMatcher(host("static.example.test"))); h.authorizeHttpRequests(a -> a.requestMatchers("/error").permitAll().anyRequest().denyAll()); return h.build(); }
+Why: host plus path is the identity of a chain, so the same path on two hosts gets two different rules and customer identity never federates into operator sessions. The catch-all denyAll turns a forgotten route into a loud 404 instead of an unauthenticated 200, and ERROR dispatch stays permitted so the denial itself can render.
+Misconfiguration: path-only matchers where /admin on the tenant host inherits the tenant chain; or getRequestURI string matching where /oauth2/%61uthorize bypasses the SAS matcher that the parsed path would have caught.
+Verification: MockMvc tests hitting the same path on two hosts asserting different chains, an encoded-path test asserting the SAS chain still matches, and an unknown-path test on every host asserting 404 with no security headers missing.
+
+---
+
+Goal: Make a drifted servlet-filter order fail the boot, not the incident.
+Wiring:
+@Configuration public class FilterOrderingAssertion {
+    @PostConstruct void verify() {
+        int guard = orderOf(TrustedProxyGuardMarker.class);
+        int forwarded = orderOf(ForwardedHeaderFilter.class);
+        int resolver = orderOf(TenantContextResolverFilter.class);
+        if (!(guard < forwarded && forwarded < resolver)) throw new IllegalStateException("trust-boundary order violated " + guard + " " + forwarded + " " + resolver);
+    }
+}
+Why: the host-header trust boundary depends on TrustedProxyGuard running before ForwardedHeaderFilter before the tenant resolver, and a future filter at an overlapping precedence or a Boot upgrade shifting auto-config order would silently break it. The assertion converts that silent break into a startup error with the three numbers in the message.
+Misconfiguration: relying on @Order values reviewed by eye, so a new filter at HIGHEST_PRECEDENCE + 75 slips between two load-bearing filters and tenant resolution trusts a spoofed X-Forwarded-Host for a release.
+Verification: a context test that registers a rogue filter at a colliding order asserting boot failure, and a test asserting the production order triple from the live FilterRegistrationBeans.
+
+---
+
+Goal: Return refusals as stable ProblemDetail types the UI can branch on.
+Wiring:
+public enum Kind { INVALID_FIELDS(422), WRONG_CREDENTIALS(401), EMAIL_NOT_VERIFIED(403), NOT_FOUND(404); final int status; }
+public static ProblemDetail of(Kind k, String detail) {
+    ProblemDetail p = ProblemDetail.forStatusAndDetail(HttpStatus.valueOf(k.status), detail);
+    p.setType(URI.create("urn:example:problem:" + k.name().toLowerCase().replace('_', '-')));
+    return p;
+}
+@ExceptionHandler(AccountProblem e) ProblemDetail handle(AccountProblem e) { return AccountProblems.of(e.kind(), e.detail()); }
+Why: type is the contract and detail is the display string, so a rename of wording never breaks the client branch. The enum keeps status next to slug, which stops the 403 that should have been a 401 from leaking account existence through a status the UI treats differently.
+Misconfiguration: about:blank everywhere with a free-text message the UI parses with contains, so a copy edit breaks login; or HttpMessageNotReadable mapped to a domain type, masquerading a malformed body as a business refusal.
+Verification: a RestTestClient test per kind asserting status plus exact type URI, and a test posting malformed JSON asserting about:blank rather than any domain type.
+
+---
+
+Goal: Send mail in the caller transaction without waiting for the provider on the request thread.
+Wiring:
+@Transactional public void changePassword(UUID userId, String hash) {
+    repository.changePassword(userId, hash);
+    mail.record(MailRequest.occurrence(PASSWORD_CHANGED_NOTICE, userId));
+}
+@TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT) @Async void onQueued(MailQueuedEvent e) { brevo.send(e.request()); }
+Why: recording the mail_sent row synchronously means a rollback sends nothing, and dispatching from an AFTER_COMMIT listener on a worker thread means the response never waits for the mail API. The MailRequest factories encode the choice: of derives the idempotency key from the value for one-time tokens where a retry must dedup, occurrence mints a fresh key for notices whose value legitimately repeats.
+Misconfiguration: sending synchronously in the controller, so a slow provider becomes a login timeout; or AFTER_COMMIT without a TaskDecorator, so the worker loses TenantContext and audit writes default-deny; or using of for a repeatable notice, suppressing the second mail forever as ALREADY_SENT.
+Verification: a test rolling back the transaction asserting no provider call, a test asserting the response returns before the provider stub completes, and a duplicate-send test asserting token mails dedup while notice mails do not.

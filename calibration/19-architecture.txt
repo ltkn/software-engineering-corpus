@@ -361,3 +361,19 @@ Options: (a) status quo with the job moved to a read replica; (b) a reporting pr
 Recommendation with conditions: (b) first. It removes the load and the coupling that actually hurts — reporting reading the write-side tables — without taking on a second deployable, a second pipeline, and a second on-call. Move to (c) when a stated trigger fires: reporting needs a different storage engine than Postgres can serve, or reporting's release cadence demonstrably blocks the monolith's, or its traffic needs an independent scaling profile measured over a quarter. (a) is a partial answer that keeps the schema coupling and adds a replica to babysit, and (d) is the right answer to a different question — cloning for read scaling, not decoupling.
 Reversibility: The projection is the reversible part: it is derived data with a rebuild path, so dropping it and rebuilding from events is a planned operation with a measured duration, not an emergency. Extracting a service is easy to start and hard to finish; the reverse (folding it back in) is a project nobody budgets, so treat the extraction as one-way.
 Verification: replica lag and projection lag have SLOs with alerts; the rebuild drill is timed and rehearsed; the write-side latency and the nightly job's duration are compared before and after, so the decision is graded on the numbers that motivated it rather than on the architecture diagram's tidiness.
+
+---
+
+Decision context: A tax calculation must run inside a host service without inheriting its framework.
+Options: (a) annotate the engine with Spring and Jackson and deploy it as a service; (b) keep engine framework-free with DTO mappers at the boundary and enforce it with ArchUnit; (c) split the engine per tax head into separately deployed services.
+Recommendation with conditions: (b). The engine holds pooled-cost, matching, and apportionment rules that outlive any framework major, while mappers translate validated DTO records to domain events at the edge. Choose (a) only if the engine will never be reused outside one host, which the platform-core embedding already disproves; choose (c) when heads need independent release cadences measured over a year, not before.
+Reversibility: Adding a framework import is a one-line change the test turns red, so the boundary is cheap to keep and cheap to restore. Extracting services later keeps the same engine packages, so the decision to stay a library does not close the service door.
+Verification: ArchitectureTest fails the build on any Spring, Jakarta, Jackson, parser, export, or FX import in engine packages, and the host auto-configuration test asserts the engine loads from the library jar with mappers only at the application layer.
+
+---
+
+Decision context: A price history needed for a gain is longer than the fetched window.
+Options: (a) truncate and price from what arrived; (b) throw a typed over-budget exception and price nothing; (c) page further automatically until complete.
+Recommendation with conditions: (b) with a named HyperliquidHistoryTooLongException the host maps to a refusal. Partial pricing presents an incomplete gain as final, which is worse than no gain, and silent auto-paging turns a bounded fetch into an unbounded one against a weight-limited API. Page further only under an explicit larger budget the caller names, never by default.
+Reversibility: The exception is part of the typed contract, so relaxing it later is additive: callers that handled it keep working. Returning partial data first and adding the exception later would break every consumer that assumed completeness.
+Verification: an over-window fixture asserts the named exception with no partial result, a fitting-window fixture asserts full pricing, and the client test asserts weight plus time budgets bound the fetch before the exception path is reached.

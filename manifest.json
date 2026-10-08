@@ -12,8 +12,8 @@
   },
   "bundle": {
     "target_tokens": "200k-250k weighted",
-    "blocks_counted": 1330,
-    "unweighted_estimate": "~173k est of 1330 counted blocks (bytes/5.5 pre-check, 2026-10-07 after the proportional expansion and realism-texture passes; ~680k as sum(tokens x weight))",
+    "blocks_counted": 1410,
+    "unweighted_estimate": "~191k est of 1410 counted blocks (bytes/5.5 pre-check, tax-engine enrichment pass; ~758k as sum(tokens x weight))",
     "eval": [
       "eval/heldout-se.txt",
       "eval/heldout-general.txt",
@@ -67,8 +67,8 @@
     },
     {
       "id": "07-auth-oidc-oauth",
-      "blocks": 51,
-      "tokens": "est ~10.8k (pre-check 58.0 KB, ~212/block, 2026-10-07)",
+      "blocks": 57,
+      "tokens": "est ~12.6k (pre-check 67.4 KB, platform-core enrichment)",
       "share": 5.0,
       "code_forward_target": null
     },
@@ -88,22 +88,22 @@
     },
     {
       "id": "10-java",
-      "blocks": 69,
-      "tokens": "est ~8.5k (pre-check 45.9 KB, ~124/block, 2026-10-07)",
+      "blocks": 75,
+      "tokens": "est ~10.1k (pre-check 54.1 KB, platform-core enrichment)",
       "share": 7.5,
       "code_forward_target": ">=40%"
     },
     {
       "id": "11-spring",
-      "blocks": 59,
-      "tokens": "est ~6.7k (pre-check 36.1 KB, ~114/block, 2026-10-07)",
+      "blocks": 65,
+      "tokens": "est ~8.2k (pre-check 44.3 KB, platform-core enrichment)",
       "share": 7.0,
       "code_forward_target": ">=40%"
     },
     {
       "id": "12-postgresql",
-      "blocks": 60,
-      "tokens": "est ~7.2k (pre-check 38.5 KB, ~119/block, 2026-10-07)",
+      "blocks": 66,
+      "tokens": "est ~8.4k (pre-check 45.1 KB, platform-core enrichment)",
       "share": 6.0,
       "code_forward_target": ">=40%"
     },
@@ -116,43 +116,43 @@
     },
     {
       "id": "14-http-api",
-      "blocks": 45,
-      "tokens": "est ~5.4k (pre-check 28.8 KB, ~119/block, 2026-10-07)",
+      "blocks": 57,
+      "tokens": "est ~7.6k (pre-check 40.6 KB, id-ui+admin-ui enrichment)",
       "share": 3.5,
       "code_forward_target": ">=15%"
     },
     {
       "id": "15-typescript",
-      "blocks": 42,
-      "tokens": "est ~5.0k (pre-check 26.6 KB, ~118/block, 2026-10-07)",
+      "blocks": 54,
+      "tokens": "est ~7.6k (pre-check 40.6 KB, id-ui+admin-ui enrichment)",
       "share": 4.0,
       "code_forward_target": ">=45%"
     },
     {
       "id": "16-vue",
-      "blocks": 42,
-      "tokens": "est ~4.8k (pre-check 25.5 KB, ~113/block, 2026-10-07)",
+      "blocks": 54,
+      "tokens": "est ~7.4k (pre-check 39.9 KB, id-ui+admin-ui enrichment)",
       "share": 3.5,
       "code_forward_target": ">=40%"
     },
     {
       "id": "17-tanstack",
-      "blocks": 38,
-      "tokens": "est ~4.7k (pre-check 25.5 KB, ~125/block, 2026-10-07)",
+      "blocks": 50,
+      "tokens": "est ~7.1k (pre-check 38.2 KB, id-ui+admin-ui enrichment)",
       "share": 3.0,
       "code_forward_target": ">=35%"
     },
     {
       "id": "18-testing",
-      "blocks": 40,
-      "tokens": "est ~4.3k (pre-check 23.3 KB, ~109/block, 2026-10-07)",
+      "blocks": 42,
+      "tokens": "est ~4.8k (pre-check 25.6 KB, tax-engine enrichment)",
       "share": 3.0,
       "code_forward_target": ">=25%"
     },
     {
       "id": "19-architecture",
-      "blocks": 46,
-      "tokens": "est ~5.9k (pre-check 31.9 KB, ~129/block, 2026-10-07)",
+      "blocks": 48,
+      "tokens": "est ~6.4k (pre-check 34.3 KB, tax-engine enrichment)",
       "share": 3.0,
       "code_forward_target": "<20% (prose-first by design)"
     },
@@ -179,8 +179,8 @@
     },
     {
       "id": "23-finance-quant",
-      "blocks": 28,
-      "tokens": "est ~3.2k (pre-check 17.2 KB, ~114/block, 2026-10-07)",
+      "blocks": 32,
+      "tokens": "est ~3.9k (pre-check 20.9 KB, tax-engine enrichment)",
       "share": 2.5,
       "code_forward_target": null
     },
@@ -241,6 +241,6 @@
       "code_forward_target": null
     }
   ],
-  "ledger": "populate at implementation: one entry per baseline {name, version, status, as-of, source}. Stamped now: MITRE ATT&CK Enterprise v19.2 {status: current, as-of: 2026-10-07, source: attack.mitre.org} — the technique-ID vocabulary for 31 and 08.",
+  "ledger": "populate at implementation: one entry per baseline {name, version, status, as-of, source}. Stamped now: MITRE ATT&CK Enterprise v19.2 {status: current, as-of: 2026-10-07, source: attack.mitre.org} \u2014 the technique-ID vocabulary for 31 and 08.",
   "license": "TBD, must be permissive before first release"
 }

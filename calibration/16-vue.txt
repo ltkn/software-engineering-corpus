@@ -397,3 +397,180 @@ export function useOrderStream(id: MaybeRefOrGetter<string>) {
 Why: an effect created outside a scope belongs to whichever component happened to call the composable, so an early `return` in that component or a call from a non-component context leaks a subscription. The scope makes ownership explicit, `onCleanup` handles per-run teardown, and `onScopeDispose` ties the scope's lifetime to the host's; the caller cannot forget to stop it because there is nothing to stop.
 Pitfall: returning a raw `ref` and letting consumers write to it; calling the composable in `setup` conditionally, so the scope sometimes exists and sometimes does not; putting the unsubscribe in `onUnmounted` inside the composable, which fires too late for a watcher that re-runs.
 Verification: a unit test mounts, unmounts and asserts the subscription closed exactly once, and a second test flips the id twice asserting old connections close before the new one opens.
+
+---
+
+Goal: Own the whole login attempt as one mutation with explicit secret hygiene.
+Wiring:
+const email = ref('');
+const password = ref('');
+const errorMessage = ref('');
+const unverifiedEmail = ref('');
+const login = useMutation({
+  mutationFn: (creds: { email: string; password: string }) => postJson('/login/password', creds),
+  onSuccess: (result) => { password.value = ''; signedIn.value = !followContinue(result.continue); },
+  onError: (err, creds) => { password.value = ''; unverifiedEmail.value = problemType(err) === PROBLEM_TYPES.EMAIL_NOT_VERIFIED ? creds.email : ''; errorMessage.value = refusalMessage(err); },
+  onSettled: () => { submitting.value = false; },
+});
+Why: onSuccess and onError both clear the typed secret, so a failed sign-in never leaves a password in a dead-end form in memory. The resend address is pinned from the refused credentials, not from the field at click time, so editing the email after the refusal does not redirect the resend.
+Pitfall: clearing only on success, leaving the secret mounted after a 401; or reading email.value in the resend handler, sending the link to whatever was typed last; or a separate loading flag that stays true when onSettled is forgotten.
+Verification: a harness test asserting the password input is empty after both 200 and 401, and asserting the resent body equals the refused address even after the field changes.
+
+---
+
+Goal: Announce async outcomes to assistive tech without re-mounting the region.
+Wiring:
+<div role="status">
+  <p v-if="signedIn" class="small text-success mb-2">You are signed in. You can return to the app you came from.</p>
+  <p v-if="resendState === 'sent'" class="small text-success mb-2">If that address is waiting for confirmation, a new link is on its way.</p>
+</div>
+<form novalidate @submit.prevent="submit">
+  <div v-if="errorMessage" class="alert alert-danger py-2 small" role="alert">{{ errorMessage }}</div>
+</form>
+Why: the status region stays in the DOM and only its text flips, because a live region inserted together with its text may never be announced. The refusal uses role alert while the success uses status, so the politeness matches the urgency without a second ARIA library.
+Pitfall: v-if on the region itself so the announcement races the mount; or rendering the error as plain text with no role, silent to screen readers; or stuffing both success and error into one string that re-reads on every keystroke.
+Verification: a test mounting with empty state asserting an empty status node exists, then triggering sent and asserting the text appears without the node being replaced.
+
+---
+
+Goal: Render backend field faults where the backend names them, with no client copy of the rule.
+Wiring:
+const faults = ref<Record<string, string>>({});
+async function submit() {
+  try { await postJson('/login/signup', { email: email.value, password: password.value }); }
+  catch (err) { faults.value = fieldFaults(err); errorMessage.value = refusalMessage(err); await nextTick(); document.querySelector('[aria-invalid="true"]')?.focus(); }
+}
+<input v-model="email" :aria-invalid="!!faults.email" :aria-describedby="faults.email ? 'email-err' : undefined" />
+<p v-if="faults.email" id="email-err" class="invalid-feedback">{{ faults.email }}</p>
+Why: inputs are sent as typed with novalidate, so there is exactly one rule in the system and the UI cannot disagree with it. The faults map keys off the backend field names, and focus moves to the first invalid field after the DOM updates.
+Pitfall: duplicating length or email regex client-side, so the client accepts what the server rejects or vice versa; or showing faults without aria-describedby, leaving the association to placeholder color alone.
+Verification: a test posting an invalid-fields fixture asserting per-field messages plus focus on the first, and a test asserting as-typed send with no client trimming or lowercasing before the wire.
+
+---
+
+Goal: Give each auth flow its own route and lazy chunk, with a safe fallback.
+Wiring:
+export const routes = [
+  { path: '/', redirect: '/login' },
+  { path: '/login', name: 'login', component: () => import('@/views/LoginView.vue') },
+  { path: '/passkey', name: 'passkey', component: () => import('@/views/PasskeyView.vue') },
+  { path: '/signup', name: 'signup', component: () => import('@/views/SignupView.vue') },
+  { path: '/reset-password', name: 'reset-password', component: () => import('@/views/ResetPasswordView.vue') },
+  { path: '/:pathMatch(.*)*', redirect: '/login' },
+];
+Why: one view per backend flow keeps the emailed-token modes from sharing state, and lazy import keeps the passkey bundle (with the WebAuthn library) off the password page. The catch-all redirects to login rather than rendering a blank, because an emailed link with a stripped prefix must still land somewhere honest.
+Pitfall: one mega view with a mode flag where reset and forgot share refs and leak a token into the wrong POST; or eager imports pulling the authenticator library into every chunk.
+Verification: a router test asserting each path resolves to its view chunk, and an unknown-path test asserting redirect to login with no backend call.
+
+---
+
+Goal: Run a three-step WebAuthn ceremony as one pending state with honest cancellations.
+Wiring:
+const signIn = useMutation({
+  mutationFn: async () => {
+    const options = await postJson('/webauthn/customer/authenticate/options');
+    const assertion = await startAuthentication({ optionsJSON: options });
+    return postJson('/webauthn/customer/authenticate', assertion);
+  },
+  onSuccess: (r) => { signedIn.value = !followContinue(r.continue); },
+});
+const busy = computed(() => signIn.isPending.value);
+const errorMessage = computed(() => {
+  const err = signIn.error.value;
+  if (!err) return '';
+  if (err.name === 'NotAllowedError' || err.name === 'AbortError') return 'Passkey sign-in was cancelled or timed out.';
+  return refusalMessage(err);
+});
+Why: the three network-plus-hardware steps share one mutation, so there is one spinner, one error, and no half-state where options arrived but the button re-enables. Authenticator rejections are named locally because the backend never sees them, while every backend refusal keeps its worded detail.
+Pitfall: three separate mutations where the user clicks through a stale options response; or surfacing the raw NotAllowedError name to the user; or enabling the button mid-ceremony so a double click starts two overlapping get calls.
+Verification: a test with mocked startAuthentication rejecting NotAllowedError asserting the friendly sentence and no fetch to authenticate, plus a busy test asserting the button stays disabled across all three awaits.
+
+---
+
+Goal: Consume an emailed link without leaving it in history or re-firing it.
+Wiring:
+const token = useEmailedToken();
+const verify = useMutation({ mutationFn: () => postJson('/login/verify-email', { token }) });
+onMounted(() => { if (token) verify.mutate(); });
+Why: the composable reads ?token once and replaces the URL on the same route, so the secret leaves the address bar, the history entry, and the Referer on the next navigation. Auto-submit on mount covers the click-through case, while the mutation guards the empty-token mount from firing.
+Pitfall: keeping the token in the query where reload resubmits it and a copied URL leaks it; or firing on every mount including empty, turning a direct visit into a link-not-usable refusal that confuses logging.
+Verification: a mount test with ?token=abc asserting the POST body carries abc and asserting router.replace ran with token removed, plus an empty-token mount asserting no fetch at all.
+
+---
+
+Goal: Refuse to show a reset form when there is no token to spend.
+Wiring:
+{ path: '/reset-password', name: 'reset-password', component: () => import('@/pages/ResetPasswordPage.vue'),
+  beforeEnter: (to) => typeof to.query.token === 'string' && to.query.token ? true : { name: 'forgot-password' } },
+export function createAppRouter(history = createWebHistory(import.meta.env.BASE_URL)) { return createRouter({ history, routes }); }
+Why: the guard runs before the view mounts, so a typed URL without ?token lands on the forgot page that can actually help, instead of a form that can only fail after the operator invents a password. The factory gives each test its own memory-history router, so no test shares navigation state.
+Pitfall: rendering the form unconditionally and letting the submit fail with link-not-usable, which reads as the backend rejecting a password the user chose; or a singleton router shared across tests where one test's URL leaks into the next.
+Verification: a test opening /reset-password without a token asserting redirect to forgot-password with zero fetches, plus a test with a token asserting the form mounts and fires once.
+
+---
+
+Goal: Wait for a click before spending a sign-in link, so scanners cannot burn it.
+Wiring:
+const token = tokenOf(useRoute().query);
+const consume = useMutation({ mutationFn: () => postJsonCsrf('/signin/magic-link/consume', { token }) });
+<form v-else novalidate @submit.prevent="consume.mutate()">
+  <FormError :error="consume.error.value" />
+  <p>Continue to sign in with the link from your email.</p>
+  <SubmitButton :pending="consume.isPending.value">Sign in</SubmitButton>
+</form>
+Why: mail scanners follow links to check them, and auto-submitting on mount would spend the one-time token into the scanner's browser and leave the operator with nothing. One button plus one POST keeps the scanner read-only, which is the opposite choice from verify-email auto-submit and deliberately so: a sign-in grants a session, a verification only flips a flag.
+Pitfall: sharing the auto-submit composable across both pages, so the sign-in link dies in the scanner; or a GET consume endpoint that any prefetch can fire.
+Verification: a mount test asserting zero fetches before click plus one POST with the token after click, and a scanner-simulation test asserting a GET-only fetch leaves the link still usable.
+
+---
+
+Goal: Preview an invitation before deciding which fields the accept needs.
+Wiring:
+const preview = useQuery({ queryKey: ['invitation-preview', token], queryFn: () => postJson('/accept-invitation/preview', { token }) });
+const accept = useMutation({ mutationFn: () => postJson('/accept-invitation', preview.data.value?.accountExists ? { token } : { token, displayName: displayName.value, password: password.value }) });
+<input type="email" class="d-none" autocomplete="username" :value="preview.data.value.email" readonly tabindex="-1" aria-hidden="true" />
+Why: the preview says whether the invited address already has an account, so an existing account sends the token alone and nothing typed can change it, while a new one supplies name plus password the backend validates. The hidden username input files the new password under the right address for managers without showing a second editable email.
+Pitfall: one accept body that always sends displayName, letting a crafted call rename an existing account; or no preview, so the page guesses which form to show and asks an existing user for a new password.
+Verification: tests over existing versus new fixtures asserting token-only versus token-plus-fields bodies, plus a test asserting the hidden username carries the invited address for the manager.
+
+---
+
+Goal: Show a 422 as an expected answer with a second chance built in.
+Wiring:
+const pending = ref<SubmitOriginResult | null>(null);
+const submit = useMutation({
+  mutationFn: () => api.submitOrigin(props.tenantId, origin.value),
+  onMutate: () => { verified.value = null; },
+  onSuccess: async () => { verified.value = origin.value; pending.value = null; origin.value = ''; await refreshAll(); },
+  onError: (e) => { pending.value = e instanceof ApiError && e.status === 422 ? (e.body as SubmitOriginResult) : null; },
+});
+<button :disabled="submit.isPending.value || !origin">{{ submit.isPending.value ? 'Checking…' : pending ? 'Verify again' : 'Verify and add' }}</button>
+Why: the 422 body is the DNS record to publish, so it stays on screen with copy buttons until the next attempt, and Verify again resends the identical POST rather than a separate confirm call. Clearing verified on mutate stops a stale success from surviving under the new warning.
+Pitfall: treating 422 as a crash that clears the form, losing the record the admin just read; or a separate verify endpoint that drifts from the submit validation.
+Verification: a 422 test asserting the record name plus value render with the button relabeled, plus a retry test asserting the second POST body equals the first.
+
+---
+
+Goal: Gate every control on the actions list, with counts from the same response.
+Wiring:
+<button v-if="list.actions.includes('tenant.suspend')" @click="askConfirm = true">Suspend</button>
+<div v-if="askConfirm" role="alertdialog" aria-modal="true">
+  <p>Suspend {{ tenant.slug }}? New sessions stop, existing ones drain.</p>
+  <button @click="suspend.mutate()">Confirm suspend</button>
+</div>
+Why: the UI decides nothing: the same payload that names the tenants names what may be done to them, so a backend policy change moves the buttons without a frontend deploy. Destructive work gets an explicit confirm step in the same view, not a browser confirm that tests cannot see.
+Pitfall: showing suspend for every admin because the route is admin-only, then relying on the 403 to say no; or confirming with window.confirm where jsdom cannot click it.
+Verification: tests over fixtures with and without the action id asserting button presence, plus a suspend test asserting confirm appears first and the POST fires only after it.
+
+---
+
+Goal: Render loading, refusal, and content from one tri-state without losing the live region.
+Wiring:
+<DataState :query="tenantQuery">
+  <template #error="{ error }"><p role="alert">{{ messageOf(error) }}</p></template>
+  <TenantDetail :tenant="tenantQuery.data.value.tenant" />
+</DataState>
+<div role="status"><div v-if="verified" class="alert alert-success py-2">{{ verified }} is verified.</div></div>
+Why: the DataState slot owns the pending versus error versus data branch, so no page forgets the 404-generic special case, while the status region stays mounted even when empty for announcements. The 404 maps to Not found rather than the backend detail, because a missing tenant id is a navigation error, not a domain refusal.
+Pitfall: per-page v-if chains that render nothing on error and leave the region empty; or mounting the live region only with its text so the announcement never fires.
+Verification: tests over pending, 404, 500, and data states asserting exactly one branch renders, plus a verified test asserting the success node replaces text without replacing the region.

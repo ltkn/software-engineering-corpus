@@ -314,3 +314,19 @@ Example: `kill -9` the relay process while it holds a batch read from the outbox
 Why this technique: an exception path lets the code clean up; a kill does not, so the only question that matters is what the persisted state says on restart. This is the cheapest rehearsal of the incident that would otherwise be a surprise at 3 a.m., and it is the only test that proves at-least-once plus idempotent sink actually equals effective once.
 Anti-pattern: killing the process between two operations that were never in a transaction, then declaring the pattern proven; or running the drill once and never again, so a later refactor of the commit order quietly invalidates it.
 Verification: counts reconciled automatically from source rows to sink rows, the drill is a scheduled job with the numbers recorded, and the same drill at the queue level is repeated for the Kafka path (relay mechanics in 13, the pattern's rationale in 19).
+
+---
+
+What to test: that the calculation engine stays framework-free, by build rather than by review.
+Example: noClasses().that().resideInAPackage("..engine..").should().dependOnClassesThat().resideInAnyPackage("org.springframework..", "jakarta..", "com.fasterxml.jackson..", "..api..", "..parsers..", "..export..", "..config..", "..fx..");
+Why this technique: the rules lift into a host service only if they depend on nothing the host owns, so the boundary is a compile-time invariant rather than a comment. The test imports the production packages once and checks three rules: no Spring or Jakarta, no Jackson, no web, parser, export, config, or FX packages.
+Anti-pattern: a @Service annotation slipping into the matching rules for one helper method, passing review because it still works; or a Jackson annotation on a domain event for one export that couples every calculator to the wire format.
+Verification: the ArchitectureTest runs in the standard suite and fails on a deliberate Spring import in engine plus on a Jackson annotation in domain; the failure names the offending class and package.
+
+---
+
+What to test: calculator behaviour from fixtures, not from mocks of itself.
+Example: given buys 100 at 200.00 and 100 at 220.00 then a sale of 100 at 250.00, the Section104Test asserts pool average 210.00 and gain 4000.00; the option-exercise pipeline test asserts exercise rolls cost into the underlying lot rather than realizing a standalone gain; the TaxCalculationServiceTest asserts single-pool aggregation across assets with virtual-thread-safe stateless orchestration.
+Why this technique: the numbers are the contract with the tax authority, so the test pins worked figures the recompute gate can rerun instead of asserting call counts. Fixtures use real-shape broker rows plus dated FX rows, so a parser change that drops a fee breaks the gain rather than passing in isolation.
+Anti-pattern: mocking the pool to return the average the test then asserts, which proves the wiring but not the arithmetic; or one golden-file test for the whole year that cannot name which rule broke.
+Verification: each calculator has its own test class with per-rule fixtures, a red-green check that the test fails when the rule is removed, and streaming-parser tests over sample XML and JSON asserting the same domain events the calculators consume.

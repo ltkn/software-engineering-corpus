@@ -599,3 +599,82 @@ Verification: a test attempting an overlapping booking gets a constraint violati
 `ERROR:  conflicting key value violates exclusion constraint "rooms_book_room_id_booking_period_excl"`
 `DETAIL:  Key (room_id, booking_period)=(7, [2026-10-12, 2026-10-14)) conflicts with existing key (room_id, booking_period)=(7, [2026-10-13, 2026-10-15)).`
 Read the constraint name out of the error and the application's error mapping has something honest to say to the front desk; paraphrasing it into "invalid dates" is how a double booking becomes a support ticket.
+
+---
+
+Task: Normalize emails in exactly one place, in SQL.
+SQL:
+CREATE OR REPLACE FUNCTION core.normalize_email(p_email text)
+RETURNS text LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+SET search_path = pg_catalog
+AS $$
+  SELECT lower(normalize(trim(p_email), NFKC) COLLATE "C")
+$$;
+SELECT id FROM core.users WHERE email_normalized = core.normalize_email($1);
+Reading: the function is the rule behind the generated email_normalized columns, so every lookup and every stored value comes from the same expression. IMMUTABLE plus PARALLEL SAFE keeps it index-friendly, and pinning search_path to pg_catalog closes the search_path hijack that a SECURITY DEFINER-adjacent function would otherwise carry.
+Pitfall: trim plus lower in Java, which skips NFKC so a full-width look-alike compares as a different address, and which lowercases non-ASCII that COLLATE C leaves alone, so an address with capital E-acute can never be found.
+Verification: a guard test pinning the function text to both generated columns so they cannot drift, plus a fixture with surrounding spaces and full-width characters asserting the same normalized form from SQL and from the repository helper that calls the function.
+
+---
+
+Task: Isolate tenants with forced RLS that denies when the session var is missing.
+SQL:
+ALTER TABLE app_customers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_customers FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON app_customers USING (tenant_id = app_current_tenant()) WITH CHECK (tenant_id = app_current_tenant());
+CREATE OR REPLACE FUNCTION app_current_tenant() RETURNS uuid LANGUAGE sql STABLE PARALLEL SAFE SET search_path = pg_catalog AS $$ SELECT nullif(current_setting('app.tenant_id', true), '')::uuid $$;
+Reading: FORCE keeps the table owner under the policy, so a stray admin connection cannot sail through. The helper returns NULL when the var is unset, and NULL equals nothing, so a missing binding denies rather than leaking. One request sets app.tenant_id on checkout from a ScopedValue, and the empty-string sentinel fails the cast path closed.
+Pitfall: a policy without FORCE where the owner bypasses RLS, or current_setting without missing_ok so an unbound connection errors instead of denying, which the caller then rescues into an unauthenticated retry.
+Verification: EXPLAIN shows the policy predicate on every plan, and a test with no session var asserting zero rows rather than an error; the no-RLS table list is asserted by a migration guard test.
+
+---
+
+Task: Expose a privileged read through a co-located SECURITY DEFINER finder.
+SQL:
+CREATE OR REPLACE FUNCTION core.find_user_by_email_normalized(p_email text)
+RETURNS TABLE (id uuid, status text, email_normalized text)
+LANGUAGE sql STABLE PARALLEL SAFE
+SET search_path = pg_catalog, core
+SECURITY DEFINER
+AS $$ SELECT u.id, u.status, u.email_normalized FROM core.users u WHERE u.email_normalized = p_email $$;
+ALTER FUNCTION core.find_user_by_email_normalized(text) OWNER TO cortex_func_owner;
+REVOKE ALL ON FUNCTION core.find_user_by_email_normalized(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION core.find_user_by_email_normalized(text) TO cortex_app;
+Reading: the function lives next to its table, pins search_path away from public, runs as the func_owner that owns the table, and grants execute only to the app role, so the app role reads accounts without direct table access. Short, input-validated, no dynamic SQL.
+Pitfall: search_path containing public, letting a tenant-created function shadow a lookup; or granting the table itself to the app role for convenience, which silently re-opens the direct read the finder was built to close.
+Verification: a harness check asserting owner is cortex_func_owner and search_path is exactly pg_catalog, core, plus a test as cortex_app asserting direct SELECT on core.users fails while the finder succeeds.
+
+---
+
+Task: Read an account plus its password hash in one statement so timing does not name accounts.
+SQL:
+SELECT u.id, u.status, p.hash AS password_hash
+FROM core.find_user_by_email_normalized(core.normalize_email($1)) u
+LEFT JOIN core.user_passwords p ON p.user_id = u.id;
+Reading: the LEFT JOIN returns a row whether or not a password exists, so the Argon2id check runs the same work on a random-hash fallback for unknown addresses and passwordless accounts. The email comparison happens inside SQL with normalize_email, so the Java side never holds a second copy of the rule.
+Pitfall: two round trips where the second runs only for existing accounts, measurable as a slower wrong-password for real addresses; or lowercasing in Java before the query, diverging from the generated column on non-ASCII input.
+Verification: a timing test asserting unknown versus known addresses take the same Argon2id path, and a fixture asserting a suspended account still returns its hash shape so the caller can decide without a second query.
+
+---
+
+Task: Page an audit log by keyset on (occurred_at, id) with an opaque cursor.
+SQL:
+SELECT id, occurred_at, event_code FROM core.audit_events
+WHERE tenant_id = $1 AND (occurred_at, id) < ($2, $3)
+ORDER BY occurred_at DESC, id DESC LIMIT $4;
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT id FROM core.audit_events WHERE tenant_id = $1 ORDER BY occurred_at DESC, id DESC LIMIT 50;
+Reading: equality on tenant_id plus a row-comparison on the sort key resolves to one bounded index range scan on (tenant_id, occurred_at DESC, id DESC). The client cursor is base64url of version plus parts, decoded strictly and bounded to 512 bytes, and a forged cursor only moves the start position because RLS still filters.
+Pitfall: OFFSET paging where page 400 scans and discards 20k rows, visible as rising Buffers and Execution Time with depth; or exposing offset numbers the client can edit to jump tenants.
+Verification: Index Scan using audit_events_tenant_time on EXPLAIN with Execution Time 2.1 ms and Buffers shared hit 14, plus a concatenation test asserting stitched pages equal the full ordered query with no gaps.
+
+---
+
+Task: Consume a one-time mailbox token atomically so replay is a no-op.
+SQL:
+UPDATE core.magic_links SET consumed_at = now()
+WHERE token_hash = $1 AND consumed_at IS NULL AND expires_at > now()
+RETURNING user_id;
+Reading: the predicate plus RETURNING makes issue and burn one statement, so two concurrent presents cannot both succeed. The stored value is SHA-256 of version-prefixed token plus pepper, never the raw token, and a zero-row result is indistinguishable across invalid, expired, consumed, or wrong-browser cases.
+Pitfall: SELECT then UPDATE in application code, where a replay inside the race window burns twice; or storing the raw token so a read replica leak becomes a login.
+Verification: a concurrent-present test asserting exactly one RETURNING row, and a test asserting expired and consumed fixtures both return zero rows with the same caller-visible outcome.
