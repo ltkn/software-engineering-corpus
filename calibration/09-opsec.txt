@@ -251,3 +251,35 @@ Violation: A credential in commit history gets scrubbed from Git but nobody rota
 Practice: Rotate the credential first so the leaked value stops working regardless of how much history remains; then remove it from history with the rewrite tool and force-push; then assess exposure windows and which systems saw the value. Purges and rewrites are never the remediation by themselves.
 Control: Push protection blocks the write; the secret scanner re-audits history after the rewrite and verifies the canary-token and staged-file scans both go quiet.
 Recovery: If the value was live outside the forced-push window, the incident tier applies — tier one for production-bearing secrets, tier two for isolated dev-only material.
+
+---
+
+Rule: Secrets collect wherever data aggregates, so the hunt runs on the aggregating systems, not only on the repository.
+Violation: The credential never appeared in Git. It reached the APM as a span attribute, the trace sampler kept the error trace containing it, the CI artifact carried a debug dump, one image layer held the file that mounted it, the frontend bundle inlined a build-time copy, and the agent transcript quoted it back to the user.
+Practice: Scheduled scans across APM attributes and span events, trace stores, CI logs and artifacts, image layers and manifests, build caches, frontend bundles, agent transcripts, MCP call logs and IDE chat history — each with an owner and a retention bound; a secret rotated in the store but left in nine copies has been rotated on paper.
+Control: Scan schedule per aggregating system with the tier routing from this file's blast-radius rule, plus an attribute allow-list at the telemetry boundary so the value cannot be recorded in the first place (20 owns the redaction tests that prove it).
+Recovery: For a found value, enumerate the copies before declaring the rotation complete; each surviving copy is either deleted under its retention policy or recorded as contained with a review date.
+
+---
+
+Rule: An agent transcript is a data store with a retention policy, not a console log.
+Violation: A debugging session pasted a production row and a bearer token into the prompt; the transcript was written to a shared volume, indexed for search, and kept because nobody configured otherwise. Two months later it is the only place where that customer's record and a live credential coexist.
+Practice: Deny key and `.env` files from agent context by default; scope the tokens in tool configuration and never commit them; redact at write time rather than at read time; set retention and access on transcripts the way they are set on database dumps, because a transcript is a dump of somebody's attention.
+Control: Transcript scanner for secret shapes on write, retention bound with an owner, access limited to the person and the incident that needs it, and the retention question answered in the harness configuration rather than by default (kind 5 of this file, and the audit trail requirement is 20 kind 6).
+Recovery: Redact or delete the affected session, rotate anything it quoted, and add the shape that slipped to the scanner — the same loop as any other secret, with the extra step that the transcript may be somebody's only evidence of the incident.
+
+---
+
+Rule: A secret in a command line or a URL is a secret in somebody's log.
+Violation: `deploy.sh --db-password=REDACTED` visible in process listings, shell history and the CI log; a presigned URL with its signature pasted into a ticket; a `?token=` query parameter that now lives in the access log, the proxy log, the analytics pipeline and the browser history of whoever opened the link.
+Practice: Pass secrets by file descriptor, environment injected by the manager, or a prompt — never by argument, and never in a query string where a header will do. When a URL must carry a credential, bound its lifetime to less than its exposure surface.
+Control: Process-argument scanning on runners, log pattern checks on query-string credentials, and a code review rule that rejects `?token=`/`?key=` in new outbound calls; `ps` output in CI artifacts is treated as a log.
+Recovery: Rotate, then check the aggregating systems of kind 8 in this file, because the argument or URL has already been copied by whatever observed it — logs do not honour the deletion you make in the repository.
+
+---
+
+Rule: A dependency-update pull request is code review with a supply-chain payload, and a new major version gets a cool-down before it is merged.
+Violation: An automated update PR for a build-time plugin at a new major merges on green tests at 09:14; by 11:00 every build in the org has executed the new plugin's install script, and the cool-down that exists for runtime dependencies was never written to cover build-time ones.
+Practice: Patch and minor updates flow on green with a frozen lockfile diff read by the CI check; new majors of anything that runs at build time wait a stated window, because the first days of a new release are when a compromised or broken publish is discovered; the diff is read for install scripts, new dependencies of the dependency, and changed maintainer identity.
+Control: Update tooling configured with cool-down windows per dependency class, install-script allow-lists enforced, provenance and signature checks on the resolved artifacts, and a rule that auto-merge is disabled for build-time dependencies (06 kind 6 owns the mechanism, 21 kind 4 the workflow configuration).
+Recovery: Revert the update PR and re-pin; if the artifact executed code, treat the runner's credentials as exposed and follow the tier for the environment the runner could reach.

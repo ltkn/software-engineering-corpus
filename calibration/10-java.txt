@@ -567,3 +567,76 @@ Symptom: Subtraction breaks across a DST shift and the handoff window is flagged
 Legacy: `new Thread` per request handler in 2010-era HTTP servers.
 Replacement: `newVirtualThreadPerTaskExecutor` (JDK 21+) or a bounded reactive stack; thread-per-task on virtual threads keeps blocking I/O code idiomatic.
 Symptom: Thread pools exhaust under I/O fan-out and the service needs reactive rewrites to survive load it would otherwise handle.
+
+---
+
+Concept: SequencedCollection, SequencedSet and SequencedMap give every ordered collection a named first, last and reversed view. API guarantee (JDK 21+, ordinary vocabulary by 25).
+Modern form:
+var recent = new LinkedHashSet<String>();
+recent.add("a"); recent.add("b");
+String newest = recent.getLast();          // no iterator gymnastics
+for (var it = recent.reversed().iterator(); it.hasNext(); ) audit(it.next());
+var lru = new LinkedHashMap<K, V>(64, 0.75f, true) {
+    @Override protected boolean removeEldestEntry(Map.Entry<K,V> e) { return size() > MAX; }
+};
+Why: the operations were always conceptually there; the interfaces made them part of the contract, so `getFirst`, `getLast`, `addFirst`, `addLast`, `reversed` and the sequenced views of `keySet`, `values` and `entrySet` are portable across `ArrayList`, `ArrayDeque`, `LinkedHashMap` and friends.
+Counter-pattern: `list.get(list.size() - 1)` on a collection typed as `Collection`, plus hand-written reverse loops, plus a custom `EvictingQueue` when the LRU is fifteen lines in a `LinkedHashMap` subclass.
+Check: `var c = new ArrayDeque<Integer>();` compiles against `SequencedCollection<Integer>`; a null-on-empty expectation is wrong — `getFirst` on an empty collection throws `NoSuchElementException`, which is the documented behavior, so `isEmpty` guards go before the call, not after it.
+
+---
+
+Concept: A JVM-level deserialization filter is the boundary check that runs before any object is constructed. API guarantee (JEP 290 lineage, `SerialFilterFactory` since 9).
+Modern form:
+var builder = SerialFilterFactory.current().toBuilder();
+builder.allowClass(PaymentEvent.class, OrderLine.class, java.math.BigDecimal.class);
+builder.allowPrimitiveInterfaces();
+SerialFilterFactory.setFilter(builder.build());
+Why: `ObjectInputStream.readObject` executes the graph's own logic before the caller can inspect it, so a check written in application code runs after the side effects that matter. The filter rejects by pattern before construction, and a global default means a boundary cannot forget it.
+Counter-pattern: `resolveClass` overrides copied per service, each with a slightly different allow-list, or — worse — a deny-list of known-bad gadget classes, which is a race against whatever is on the classpath this quarter.
+Check: a test feeds a `SignedObject` or a Commons-Collections-style lazy map to the boundary and asserts the filter rejects it, and the CI rule bans raw `readObject` on any path that crosses a trust boundary (mechanism and the attack class: 06; the payload's fingerprint: 31).
+
+---
+
+Concept: A local date-time is a wall-clock statement; an instant is a point. Arithmetic across a DST boundary belongs to the instant, and the gap must be tested rather than trusted. Implementation behavior with a documented rule: a local time in the spring-forward gap resolves after the gap.
+Modern form:
+var gap = ZonedDateTime.of(LocalDate.of(2026, 3, 29), LocalTime.of(2, 30), ZoneId.of("Europe/Berlin"));
+// 02:30 does not exist that day; the result is 03:30 with offset +02:00
+var next = ZonedDateTime.now(ZoneId.of("Europe/Berlin")).plusDays(1);   // calendar day, not 24 hours
+Why: scheduling nightly work at "02:30 local" asks for a moment that occurs twice in autumn and never in spring. `plusDays` on a `ZonedDateTime` adds a calendar day and keeps the local time, which is what a human means by "tomorrow at the same time"; `Instant.plus(24, HOURS)` adds exactly 86400 seconds, which is what a machine means and is not the same thing.
+Counter-pattern: `LocalDateTime.now()` in a service that runs in two regions, and cron defaults that silently skip or double-run the job; `Duration.ofDays(1)` used to mean "the next calendar day".
+Check: a test that pins the clock to the gap and to the fold (`Clock.fixed`) asserts the resolved instant both times, and the nightly job's schedule is expressed with an explicit zone, asserted by a unit test rather than reviewed by eye.
+
+---
+
+Concept: Text has a charset, and the platform default is a deployment detail. Explicit charset use is an API-discipline convention with compile-time help in 25.
+Modern form:
+String body = Files.readString(path, StandardCharsets.UTF_8);
+Files.writeString(out, csv, StandardCharsets.UTF_8, CREATE, TRUNCATE_EXISTING);
+var in = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+Why: `readString(Path)` without a charset uses the default, and `file.encoding`/`native.encoding` can differ between the developer's laptop, the container base image and the CI runner. The failure is a mojibake name in production that renders fine on every machine in the build pipeline — and it is the same class of bug as reading a byte stream as a char stream with the wrong width.
+Counter-pattern: `new String(bytes)` and `s.getBytes()` in round-trip code; a base image change flipping the default and breaking a CSV export nobody re-tested.
+Check: a round-trip test asserting the bytes are identical for a fixture with non-ASCII names, run with `-Dfile.encoding=US-ASCII` on the CI matrix, plus a lint or review rule banning no-charset overloads on I/O paths.
+
+---
+
+Concept: Continuous JFR plus a targeted recording is the production diagnosis pair; a thread dump is a photograph, a recording is a film. Implementation behavior; JEP 509 CPU-time sampling is experimental and Linux-only as of 25, so it is opted into deliberately.
+Modern form:
+jcmd 1 JFR.start name=hot settings=profile duration=60s path-to-gc-roots=true
+jcmd 1 JFR.dump name=hot filename=/tmp/hot.jfr
+jfr summary /tmp/hot.jfr
+jfr print --events jdk.VirtualThreadPinned,jdk.JavaMonitorEnter /tmp/hot.jfr
+Why: `profile` adds allocation and method-sample events that a default recording omits, and events like `jdk.VirtualThreadPinned` and `jdk.JavaMonitorEnter` name the pinning and contention that a flame graph only hints at. Startup flags enable the recording continuously with a bounded disk budget so the incident does not depend on someone remembering to start it.
+Counter-pattern: reaching for `jstack` in a container that has no JDK tools installed, or leaving `profile` settings on every pod with an unbounded repository until the disk fills, or reading one wall-clock sample as a trend.
+Check: the startup command contains the continuous-recording flags with rotation, an incident drill dumps a file and opens it, and the overhead budget is measured on the staging load shape rather than quoted from a blog post.
+
+---
+
+Concept: Virtual threads are cheap to block and expensive to pin, and pinning is observable rather than suspected. Implementation behavior; observable through JFR.
+Modern form:
+try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+    futures.add(executor.submit(() -> gateway.fetch(id)));     // blocking I/O fan-out is the point
+}
+// bounded work: a semaphore around the executor, not a pool sized to a thread count
+Why: a platform-thread pool exists to amortize thread cost, which disappears here; what remains scarce is the resource behind the call — a connection pool, a downstream quota. Closing the executor blocks until submitted tasks finish, which makes the shutdown path explicit instead of a leak. Holding a monitor across a blocking call pins the carrier, and a large fan-out with pinned carriers is a slow queue with no error.
+Counter-pattern: an `Executors.newFixedThreadPool(200)` renamed to "virtual" because `Thread.ofVirtual` was used to build it, or `synchronized` blocks around a blocking HTTP call, or unbounded fan-out with no semaphore and no downstream limit.
+Check: `jdk.VirtualThreadPinned` events in a 60-second recording under load read as zero for the hot path; the semaphore bound is asserted by a test that counts concurrent downstream calls; the executor is closed, not abandoned.

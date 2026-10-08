@@ -329,3 +329,69 @@ res.setHeader('Set-Cookie', 'refresh=...; HttpOnly; Secure; SameSite=Strict');
 // index.html: <meta http-equiv="Content-Security-Policy" content="default-src 'self'; ...">
 pitfall: localStorage for the refresh token or an inline script that prints __INITIAL_STATE__ into the page — XSS reaches a readable cache or a rendered <script>.
 verification: A probe that reads document.cookie is denied; localStorage has no token keys; the CSP probe asserts no inline script executes and connect-src is locked to the API origin.
+
+---
+
+Goal: Know what changes in Vue 3.6 while shipping on the stable line.
+Wiring:
+Dependency: vue 3.5.43 stable in production; vue 3.6.x (rc) pinned in a branch build only.
+Vapor Mode is opt-in per build, not per component; the reactivity core was reworked around the new signal graph while the public Composition API surface stays the same.
+Why: the reactivity rewrite is where a performance claim lives, and it is also where an unannounced behaviour difference would live. Stable samples in this corpus compile with the VDOM renderer so they stay valid on both lines; nothing production depends on a release-candidate default.
+Pitfall: reading a benchmark of the new reactivity core as a property of the version in production, or landing a Vapor-only component and discovering the fallback path renders differently under hydration.
+Verification: the branch build's hydration-match and component tests run against the RC so any difference is found on the branch; the upgrade decision is recorded with the renderer, the versions tested, and the rollback (version bump) named — the same discipline as any dual-compiler note in 15.
+
+---
+
+Goal: Render a modal or toast outside the component tree without losing scoping or focus order.
+Wiring:
+<Teleport to="body">
+  <div v-if="open" class="modal" role="dialog" aria-modal="true" :aria-labelledby="titleId" ref="panel">
+    <slot />
+  </div>
+</Teleport>
+<style scoped>.modal { /* still scoped: the attribute travels with the node */ }</style>
+Why: `Teleport` moves the DOM placement while keeping the component's logical position, so state, provide/inject and scoped styles continue to work as authored — which is the whole reason to reach for it instead of hand-copying markup into a portal root. It is also where a keyboard-trap bug appears: DOM order follows the teleport target, so a dialog teleported to the end of `body` sits after everything in tab order.
+Pitfall: `to="#app"` on a subtree that is later re-rendered and detaches the target; multiple dialogs teleported to the same node with no ownership of focus return; SSR emitting the teleported content twice when the target also renders it.
+Verification: an E2E test opens the dialog and asserts focus moves in, Tab cycles inside it, Escape closes it and focus returns to the trigger; a hydration test asserts the teleported node exists exactly once.
+
+---
+
+Goal: Pair labels, inputs and error messages in a reusable field component without colliding ids.
+Wiring:
+const id = useId()                       // stable per component instance, SSR-consistent
+<label :for="id">{{ label }}</label>
+<input :id="id" :aria-describedby="error ? `${id}-error` : undefined" />
+<p v-if="error" :id="`${id}-error`" role="alert">{{ error }}</p>
+Why: a hard-coded `id="email"` breaks the moment two fields render on one page, and the failure is silent for everyone except a screen-reader user, which is exactly how it survives review. `useId` generates a stable identifier that matches between server render and hydration, so the pairing does not depend on render order or on a counter in a composable.
+Pitfall: a module-level counter for ids — it differs between server and client, so hydration warns and the `for`/`id` pair mismatches; or `aria-describedby` pointing at an element that only exists when there is an error, which is fine, provided the attribute is removed rather than left dangling.
+Verification: render two instances of the field in one test and assert distinct ids with matching `for`/`id` pairs; the SSR test asserts the hydrated markup is identical to the server markup.
+
+---
+
+Goal: Hold a large read-only payload in reactive state without paying deep reactivity for every row.
+Wiring:
+const rows = shallowRef<OrdersPage>(emptyPage())
+rows.value = await query.data              // replace the reference to trigger updates
+const totals = computed(() => rows.value.items.reduce((a, r) => a + r.total, 0))
+const frozen = markRaw(parseSheet(payload))   // never made reactive; nothing inside is tracked
+Why: `ref` walks and proxies objects so any nested mutation is tracked; when the payload is replaced wholesale and only the top level changes, that walk is pure cost on a 20,000-row page. `shallowRef` tracks the reference, `computed` derives what the template needs, and `markRaw` opts a parsed structure out of tracking entirely.
+Pitfall: mutating a field inside a `shallowRef` object and seeing no update, then "fixing" it with `triggerRef` everywhere; or `markRaw` on something that later needs to be reactive, which fails quietly rather than loudly.
+Verification: a render-count test asserts one re-render per fetch rather than per row, and the profiling numbers are recorded in the branch that made the change (the reactivity semantics themselves are the subject of 16's core kinds, and the cache side is 17).
+
+---
+
+Goal: Ship a composable that owns its watchers and cleans up after itself in any host component.
+Wiring:
+export function useOrderStream(id: MaybeRefOrGetter<string>) {
+    const scope = effectScope()
+    const events = ref<OrderEvent[]>([])
+    scope.run(() => {
+        watch(() => toValue(id), (v, old) => { if (old && v !== old) events.value = [] }, { immediate: true })
+        watchEffect(onCleanup => { const c = subscribe(toValue(id), e => events.value.push(e)); onCleanup(() => c.close()) })
+    })
+    onScopeDispose(() => scope.stop())
+    return { events: readonly(events) }
+}
+Why: an effect created outside a scope belongs to whichever component happened to call the composable, so an early `return` in that component or a call from a non-component context leaks a subscription. The scope makes ownership explicit, `onCleanup` handles per-run teardown, and `onScopeDispose` ties the scope's lifetime to the host's; the caller cannot forget to stop it because there is nothing to stop.
+Pitfall: returning a raw `ref` and letting consumers write to it; calling the composable in `setup` conditionally, so the scope sometimes exists and sometimes does not; putting the unsubscribe in `onUnmounted` inside the composable, which fires too late for a watcher that re-runs.
+Verification: a unit test mounts, unmounts and asserts the subscription closed exactly once, and a second test flips the id twice asserting old connections close before the new one opens.

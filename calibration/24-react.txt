@@ -275,3 +275,44 @@ Snippet: const useCart = create<Cart>((set) => ({ lines: [], add: (l) => set((s)
 Vue parallel: Pinia store with the same selector discipline (storeToRefs for the consumed slice only).
 Translator pitfall: subscribing whole components to the whole store, rerendering the catalog on every cart keystroke.
 Check: selective-subscription review (consumed slice named per component); whole-store subscriptions on hot paths fail review.
+
+---
+
+Concept: A ref to a DOM node is a nullable box, and React's type says so; Vue's `ref<T>` hides the nullability behind `.value` and the template.
+Snippet:
+const inputRef = useRef<HTMLInputElement>(null)
+useEffect(() => { inputRef.current?.focus() }, [])
+function selectAll() {
+    const el = inputRef.current
+    if (!el) return                 // the node is not mounted yet, or is gone
+    el.select()
+}
+Vue parallel: `const input = ref<HTMLInputElement | null>(null)` with `<input ref="input">`, where the template fills it and the compiler does not check the pairing between the string name and the variable — a typo yields a silently null ref in Vue, and a type error in React when the prop or callback is typed.
+Translator pitfall: writing `inputRef.current!.focus()` in an effect that runs after a conditional render, which makes the assertion a lie and the crash appear somewhere else; or in the other direction, assuming Vue checks `ref="eml"` against `input`, which it does not.
+Check: `strictNullChecks` is on and no `current!` survives review; a test unmounts the component and calls the handler through a held reference to prove the null path is handled, and the Vue counterpart asserts the template ref name matches the variable in the same file.
+
+---
+
+Concept: React 19's form hooks give an optimistic pending state without a mutation library; Vue's answer to the same problem is still `useMutation`, because Vue has no action-to-transition binding.
+Snippet:
+const [state, submit, isPending] = useActionState(async (prev, formData: FormData) => {
+    const r = await updateAddress(Object.fromEntries(formData))
+    return r.ok ? { kind: 'saved' as const } : { kind: 'error' as const, message: r.message }
+}, { kind: 'idle' })
+const [optimistic, setOptimistic] = useOptimistic(address, (s, next: Address) => ({ ...s, ...next }))
+<form action={async (fd) => { startTransition(() => setOptimistic(parse(fd))); await submit(fd) }}>
+Vue parallel: `const { mutate, isPending, error } = useMutation({ mutationFn: saveAddress, onMutate, onSuccess, onError, onSettled })` (17), with the optimistic write and rollback written explicitly in the handlers; Vue's `useId()` supplies the label pairing that React's `useId()` also covers.
+Translator pitfall: porting a TanStack `useMutation` and keeping both the mutation and `useActionState`, so two pending states race and the spinner flickers; or trusting `isPending` as proof of success — it says a transition ended, and the result still has to be branched on, which is the same rule as `mutateAsync` rejection handling in 17.
+Check: a slow-network test asserts the optimistic address renders before the response and reverts to the previous value on failure, with the error message surfaced; the same scenario is asserted in the Vue port so the two implementations are held to one contract.
+
+---
+
+Concept: Reading a promise in render moves the boundary from a hook into the tree; Vue expresses the same intent with `Suspense` around an async `setup`, and neither removes the need for the cache underneath.
+Snippet:
+const order = use(fetchOrderCached(id))            // cached promise, not a fresh one per render
+<Suspense fallback={<OrderSkeleton />}>
+  <OrderPanel order={order} />
+</Suspense>
+Vue parallel: `<Suspense>` with an async `setup()` that awaits the same query client call, or `useQuery` plus `v-if="isPending"` — the Vue side gets no automatic fallback-on-promise, so the pending state is written per component unless a query wrapper owns it.
+Translator pitfall: `use(fetch(url))` inline, which creates a new promise on every render, so the fallback shows on every keystroke; the equivalent Vue mistake is awaiting a fresh call inside `setup` instead of reading the shared query cache (17), which defeats deduplication and makes a remount a network round trip.
+Check: The cache under `use()` is asserted, not assumed — a test with a component that re-renders ten times asserts one request; a remount test asserts the cached result renders immediately while a background refetch runs, on both frameworks.

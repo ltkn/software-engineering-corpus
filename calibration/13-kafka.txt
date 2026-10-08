@@ -350,3 +350,69 @@ Symptom: The broker refuses to start with "zookeeper.connect is not a recognized
 Legacy: Handover settings with a classic rebalancer while claiming exactly-once for cross-partition transactions.
 Replacement: the new consumer group protocol (`group.protocol=consumer`) and a unique `transactional.id` per producer instance.
 Symptom: Rebalance storms on every `max.poll.interval.ms` expiration, plus periodic `ProducerFencedException` once a second producer joins with the same id.
+
+---
+
+Goal: Stop a consumer without losing in-flight work or triggering a rebalance storm during a rolling deploy.
+Wiring:
+props.put(ConsumerConfig.MAX_POLL_RECORDS, 50);
+props.put(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG, 25000);
+props.put(ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG, 300000);
+Runtime.getRuntime().addShutdownHook(new Thread(() -> { draining.set(false); consumer.wakeup(); }));
+// loop: poll -> process -> commit; on WakeupException, finish the current batch, commit, then close
+Why: `close()` is what leaves the group cleanly; a killed process instead waits out the session timeout, and every peer pays a rebalance. `wakeup()` is the only safe interruption for a blocked `poll`, and `max.poll.interval.ms` must exceed the real worst-case batch time or the broker evicts a consumer that is merely busy, not stuck. Committing after the batch and before the close is what turns "at-least-once" into "at-least-once with a small, boring overlap".
+Misconfiguration: calling `close()` from another thread while the poll loop is blocked, or processing 500 messages per poll with a 5-minute dependency and the default 5-minute interval, which reads as a poison message until the batch size drops.
+Verification: during a rolling restart the group's lag returns to baseline within one batch and rebalance count per deploy is at the expected ceiling; a test asserts no message is dropped and the duplicate window is bounded by the commit interval.
+
+---
+
+Goal: Choose a subject naming strategy that lets a domain evolve without breaking every consumer.
+Wiring:
+kafka.transforms.unsafe.start=false
+key.subject.name.strategy=io.confluent.kafka.serializers.subject.TopicRecordNameStrategy
+value.subject.name.strategy=io.confluent.kafka.serializers.subject.TopicRecordNameStrategy
+compatibility.level=BACKWARD_TRANSITIVE
+Why: `TopicNameStrategy` (one schema per topic) is the default and the right first answer, because it keeps the topic's contract singular. `TopicRecordNameStrategy` lets several record types share a topic, which fits an event topic that genuinely carries a family of events — and it shifts compatibility from "one evolving contract" to "N contracts", where a new record type is additive for the registry and yet a breaking change for every consumer that assumed a single shape.
+Misconfiguration: switching strategies mid-life on a topic with history — the old subjects stay under the old names, compatibility checks stop covering what producers actually publish, and the registry reports green while consumers break.
+Verification: registry tooling asserts every published subject for the topic resolves to a schema under the intended strategy; a consumer test replays the full history of the topic against the current reader, not only the newest version.
+
+---
+
+Goal: Make authorization, quota and audit all answerable from the principal, not from a network position.
+Wiring:
+security.protocol=SASL_SSL
+sasl.mechanism=OAUTHBEARER
+sasl.oauthbearer.assertion.algorithm=RS256
+producer.prefix.order=orders-service            # client.id per owning service
+allow.everyone.if.no.acl.found=false            # read the current default in the 4.3 reference before trusting it
+--add-principal-binding, then: kafka-acls --add --allow-principal User:orders-service --operation Read --topic orders.events
+Why: a per-service principal makes an ACL map reviewable and makes an incident answerable — who read this topic, from which client id, at what offset. `client.id` is a debugging label and is attacker-settable in a permissive cluster, so it complements the principal; it does not replace it. Leaving the no-ACL default permissive turns an exposed listener into an open fire hydrant (the exploitation of exactly that posture is 31).
+Misconfiguration: one shared service account for every producer, so a revoked credential is a fleet-wide outage; DLQ topics left out of the ACL plan, so a dead-letter path fails on the way to being useful; schema registry left unauthenticated next to an authorized broker.
+Verification: a config-parse test asserts every listener maps to a security protocol and that the authorizer is configured; a probe with a wrong principal gets an authorization error rather than a timeout, and the DLQ ACLs mirror the source topics.
+
+---
+
+Goal: Retry a producer without reordering a key's messages or paying for a stall you did not choose.
+Wiring:
+enable.idempotence=true                # default on since 3.0; keeps it explicit here
+acks=all
+retries=Integer.MAX_VALUE
+retry.backoff.ms=100
+request.timeout.ms=30000
+delivery.timeout.ms=120000
+max.in.flight.requests.per.connection=5
+Why: with idempotence enabled, up to five in-flight requests per connection keep throughput while per-partition ordering survives retries, because the broker deduplicates by sequence number. `delivery.timeout.ms` bounds the whole attempt window — it must be at least `request.timeout.ms` plus the remaining retries — and it is the number that decides how long a producer stalls when a partition leader dies.
+Misconfiguration: turning idempotence off "to debug", which silently drops the ordering guarantee that the consumer's idempotent upsert was relying on; or setting `delivery.timeout.ms` below `linger.ms` plus one request timeout, which produces `TimeoutException` on records that were never sent.
+Verification: a test kills the partition leader mid-burst and asserts per-key order survives and no duplicates appear in the sink; the timeout budget is asserted by a unit test on the config, not discovered under load.
+
+---
+
+Goal: Let a share-group consumer hold a record for minutes of processing without the delivery expiring into someone else's hands.
+Wiring:
+group.protocol=share
+share.acknowledgement.mode=pick
+// per record: ack ACCEPT after commit, RELEASE on a transient dependency failure, REJECT for a permanent one
+// for long work: renew the delivery lease while processing continues
+Why: in a share group the broker tracks delivery state and hands the record to another member when its session lapses, so long work has to say so explicitly — a renewal keeps the record, an acknowledgement ends it. `pick` mode puts the choice per record, which is what a pipeline with mixed outcomes needs; `implied` commits on poll and does not fit that shape.
+Misconfiguration: renewing by polling more while holding a batch whose lease was never extended, so the record is redelivered mid-processing and the sink sees a second copy after the first already succeeded — which is a duplicate, not a redelivery, the moment the first attempt has committed.
+Verification: a drill where one record's processing exceeds the lease asserts either a successful renewal or a single deliberate redelivery, and the sink's idempotent upsert makes the overlap harmless (the ordering guarantee itself stays per key, as with any other group).
