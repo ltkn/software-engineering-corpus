@@ -535,3 +535,28 @@ In AppLayout: const publicPage = route.meta.public === true; const me = useMe({ 
 Why: the shell gate waits on GET /admin/me, but the signed-out page itself is public, so fetching me there would redirect away from the page that explains the redirect. Disabling the query on public routes removes the double-sign-in race without a second guard.
 Misconfiguration: always-enabled me that fires on the signed-out page and bounces before the message renders; or a manual fetch flag outside the query that desyncs from the router.
 Verification: a test opening /signed-out asserting zero calls to /admin/me, plus a test opening /apps asserting exactly one.
+
+---
+
+Goal: After logout, the next user sees the previous user's data — and it is not a caching bug in the library.
+Wiring:
+const orderKeys = ['orders', tenantId, { status, cursor }] as const
+// at sign-out:
+await queryClient.clear()                        // every cache entry dies with the session
+// at sign-in, assert the shape of what you wrote:
+queryClient.getQueryCache().getAll().forEach(q => console.log(JSON.stringify(q.queryKey)))
+Why: the diagnosis is a key inspection, not a `staleTime` debate, and the four candidate causes are separable in one minute: the key is missing the tenant or user segment (dump the keys — this is the answer most of the time); the cache outlives the session because nothing clears it (`gcTime` bounds memory, not identity, and is not the control here); a mutation's optimistic write put a foreign object under a correct key (the same dump shows it); or one component builds its key at the call site instead of through the factory, so two users share a slot that only *looks* tenant-scoped. Each has a different fix and the dump distinguishes them without guessing.
+Pitfall: turning caching off "until we understand it", which fixes the leak and costs the refetch behaviour the app depends on, and then never turning it back on — a correctness fix that becomes an outage cause six months later under a load nobody re-measured.
+Verification: a test signs in as user A, then user B, and asserts B's first render contains no A-scoped data while the cache dump contains no key without a tenant segment; the key factory is the only place keys are constructed, enforced by lint or review, and `clear()` on sign-out is asserted rather than trusted.
+
+---
+
+Goal: A refetch storm every time the window regains focus, worse inside an embedded iframe.
+Wiring:
+const qc = new QueryClient({
+    defaultOptions: { queries: { staleTime: 30_000, refetchOnWindowFocus: !window.top !== window }, retry: 2 },
+})
+const { data } = useQuery({ ...orderListOptions(tenant), select: page => page.items.map(toRow) })
+Why: the storm has three independent causes and the network waterfall separates them. (1) `refetchOnWindowFocus` with `staleTime: 0` means every data is stale on every focus, which is correct for a laptop and pathological for an app embedded in a host that steals focus constantly — so the flag is conditioned on the embedding, not disabled globally. (2) Retry amplification: a failing endpoint with default retries turns ten components into thirty requests per focus event, visible as a burst with identical URLs and exponential spacing. (3) The one that is not a request problem at all: a `select` returning a fresh array on every call, which re-renders consumers whenever the cache settles, so the *renders* storm and someone reaches for a network setting to fix a render problem. The waterfall tells you which storm you are in before you change anything.
+Pitfall: setting `staleTime: Infinity` globally to stop the noise, which converts a focus storm into "the app shows yesterday's numbers", the failure mode users report as a data bug rather than a performance one.
+Verification: a test with a fake clock and a focus event asserts zero requests within `staleTime` and exactly one after it; a failing-endpoint test asserts the request count is bounded by `retry × mounted queries`; a render-count test asserts one render per cache update with `select` in place (the derivation semantics are this file's, the invalidation discipline is the key factory's).
