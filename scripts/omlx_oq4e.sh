@@ -24,6 +24,8 @@
 #   OQ_LEVEL    oQ base level, default 4 (oQ4e). scripts/omlx_oq5e.sh sets 5.
 #   OQ_SAMPLES  imatrix samples, default 128
 #   OQ_SEQLEN   imatrix sequence length, default 512
+#   PRESERVE_MTP  keep the native MTP draft head (Lightning MTP), default 1.
+#               Set to 0 for MTP-free outputs (reproduces pre-MTP runs).
 #
 # Examples:
 #   scripts/omlx_oq4e.sh se2
@@ -53,6 +55,8 @@ NGRAM_BITS="${NGRAM_BITS:-8}"
 OQ_LEVEL="${OQ_LEVEL:-4}"
 OQ_SAMPLES="${OQ_SAMPLES:-128}"
 OQ_SEQLEN="${OQ_SEQLEN:-512}"
+PRESERVE_MTP="${PRESERVE_MTP:-1}"
+if [ "$PRESERVE_MTP" = "1" ]; then MTP_PY=True; else MTP_PY=False; fi
 
 if [ -z "$SRC" ]; then
     # Default: orcarouter uncensored Flash-Next snapshot (single snapshot dir).
@@ -101,6 +105,7 @@ quantize_oq_streaming(
     model_path="$SRC",
     output_path="$OUT",
     oq_level=$OQ_LEVEL, enhanced=True,
+    preserve_mtp=$MTP_PY,
     calib_dataset="$BUNDLE",
     sensitivity_calib_dataset="$BUNDLE",
     ngram_bits=$NGRAM_BITS,
