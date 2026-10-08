@@ -290,6 +290,8 @@ Wiring:
 container_cpu_cfs_throttled_periods_total, container_cpu_cfs_throttled_seconds_total   # per container
 resources: { requests: { cpu: "750m", memory: "1Gi" }, limits: { memory: "1Gi" } }     # cpu limit omitted where policy allows
 Reading: a CPU limit is a quota per CFS period; a process that spends it early is throttled until the period rolls over, so utilisation averages low while latency shows a sawtooth at the period boundary. Requests decide scheduling, limits decide throttling, and a runtime that sizes its thread pool from visible CPUs plans for CPUs it never gets.
+`kubectl top pod orders-api-7d9 → 712m  904Mi` sitting next to `kubectl get pod orders-api-7d9 -o jsonpath='{.spec.containers[0].resources}{"\n"}' → {"limits":{"cpu":"1","memory":"1Gi"},"requests":{"cpu":"1","memory":"1Gi"}}`
+`container_cpu_cfs_throttled_periods_total{pod="orders-api-7d9"} 118421`, rising about 166 periods a second at the default 100 ms period — throttled for roughly a sixth of every second while utilisation reads 71% and the dashboard calls the pod healthy.
 Misconfiguration: requests copied from a placeholder, which makes every autoscaling ratio fiction; memory left unlimited, so a leak evicts the pod instead of being noticed; "utilisation is 20%" read as exonerating evidence.
 Verification: throttled periods per second near zero under the same load, p99 flat across a period boundary, and the OOMKill counter silent through a load test.
 
@@ -304,6 +306,10 @@ minReadySeconds: 15; strategy: { maxSurge: 1, maxUnavailable: 0 }
 lifecycle.preStop.exec.command: ["/bin/sh","-c","sleep 5"]
 Why: readiness gates traffic and must reflect the dependencies a request needs; liveness asks only whether the process is wedged; the startup probe keeps a slow warm-up from racing the readiness period. Endpoint removal and SIGTERM are independent, so the preStop sleep covers the window where a terminating pod is still receiving connections — which is where the 502s live.
 Misconfiguration: readiness probing the whole dependency graph, so a cache outage stops all traffic cluster-wide; liveness on the same endpoint as readiness, so a saturated pod is killed and restarted instead of merely taken out of rotation; `:latest` images, which make the previous revision meaningless.
+`$ kubectl get events -n prod --field-selector reason=Unhealthy | head -2`
+`LAST SEEN   TYPE      REASON      OBJECT                       MESSAGE`
+`3m12s       Warning   Unhealthy   pod/orders-api-7d9-2k4ln     Readiness probe failed: HTTP probe failed with statuscode: 503`
+Fifty-three of those in a minute, with liveness silent, is the shape of a dependency outage being converted into a traffic outage by one probe definition.
 Verification: pod deletion under load yields zero 5xx; a test with the cache dependency down shows readiness failing while liveness holds; a slow-starting container passes via the startup probe rather than by guessing an `initialDelaySeconds`.
 
 ---
@@ -339,5 +345,7 @@ kubectl apply --server-side --field-manager=pipeline -f deploy/
 kubectl rollout history deploy/orders-api; kubectl rollout undo deploy/orders-api --to-revision=7
 serviceAccountName: orders-api; automountServiceAccountToken: false
 Why: a rollback only means something if the previous revision still refers to the previous image, which `:latest` plus `IfNotPresent` or `Always` destroys; `--atomic` rolls back on a failed upgrade so a half-applied release does not sit in production; server-side apply removes the client-side merge conflicts that surface during the incident. The service account token is mounted only when something reads the API, because an unneeded token is an credential in a pod that can be read.
+`helm upgrade --atomic --timeout 5m orders-api ./chart --wait` ends `STATUS: deployed  REVISION: 43` on the good path and `STATUS: failed  … deployment "orders-api" exceeded its progress deadline` followed by `Rollback was successful` on the bad one — those two lines are the entire value of `--atomic`.
+`kubectl rollout history deploy/orders-api` then prints `REVISION  CHANGE-CAUSE` with `43  2026.10.07-142-a3f9c1d`, and the CHANGE-CAUSE being an immutable tag is the only reason `--to-revision=42` means what the on-call thinks it means.
 Misconfiguration: secrets referenced without declaring whether they are optional, so a missing one appears as a crash loop on first traffic; rollback performed by re-running the pipeline, which re-resolves `:latest` and redeploys the broken build with a green check; no recorded revision, so "the last good one" is a guess.
 Verification: a drill deploys a deliberately broken image and the automatic rollback fires with an alert; a second drill rehearses a manual undo to a named revision under a time budget; the deploy record names the revision, the tag and the diff.

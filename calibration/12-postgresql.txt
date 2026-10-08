@@ -95,6 +95,7 @@ CREATE INDEX users_timeline_cover ON users (tenant_id, created_at, id) INCLUDE (
 Reading: INCLUDE carries email in the leaf without widening the key; visibility-map freshness decides whether heap fetches vanish.
 Pitfall: covering everything (INCLUDE *) bloating the index past the table it accelerates.
 Verification: EXPLAIN shows Index Only Scan with heap fetches near zero after VACUUM; size comparison recorded.
+`EXPLAIN (ANALYZE, BUFFERS, SETTINGS)` is the invocation that shows all of it; `EXPLAIN ANALYZE` alone hides the buffer and setting deltas that make the plan explicable.
 
 ---
 
@@ -551,9 +552,15 @@ CREATE INDEX idx_orders_tenant_created ON orders (tenant_id, created_at) INCLUDE
 EXPLAIN (ANALYZE, BUFFERS)
 SELECT status, total FROM orders WHERE tenant_id = $1 AND created_at > now() - interval '7 days';
 Reading: an index-only scan answers from the index but must confirm visibility from the visibility map, so a page that has been modified since the last vacuum is fetched from the heap anyway. The plan flips from "Index Only Scan" to "Index Scan" with heap fetches climbing in EXPLAIN BUFFERS, and the shape of the query has not changed at all — only the update pattern has.
+Index Only Scan using idx_orders_tenant_created on orders  (cost=0.42..88.4 rows=184) (actual time=0.081..2.11 rows=184 loops=1)
+  Index Cond: ((tenant_id = '9b1...'::uuid) AND (created_at > (now() - '7 days'::interval)))
+  Heap Fetches: 21433
+Buffers: shared hit=1982 read=14412
+The query did not change; `Heap Fetches` did. After a tuned autovacuum run on that table range the same plan reports `Heap Fetches: 0` and the `read=` count collapses to hits.
 Pitfall: treating the plan change as a planner regression and adding another index, when the actual signal is dead-tuple accumulation on a hot page range and autovacuum is not keeping up; covering the index made the win possible and made the dependency on vacuum visible.
 Verification: heap-fetches in the plan output near zero after tuning autovacuum for the table, latency restored with no new index, and a monitoring assertion on dead-tuple ratio per hot table rather than on database size alone (the failure-transcript version of this loop is 02).
 
+`ALTER TABLE orders SET (autovacuum_vacuum_scale_factor = 0.02, autovacuum_vacuum_cost_limit = 2000);` — the fix is a per-table storage parameter, not a new index, and the before/after `Heap Fetches` count is the evidence that it worked.
 ---
 
 Task: Read a balance and its ledger rows in one request without seeing a half-applied transfer.
@@ -589,3 +596,6 @@ WHERE room_id = $1 AND id = $2;
 Reading: `WITHOUT OVERLAPS` on the period keeps the schedule consistent at the storage layer, and `WITH PERIOD` tells the update which slice of the row's validity it is rewriting, so the database splits the row rather than the application inserting an "amendment" row and hoping readers do the arithmetic.
 Pitfall: modelling validity as two nullable timestamps maintained by triggers, then reconciling overlaps in a nightly job — the constraint becomes a report, and the report has exceptions in it by design.
 Verification: a test attempting an overlapping booking gets a constraint violation, and the period update leaves the unaffected segments byte-identical; the version-gated note applies: this is 18 syntax, checked against the target release before it is relied on (17 and earlier fall back to an exclusion constraint with `tstzrange`).
+`ERROR:  conflicting key value violates exclusion constraint "rooms_book_room_id_booking_period_excl"`
+`DETAIL:  Key (room_id, booking_period)=(7, [2026-10-12, 2026-10-14)) conflicts with existing key (room_id, booking_period)=(7, [2026-10-13, 2026-10-15)).`
+Read the constraint name out of the error and the application's error mapping has something honest to say to the front desk; paraphrasing it into "invalid dates" is how a double booking becomes a support ticket.

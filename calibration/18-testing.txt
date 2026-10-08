@@ -281,6 +281,7 @@ Why this technique: an agent-produced suite is good at asserting what the code d
 Anti-pattern: a repo-wide mutation run in the pipeline, which takes hours and gets disabled; or reporting mutation score as a target number, which is immediately gamed by assertions that kill mutants and test nothing.
 Verification: mutation score is reported per package in a nightly job with a floor for security-relevant packages only, and the surviving mutants are triaged as test gaps or as equivalent code, in writing, not in someone's head.
 
+`mutation score: 0.71 (43/61 killed) — survivors: OrderService.java:88 (return true), CouponPolicy.java:141 (> instead of >=)` — the survivors are the ticket list, and the second one is why the cap test is worth writing first.
 ---
 
 What to test: the invariants that hold for every input, on the seam where the whole data path meets.
@@ -297,6 +298,7 @@ Why this discipline: flake is nearly always an unowned shared resource: a fixed 
 Anti-pattern: `@Retry` on the flaky test — it converts a signal into a coin flip with extra steps — and quarantine without an expiry, which is where flakes go to be permanently invisible.
 Verification: quarantine entries carry an owner, an expiry of two sprints and the reproduction command; a CI check fails when an expired quarantine is still in the file, and the re-run-to-confirm count is reported per test so "fixed" means fifty green consecutive runs, not one.
 
+`Quarantine: PaymentRetryTest — owner payments-team, expires 2026-11-03, repro: ./gradlew test --tests PaymentRetryTest --tests PaymentRetryTest --tests PaymentRetryTest --repeat 20 --seed 4417` — a quarantine without a repro command is a way of not looking at the test.
 ---
 
 What to test: whether the system meets its SLOs under a load shape that resembles a real day, with the pass bar written before the run.

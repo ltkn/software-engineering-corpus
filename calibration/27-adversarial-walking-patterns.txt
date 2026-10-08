@@ -25,6 +25,7 @@ Fixture: tenant policies bound to a session variable, a `SECURITY DEFINER` helpe
 How it fails: the helper runs as a different role and resolves an unqualified helper name through the caller's path, and the app connects as the table owner — so a cross-tenant row satisfies the policy window and the owner path bypasses the policy entirely.
 Pass bar: policy coverage is stage-monotonic, every tenant table forces row security, the definer pins `search_path`, and a cross-tenant probe returns zero rows on a direct connection.
 Failing evidence: with all roles collapsed to the app's own credentials, a fixture-tenant probe still returns rows.
+`psql -U app_owner -c 'select count(*) from orders' → 412893` where the same query as `app_runtime` returns 9812 — the owner role sails past a policy that never bound it, and every test that connected as the owner agreed that the control worked.
 Impact: cross-tenant reads that everyone can prove RLS stops appear nowhere in the application log, because from the database's point of view nothing was violated.
 Remediation pointer: tenant metadata in the session, never passed across a schema boundary; `FORCE ROW LEVEL SECURITY` on every tenant table; app role is neither owner nor bypass-capable (12 kind 6; invariant in 06).
 Regression test: a migration-suite test asserts `relforcerowsecurity` per tenant table and asserts the app role's attributes, plus a per-role cross-tenant probe.
@@ -102,6 +103,7 @@ Fixture: a workflow that runs `mvn verify` on `pull_request_target`, awaits a gr
 How it fails: the fork controls the tree the job executes, so a symlinked `.env` at the expected path, or one line in the build script, reads a credential that was never intended for fork code, and the job log is a channel with no egress control at all.
 Pass bar: no secret reaches any step that runs fork-authored code; production deploys sit behind an environment gate with approvers, and the fork job runs with `contents: read` only.
 Failing evidence: a fork PR's run log shows a mangled echo of a token, or the workflow's resolved permissions are broader than the job's need.
+`Run actions/checkout@v4 — with token: ***` followed by `curl -s -H "Authorization: Bearer $GITHUB_TOKEN" https://api.test/repos/acme/orders/secrets | jq '.secrets | length' → 17` — the mask in the log is the only thing that made it look safe.
 Impact: a pull request turns a private credential into public information, and the exposure is only interesting to the person who reads the log afterwards.
 Remediation pointer: fork PRs build without secrets, actions pinned by SHA, `persist-credentials: false`, workflow lint in CI, environment protection on production (21 kind 4, 09 kind 4, and the exploit shape is 31).
 Regression test: workflow static analysis fails on `pull_request_target` with secrets in scope and no environment gate, and a fixture fork PR asserts no secret-shaped value appears in its log.

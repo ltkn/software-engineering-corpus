@@ -371,6 +371,7 @@ Why it stays: the compiler checks both directions — an unparseable path is a t
 Counter-form: a `Record<string, Handler>` map plus a runtime regex, where a typo is a 404 in staging rather than an error at compile time.
 Verification: a type-level assertion test asserts `Parse<"/orders/a/lines/b">` is the line shape and that `route("/orders/")` errors; it runs in CI next to `tsc7 --noEmit`, so the assertions are enforced rather than decorative.
 
+`src/api/routes.ts:41:18 - error TS2345: Argument of type '"/orders/"' is not assignable to parameter of type 'Route'.` — the trailing slash is the whole message, and it arrives at compile time in the file that owns it.
 ---
 
 Goal: Keep a callback-heavy public API's variance honest instead of discovered by a downstream build.
@@ -428,3 +429,5 @@ Why: a type-level assertion runs in the type-check, so "this refactor changed th
 Why it stays: the assertions live next to the code they describe and travel with it, unlike a wiki page of expected signatures.
 Counter-form: casting the result at the call site to make a check pass, which deletes the very signal the test was asserting; or a test file of `// @ts-expect-error` lines with no assertion of *which* error is expected.
 Verification: `tsc6 --noEmit && tsc7 --noEmit` in CI over the assertion file, and the file fails when a deliberate type break is introduced locally (the red-green habit shared with 18 and 05).
+
+`expect-type: expected 'MaybeRef<OrdersPage | undefined>' to equal 'MaybeRef<OrdersPage>'` — a v5 reactivity-wrapped type named in the diff, which is how a query-library upgrade gets noticed before the runtime does.

@@ -62,6 +62,7 @@ Investigation: Read controller (serializes lines), repository (findByTenantId, n
 Plan: 1. Add fetch-join repository method. 2. Swap the call site. 3. Assert query count in test.
 Decisions: Fetch join over EntityGraph because the query is hand-written JPQL already; pagination stays keyset on the order table, lines joined only for the page's ids to avoid cartesian multiplication.
 Verification: Query count 51 to 2; Hibernate statistics assertion added to the integration test so regressions fail loudly.
+The output that closes the task: `OrderQueryTest > fetches one page in bounded queries FAILED: expected 2 queries, got 43 (order_lines: 40)` — the count is in the assertion, so the regression cannot come back silently.
 Outcome: p95 1.8s to 210ms; contract byte-identical.
 
 ---
