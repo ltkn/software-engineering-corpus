@@ -355,3 +355,348 @@ snippet:
 // CI: tsc --build --force   // 7.x uses parallel checking automatically
 counter form: one tsconfig at the root that imports everything; a single package change triggers a full-tree check.
 verification: Type-check wall-clock drops and only the changed project's .tsbuildinfo is rewritten; single-threaded mode available via the experimental flag for debugging.
+
+---
+
+Goal: Make route and event strings checked rather than remembered, without losing inference at the call sites.
+Wiring:
+type Route = `/orders/${string}` | `/orders/${string}/lines/${string}` | "/healthz";
+type Parse<S extends Route> = S extends `/orders/${infer Id}/lines/${infer Line}`
+    ? { kind: "line"; orderId: Id; lineId: Line }
+    : S extends `/orders/${infer Id}` ? { kind: "order"; orderId: Id } : { kind: "root" };
+declare function route<const S extends Route>(s: S): Parse<S>;
+const r = route("/orders/ord_41/lines/ln_7");     // { kind: "line"; orderId: "ord_41"; lineId: "ln_7" }
+Why: template-literal types turn a stringly-typed surface into a grammar, and `const` type parameters keep the literal type at the call site instead of widening to `string` — without it, the inference returns the union and the whole exercise silently degrades to `string`.
+Why it stays: the compiler checks both directions — an unparseable path is a type error, and the handler's parameter type follows the path.
+Counter-form: a `Record<string, Handler>` map plus a runtime regex, where a typo is a 404 in staging rather than an error at compile time.
+Verification: a type-level assertion test asserts `Parse<"/orders/a/lines/b">` is the line shape and that `route("/orders/")` errors; it runs in CI next to `tsc7 --noEmit`, so the assertions are enforced rather than decorative.
+
+`src/api/routes.ts:41:18 - error TS2345: Argument of type '"/orders/"' is not assignable to parameter of type 'Route'.` — the trailing slash is the whole message, and it arrives at compile time in the file that owns it.
+---
+
+Goal: Keep a callback-heavy public API's variance honest instead of discovered by a downstream build.
+Wiring:
+interface Handler<in T> { handle(event: T): void }
+interface Source<out T> { read(): T }
+declare function pipe<A, out B>(s: Source<A>, h: Handler<in A>, map: (a: A) => B): Source<B>;
+Why: variance annotations state the intended subtyping and make the compiler enforce it, so a `Handler<SuperEvent>` is assignable where `Handler<SubEvent>` is expected for the right reason and a wrongly-varied parameter is an error at the declaration rather than in a consumer's build three repos away. Function parameters are contravariant and results covariant whether or not the annotation is written; writing it down is what stops a refactor flipping it unnoticed.
+Why it stays: the annotation is checked, so `out T` on a type that also writes `T` fails to compile instead of lying.
+Counter-form: `any` in a callback position, which is bivariant enough to accept everything and therefore catches nothing; or a generic parameter that appears only in parameter position but is annotated `out` because it read like a result.
+Verification: the published package's declaration files are compiled by a fixture consumer project on both compilers, and the build fails if a widening assignment that should be an error is accepted.
+
+---
+
+Goal: Give a config object a type that is both checked and readable when someone gets it wrong.
+Wiring:
+type Depth = [never, 0, 1, 2, 3];
+type Validated<T, D extends 0 | 1 | 2 | 3 = 3> =
+    D extends 0 ? { error: "recursion-too-deep" }
+  : T extends readonly unknown[] ? { [K in keyof T]: Validated<T[K], Depth[D]> }
+  : T extends object ? { [K in keyof T]: Validated<T[K], Depth[D]> }
+  : T;
+interface FeatureFlags extends Validated<typeof flagsSchema> {}
+const flags = { payments: { retries: { enabled: true, max: 3 } } } satisfies Validated<typeof flagsSchema>;
+Why: the depth parameter keeps a recursive mapped type from exhausting the instantiation depth, which is the difference between a type that models the shape and a type that makes the compiler time out and report something unrelated. `satisfies` keeps the literal inference (so `max` stays `3`, not `number`) while still checking the shape — an annotation would erase exactly the precision that makes the flags usable downstream.
+Why it stays: error text names the offending key because the mapped type mirrors the shape, so a mistake reads as `payments.retries.max` rather than as a wall of unresolved generics.
+Counter-form: a JSON-schema-in-a-generic stack that is technically complete and unmaintainable, or `as const` everywhere, which checks nothing.
+Verification: a type test asserts the literal types survive (`Expect<Equal<typeof flags.payments.retries.max, 3>>`) and that a wrong leaf type produces an error mentioning its path.
+
+---
+
+Goal: Publish a typed API client whose types cannot drift from its runtime shape.
+Wiring:
+// src/types/api.ts            generated from the OpenAPI document, never hand-edited
+// src/augment.ts
+declare module "./client" {
+    interface RequestOptions { signal?: AbortSignal; idempotencyKey?: string }
+}
+export {};
+Why: declaration merging on the interface lets the local project add an option without forking the generated file, which is the difference between "regenerate on every schema change" and "we stopped regenerating in March". The generated surface is the drift detector: `d.ts` output is checked in and diffed in CI, so a change to the schema shows up as a reviewable type diff instead of a runtime surprise.
+Why it stays: augmentations live in one file with a comment naming the upstream field they wrap, so the next regeneration has a map of what was touched.
+Counter-form: re-declaring the response types by hand next to the generated ones, so the project has two truths and the one people read is the wrong one; or `any` in the generated types because the generator met a `oneOf` it disliked.
+Verification: a CI step regenerates, diffs the declaration output, and fails on an unreviewed difference; a response-shape test asserts the runtime payload matches the generated type (shared with 14).
+
+---
+
+Goal: Make the type system's verdict part of the test suite rather than a local editor impression.
+Wiring:
+import { expectTypeOf } from "expect-type";
+const q = useOrders({ tenantId });                     // vue-query v5
+expectTypeOf(q.data).toEqualTypeOf<MaybeRef<OrdersPage | undefined>>();
+expectTypeOf(q.error).toEqualTypeOf<MaybeRef<ApiError | DefaultError>>();
+expectTypeOf(q).not.toHaveProperty("cacheTime");       // v4 name is gone (17)
+Why: a type-level assertion runs in the type-check, so "this refactor changed the public type" fails a build instead of surfacing in a code review comment; `not.toHaveProperty` also pins the removals, which is how a migration quietly un-happens.
+Why it stays: the assertions live next to the code they describe and travel with it, unlike a wiki page of expected signatures.
+Counter-form: casting the result at the call site to make a check pass, which deletes the very signal the test was asserting; or a test file of `// @ts-expect-error` lines with no assertion of *which* error is expected.
+Verification: `tsc6 --noEmit && tsc7 --noEmit` in CI over the assertion file, and the file fails when a deliberate type break is introduced locally (the red-green habit shared with 18 and 05).
+
+`expect-type: expected 'MaybeRef<OrdersPage | undefined>' to equal 'MaybeRef<OrdersPage>'` — a v5 reactivity-wrapped type named in the diff, which is how a query-library upgrade gets noticed before the runtime does.
+
+---
+
+Goal: Type backend refusals once, at the edge, and never parse them again at call sites.
+Snippet (erasable-only, both compilers):
+import type { ProblemDetail, FieldError } from './types';
+export class ApiError extends Error {
+  readonly status: number;
+  readonly problem?: ProblemDetail;
+  constructor(status: number, problem?: ProblemDetail) {
+    super(problem?.detail ?? `Request failed (${status})`);
+    this.status = status;
+    this.problem = problem;
+    this.name = 'ApiError';
+  }
+}
+export interface ProblemDetail {
+  type?: string;
+  title?: string;
+  status?: number;
+  detail?: string;
+  errors?: FieldError[];
+  [key: string]: unknown;
+}
+Why: the class carries the HTTP fact (status) plus the optional domain fact (problem) without a second throw shape, so callers narrow with instanceof exactly once. The index signature keeps forward compatibility when the server adds a field, while the known fields stay typed.
+Counter-form: throwing Response or unknown and parsing res.json at every call site, where half the sites forget the Content-Type check and read a proxy HTML page as a problem; or an enum of kinds that must be edited for every new backend slug.
+Verification: tsc6 --noEmit and tsc7 --noEmit clean on the file, plus a unit test asserting a 429 text/plain body yields ApiError with problem undefined rather than a JSON parse throw.
+
+---
+
+Goal: Keep refusal slugs as data the compiler can check, without a runtime enum.
+Snippet (tsc6 + tsc7 clean, erasable-only):
+export const PROBLEM_TYPES = {
+  EMAIL_NOT_VERIFIED: 'urn:example:problem:email-not-verified',
+  INVALID_FIELDS: 'urn:example:problem:invalid-fields',
+} as const;
+export type ProblemSlug = typeof PROBLEM_TYPES[keyof typeof PROBLEM_TYPES];
+export function problemType(err: unknown): string | undefined {
+  return err instanceof ApiError ? err.problem?.type : undefined;
+}
+Why: as const narrows each slug to its literal, so a typo in a comparison is a type error rather than a dead branch. No enum means the output stays erasable-syntax-only and survives native type-stripping on current Node lines, which is why this file bans enums entirely.
+Counter-form: a string enum with reverse-mapping surprises, or bare string literals scattered across six views where a renamed slug leaves three dead comparisons; or namespace merging to hold the constants, which erasableSyntaxOnly rejects.
+Verification: both compilers clean with erasableSyntaxOnly on, and a test asserting an unknown type string falls through to detail rendering rather than matching any branch.
+
+---
+
+Goal: Turn an invalid-fields body into a field map without ever trusting its shape.
+Typed form (passes both compilers):
+export function fieldFaults(err: unknown): Record<string, string> {
+  const faults: Record<string, string> = {};
+  if (problemType(err) !== PROBLEM_TYPES.INVALID_FIELDS) return faults;
+  const errors: unknown = (err as ApiError).problem?.errors;
+  if (!Array.isArray(errors)) return faults;
+  for (const f of errors as Array<Partial<FieldError>>) {
+    if (f && typeof f.field === 'string' && typeof f.message === 'string') {
+      faults[f.field] = f.message;
+    }
+  }
+  return faults;
+}
+Why: unknown-first handling forces the Array check and the per-entry string checks, so a malformed errors array degrades to the detail line instead of a runtime crash. Returning an empty map for any other refusal keeps the caller branch-free.
+Counter-form: casting problem.errors as FieldError[] and indexing [0] directly, which throws on a backend that sends errors as an object on one route; or any-typed faults that let a message object slip into the template.
+Verification: both compilers clean with strict plus noUnusedLocals, plus table tests over missing, non-array, and half-malformed errors arrays asserting empty or partial maps with no throw.
+
+---
+
+Goal: Guard an open-redirect sink with a prefix check the tests can observe.
+Code (dual-compiler, no enums):
+export function followContinue(url: string | null | undefined): boolean {
+  if (!url) return false;
+  const allowed = url.startsWith('https://') || (import.meta.env.DEV && url.startsWith('http://localhost:'));
+  if (!allowed) return false;
+  navigation.leaveFor(url);
+  return true;
+}
+export const navigation = {
+  leaveFor(url: string): void { window.location.assign(url); },
+};
+Why: the https-only prefix keeps a javascript: URL from becoming a navigation, while the DEV-only localhost branch lets the backend run without TLS locally without shipping that branch to production. The navigation object is the seam: jsdom cannot navigate, so tests stub leaveFor and assert the guard instead of the browser.
+Counter-form: new URL parsing with protocol allow-listing that still permits javascript: through case tricks, or calling location.assign directly where tests cannot intercept it; or allowing http in production for one legacy tenant.
+Verification: both compilers clean, plus unit tests asserting https passes, javascript: and http prod both return false with no assign, and localhost passes only with DEV true.
+
+---
+
+Goal: Read a one-time query token once, then strip it from the address bar.
+Example (strict + erasableSyntaxOnly):
+import { useRoute, useRouter } from 'vue-router';
+export function useEmailedToken(): string {
+  const route = useRoute();
+  const router = useRouter();
+  const token = typeof route.query.token === 'string' ? route.query.token : '';
+  if ('token' in route.query) {
+    const query = { ...route.query };
+    delete query.token;
+    void router.replace({ query, hash: route.hash });
+  }
+  return token;
+}
+Why: the typeof guard narrows the string-or-array query param to exactly one string, so a ?token=a&token=b pair yields empty rather than an array smuggled into a POST body. Replacing on the same route keeps the page mounted while removing the secret from history, copied links, and Referer.
+Counter-form: reading route.query.token as string without the array check, or leaving the token in the URL where a reload resubmits it and a shared link leaks it; or pushing a new history entry so Back resubmits.
+Verification: both compilers clean with verbatimModuleSyntax (type imports separated), plus router tests asserting array form yields empty and asserting replace called with token removed and hash preserved.
+
+---
+
+Goal: Hold mutation UI state as a narrow union the template can exhaust.
+Snippet (verbatimModuleSyntax-safe):
+import { ref } from 'vue';
+export function useResendVerification(getEmail: () => string, showRefusal: (m: string) => void) {
+  const state = ref<'idle' | 'sending' | 'sent'>('idle');
+  const resend = useMutation({
+    mutationFn: () => postJson<void>('/login/resend-verification', { email: getEmail() }),
+    onMutate: () => { state.value = 'sending'; },
+    onSuccess: () => { state.value = 'sent'; },
+    onError: (err) => { state.value = 'idle'; showRefusal(refusalMessage(err)); },
+  });
+  function sendLinkAgain(): void { showRefusal(''); resend.mutate(); }
+  return { state, sendLinkAgain };
+}
+Why: the literal union makes idle versus sending versus sent visible to the template disabled logic, and the getter closure pins the refused address instead of whatever the email field holds by the time the button is pressed. No enum keeps the file erasable-only.
+Counter-form: a boolean sent flag plus a separate loading flag that can read sent and loading together, or an enum with a fourth state nobody renders; or capturing email.value at setup time so the resend goes to a stale address.
+Verification: both compilers clean with noUnusedParameters on, plus a test asserting the button disables while sending and asserting the sent body equals the refused address even after the field changes.
+
+---
+
+Goal: Expose the refusal body without parsing it twice.
+Form (compiles on 6 and 7):
+export class ApiError extends Error {
+  readonly status: number;
+  readonly body?: unknown;
+  constructor(status: number, message: string, body?: unknown) {
+    super(message); this.name = 'ApiError'; this.status = status; this.body = body;
+  }
+  get problem(): ProblemDetail | undefined {
+    return typeof this.body === 'object' && this.body !== null ? (this.body as ProblemDetail) : undefined;
+  }
+  get fieldErrors(): FieldError[] { return this.problem?.errors ?? []; }
+}
+Why: the raw body stays unknown until the getter narrows it, so a proxy HTML page never passes as a problem and every reader shares one narrowing rule. Field errors default to empty, which keeps non-field refusals branch-free at call sites.
+Counter-form: storing problem directly as ProblemDetail without the typeof guard, crashing on a 502 page; or re-parsing res.json in each view with slightly different fallbacks.
+Verification: both compilers clean with strict on, plus tests asserting a non-JSON body yields problem undefined and fieldErrors empty with no throw.
+
+---
+
+Goal: Type a route allowlist the compiler keeps in step with the router.
+Snippet (tsc6 + tsc7 clean, erasable-only):
+export const ACCOUNT_PAGES = ['passkeys', 'password', 'email'] as const;
+export type AccountPage = typeof ACCOUNT_PAGES[number];
+export function tokenOf(query: Record<string, unknown>): string {
+  return typeof query.token === 'string' ? query.token : '';
+}
+export function isAccountPage(name: string): name is AccountPage {
+  return (ACCOUNT_PAGES as readonly string[]).includes(name);
+}
+Why: the tuple plus indexed access type makes adding a page a one-line change that the ?then= guard and the account-links row both follow. The tokenOf guard collapses the string-or-array query param to exactly one string, so a doubled ?token pair cannot smuggle an array into a POST body.
+Counter-form: a string union maintained by hand next to the router, drifting the week a page is renamed; or casting query.token as string and sending an array to the backend on a crafted link.
+Verification: both compilers clean, plus a test asserting a new page name not in the tuple fails the then-guard and a doubled-token URL yields empty.
+
+---
+
+Goal: Mirror backend records in types with no rules and no wording.
+Typed form (passes both compilers):
+export interface InvitationPreview { tenantName: string; appName: string; email: string; invitedBy: string; accountExists: boolean; }
+export interface ContinueResponse { continueUrl: string | null; }
+export interface FieldError { field: string; message: string; }
+export interface ProblemDetail { type?: string; title?: string; status?: number; detail?: string; errors?: FieldError[]; }
+Why: the interfaces are 1:1 with the Java records, so the backend remains the single source of truth for rules and sentences. The frontend never trims, lowercases, or length-checks to match them, which is what stops the two copies from disagreeing after one side changes.
+Counter-form: a Zod schema duplicating min-length rules client-side that passes what the server rejects after a policy change; or a display-name type with a max that silently truncates.
+Verification: both compilers clean with erasableSyntaxOnly on, plus a shape test asserting a fixture preview parses with no extra keys and a contract test asserting the backend fixture still matches these four interfaces.
+
+---
+
+Goal: Type a DNS challenge that may or may not be there.
+Code (dual-compiler, no enums):
+export interface DnsChallenge { recordType: string; recordName: string; recordValue: string; }
+export interface SubmitOriginResult { verified: boolean; message: string; challenge?: DnsChallenge; }
+export function hasChallenge(r: SubmitOriginResult): r is SubmitOriginResult & { challenge: DnsChallenge } {
+  return r.verified === false && r.challenge !== undefined;
+}
+Why: the optional challenge keeps the 200 verified and 422 not-yet answers in one type, so the page narrows with a guard instead of two separate fetches. The predicate preserves the message alongside the record, which is what lets Verify again resend the same request without a second get-record step.
+Counter-form: two interfaces with a status flag checked by string compare, where the challenge branch forgets the message; or a non-optional challenge filled with empty strings on success.
+Verification: both compilers clean, plus tests over verified, challenge, and message-only fixtures asserting the guard branches exactly once each.
+
+---
+
+Goal: Let the backend decide what the UI may do, in types.
+Example (strict + erasableSyntaxOnly):
+export interface TenantList { app: { id: string; name: string }; items: Tenant[]; actions: string[]; }
+export function can(actions: string[], id: string): boolean { return actions.includes(id); }
+import type { Tenant } from './types';
+export function visibleTenants(list: TenantList): Tenant[] { return can(list.actions, 'tenant.view') ? list.items : []; }
+Why: actions arrays travel with every list, so controls render if and only if the id is present and labels come from the response rather than client constants. The helper keeps the includes check in one place, which is what stops a copy-pasted string from gating the wrong button.
+Counter-form: a client-side role enum that enables suspend because the user is admin, while the backend would refuse the same tenant; or hard-coded button labels that drift from the server wording.
+Verification: both compilers clean, plus tests asserting a response without tenant.suspend hides the button even for an admin fixture, and a renamed action id fails visibly rather than enabling everything.
+
+---
+
+Goal: Read env at call time so tests can stub the host.
+Snippet (verbatimModuleSyntax-safe):
+export function accountUrl(kind: 'id' | 'auth'): string {
+  const host = kind === 'id' ? import.meta.env.VITE_ID_HOST as string : import.meta.env.VITE_AUTH_HOST as string;
+  return `https://${host}/account/`;
+}
+Why: reading inside the function lets tests set import.meta.env per case, while a module-top constant freezes the first value for the whole suite. The template keeps the scheme fixed to https, so a test host cannot smuggle http into production links.
+Counter-form: a top-level const HOST read once where the second test still sees the first value; or string-concatenated links that accept any scheme from env.
+Verification: both compilers clean with noUnusedLocals on, plus tests setting different hosts per case asserting exact URLs and asserting http in env never produces an http link.
+
+---
+
+Goal: Parse RFC 9457 problem bodies once, with a retry predicate callers can trust.
+Wiring:
+type ProblemBody = {
+  type: string;
+  title: string;
+  status: number;
+  detail?: string;
+  errors?: ReadonlyArray<{ field: string; message: string }>;
+};
+const RETRYABLE = new Set([408, 425, 429, 500, 502, 503, 504]);
+export function toProblem(status: number, body: unknown): ProblemBody {
+  if (typeof body === "object" && body !== null && "type" in body && "title" in body) {
+    const p = body as Record<string, unknown>;
+    return {
+      type: String(p.type),
+      title: String(p.title),
+      status,
+      detail: typeof p.detail === "string" ? p.detail : undefined,
+      errors: Array.isArray(p.errors)
+        ? (p.errors as Array<Record<string, unknown>>)
+            .filter(e => typeof e.field === "string" && typeof e.message === "string")
+            .map(e => ({ field: e.field as string, message: e.message as string }))
+        : undefined,
+    };
+  }
+  return { type: "about:blank", title: "Unexpected response", status };
+}
+export function isRetryable(status: number, method: string): boolean {
+  if (method !== "GET" && method !== "HEAD") return status === 429 || status === 503;
+  return RETRYABLE.has(status);
+}
+export async function fetchProblem(
+  input: string,
+  init: RequestInit,
+  signal: AbortSignal,
+): Promise<ProblemBody | null> {
+  const res = await fetch(input, { ...init, signal });
+  if (res.ok) return null;
+  const text = await res.text();
+  try {
+    return toProblem(res.status, JSON.parse(text) as unknown);
+  } catch {
+    return { type: "about:blank", title: res.statusText || "Unexpected response", status: res.status };
+  }
+}
+Why: the first hypothesis was throwing on any non-2xx with the raw text; it was killed by a test where a 422 with field errors surfaced as "Unprocessable Entity" with no field to highlight. Centralizing the parse keeps the fallback in one place (about:blank plus statusText) and the retry rule beside it: safe methods retry the transient set, writes retry only 429/503 where the server promises idempotency handling. A sanity check before merging: feed a body without type/title and assert the fallback preserves the HTTP status instead of inventing 500.
+Counter-form: per-call-site response.json() casts to any with status ignored, so a 403 renders as a success with missing data; or a global retry-3 on mutations that duplicates a charge the server already applied.
+Verification: both compilers clean (tsc 7 plus tsc6 for the API-dependent lint), plus tests asserting a 422 fixture yields two field errors, an HTML error page yields the about:blank fallback with the real status, and a POST 500 asserts isRetryable false while GET 503 asserts true. Failing evidence before the fix was { "type": "https://api.example.com/probs/validation", "title": "Invalid", "status": 422 } parsed as unknown and retried as if transient.
+
+---
+
+Goal: Predict what fetchProblem and isRetryable return for five inputs before running the tests.
+Wiring:
+Row 1: GET https://api.example.com/refunds → 422 with {"type":"https://api.example.com/probs/validation","title":"Invalid","status":422,"errors":[{"field":"cursor","message":"required"}]}
+Row 2: GET https://api.example.com/refunds → 503 with <html>Service Unavailable</html>
+Row 3: GET https://api.example.com/refunds → 200 with {"items":[]}
+Row 4: POST https://api.example.com/refunds → 500 with {"type":"x","title":"y"}
+Row 5: GET https://api.example.com/refunds → 422 with {"message":"bad"} (no type/title)
+Why: walk each row through the code. Row 1 parses, carries type/title plus one field error, and isRetryable(422, GET) is false — 422 is not in the set, so validation never retries. Row 2 throws in JSON.parse, lands in the catch, and returns the about:blank fallback with the real 503 and the statusText — the status is preserved instead of invented, and isRetryable(503, GET) is true. Row 3 is ok, so the function returns null (no problem to report). Row 4 parses but isRetryable(500, POST) is false — writes retry only 429/503, so a charge-like write never duplicates on a 500. Row 5 has no type/title, so toProblem returns about:blank with status 422 rather than crashing on the missing keys. The sanity check before believing: feed an empty-string body with status 500 and assert the fallback keeps 500 instead of defaulting.
+Counter-form: calling res.json() directly per call site (throws on row 2's HTML and the throw escapes as an unhandled rejection); or a single isRetryable(status) without the method, retrying row 4's POST 500 and duplicating the write it guards.
+Verification: a five-row vitest table asserting each predicted outcome; run reports Test Files 1 passed (1), Tests 5 passed (5); mutating the POST rule to retry 500 fails the row-4 case red.

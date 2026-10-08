@@ -339,3 +339,186 @@ Symptom: Client libraries silently wait on a different source of truth and sched
 Legacy: A bespoke `X-Signature` header wrapping a body-only HMAC.
 Replacement: RFC 9421 message signatures binding method, path, and content digest.
 Symptom: A captured signature header replays successfully against a different path, because only the body was covered.
+
+---
+
+Design decision: a request that cannot finish inside the request budget returns an operation, not a longer timeout.
+Contract fragment:
+POST /reports  -> 202 Accepted
+                 Location: /operations/op_7f3
+                 Retry-After: 5
+GET  /operations/op_7f3 -> { "status": "in_progress" | "succeeded" | "failed",
+                             "result": "/reports/r_88", "error": { "code": "source.timeout" } }
+HEAD /reports/r_88 -> 200 with Content-Length once ready; 404 while not yet visible
+`Location: /operations/op_7f3` and `Retry-After: 5` on the 202, then `Link: <https://api.test/reports/r_88>; rel="result"` on the finished operation — three headers that let a client poll, back off and leave without parsing prose.
+Why: 202 with an operation resource moves the wait out of the connection, so a slow report costs a poll rather than a gateway timeout and a client that disappears does not cancel the work by accident. `Retry-After` gives the poller a server-supplied cadence, and the `Location` of the result is separate from the operation's own URI so the result can be cached or downloaded once while the operation record stays queryable.
+Versioning note: the operation shape is part of the contract — add fields freely, never change what `status` values mean, and give each terminal failure a stable code so clients can branch on it instead of parsing prose.
+Verification: contract test asserts 202 plus a resolvable `Location`; a test drives an operation to each terminal state; the polling client honours `Retry-After` in a fake-clock test rather than hard-coding a sleep.
+
+---
+
+Design decision: a batch endpoint states its partial-failure semantics, because "some succeeded" is a different contract from "all or nothing".
+Contract fragment:
+POST /orders:batch  { "requests": [ … ], "onError": "continue" | "rollback" }
+-> 200 with { "results": [ { "status": 201, "id": "o_1" }, { "status": 422, "code": "line.sku_unknown" } ] }
+-> or 207 with per-item bodies where content types differ; 422 only when the envelope itself is bad
+Why: per-item status codes with per-item stable error codes let a client retry the failed subset safely, which requires each item to carry its own idempotency key. Deciding inside the request (`onError`) beats a house convention, because the two modes have different cost: rollback needs a transaction around everything, continue needs each item to be independently idempotent.
+Versioning note: the envelope is additive territory; the item shape is the compatible surface, so a new item-level error code is a minor change and a changed meaning for `status` is not.
+Verification: contract test covers all-accepted, mixed, and envelope-invalid; a retry test resends only the failed subset with the same keys and asserts no duplicate side effects; the size cap returns 413 with a stated limit rather than an arbitrary 400.
+
+---
+
+Design decision: correlation and trace context are part of the API, documented and echoed, not an internal logging habit.
+Contract fragment:
+traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+request-id: req_01HTZ…            (client-generated, echoed in every response and in every error body)
+Retry-After: 2
+Why: a support ticket arrives with one identifier from one system, and the whole diagnosis is whether that identifier reaches the other systems. Echoing the client's request id in the response and in the problem-details body turns "which request?" into a lookup. Trace context propagates by the standard header so intermediaries cooperate, and the request id exists because a trace id is opaque and nobody quotes it in a ticket.
+Versioning note: header names are contract. Renaming one is breaking for the clients that already parse it, so both are accepted during a window and the removal is announced the way any other sunset is.
+Verification: contract test asserts the echoed id on 2xx and on 4xx/5xx, and an integration test asserts one id resolves across gateway and service logs (schema in 20); the client library sets and reads both headers by construction, so no call site has to remember.
+
+---
+
+Design decision: retries get a budget and hedging is a policy, both expressed per endpoint rather than per call site.
+Contract fragment:
+{ "endpoint": "GET /stock/{sku}",
+  "timeoutMs": 120, "maxAttempts": 3, "backoffMs": [30, 90], "jitter": true,
+  "retryOn": ["connect-error", "429", "503"], "budgetRatio": 0.10,
+  "hedge": { "enabled": true, "percentile": 0.75, "maxInFlight": 2 } }
+Why: retries that ignore each other are how a small dependency error becomes a self-inflicted storm, so the budget — retries as a fraction of total requests — caps the amplification, and only idempotent, timeout-or-overload conditions are retryable. Hedging a read at the p75 latency is cheaper than a longer timeout for the tail, but only for reads that are cheap to duplicate; hedging a write is a duplicate-side-effect design decision, not a tuning knob.
+Versioning note: budgets belong to the client's contract with itself, so they change without a version bump — but the `Retry-After` semantics the server sends are contract and must not be silently ignored by a client that has its own cadence.
+Verification: a fault-injection test with the dependency at 30% failure asserts the retry ratio stays inside the budget and the additional load is what the model predicts; a test with a slow p99 asserts hedged reads return at about p75 without exceeding `maxInFlight` (the pattern's architectural framing is 19, the failure transcripts are 02).
+
+---
+
+Design decision: Call the backend same-origin with relative paths and no base URL.
+Contract fragment:
+API_BASE = ''
+POST /login/password with { email, password } and credentials include plus Accept application/json
+Vite dev proxies BACKEND_PATHS = ['/login/', '/csrf', '/webauthn/'] to https://api.example.test with changeOrigin false, nginx does the same in prod
+Why: no CORS, no preflight, no stored base URL to drift between environments, and the session cookie stays HttpOnly with nothing in JS to steal. The proxy list is the contract of which paths are backend, so a new backend path must gain an entry or the SPA serves it as a route.
+Versioning note: adding a path to BACKEND_PATHS is additive; removing one is breaking for bookmarked emailed links and gets a redirect, not a silent 404.
+Verification: a contract test asserting every fetch path starts with / and no absolute backend host appears in the bundle, plus a proxy test asserting a new path without an entry serves the SPA shell in dev.
+
+---
+
+Design decision: Parse a refusal as a problem only when the body can be one.
+Contract fragment:
+if (!res.ok) {
+  if (/[/+]json/.test(contentType)) problem = await res.json() as ProblemDetail
+  throw new ApiError(res.status, problem)
+}
+Why: the rate limiter answers 429 as text/plain and a proxy answers 502 as HTML, neither of which is a typed refusal. Checking Content-Type before parsing keeps those from becoming a JSON SyntaxError that hides the real status, while a JSON problem keeps its type plus detail for the page to branch on.
+Versioning note: the problem shape may add fields but never renames type or detail; clients ignore unknown members, which is why the type holds an index signature.
+Verification: a test with 429 text/plain asserting ApiError with problem undefined and the rate-limit sentence rendered, plus a 502 HTML test asserting the generic fallback rather than a parse throw.
+
+---
+
+Design decision: Treat empty 2xx as success with no body, and malformed 2xx as a refusal.
+Contract fragment:
+const text = await res.text()
+if (!text) return undefined as T
+try { return JSON.parse(text) as T } catch { throw new ApiError(res.status) }
+Endpoints: POST /login/magic-link returns 202 empty, POST /signin/change-password returns 204 empty, POST /login/password returns 200 JSON
+Why: 202 and 204 have no body by design, and res.json on an empty body throws, so text-first reading makes the three success shapes uniform for callers. A 200 with a corrupted body from a middlebox surfaces as an ApiError on the same path as any other failure, which the page already knows how to render.
+Versioning note: changing a 202 to return a body is additive if callers already accept undefined; changing a 200 to 204 is breaking for callers that parse unconditionally.
+Verification: tests over 202 empty, 204 empty, 200 JSON, and 200 with truncated JSON asserting undefined, undefined, parsed, and ApiError respectively.
+
+---
+
+Design decision: Deliver CSRF as a body token replayed under its own header name, not as a cookie.
+Contract fragment:
+GET /csrf returns { headerName, token }
+POST /webauthn/customer/register with headers { headerName: token } plus Content-Type and Accept JSON
+Pre-auth credential endpoints are CSRF-exempt and send no token
+Why: the login chain spans hosts where a cookie set by one host is not readable on another, so the double-submit cookie pattern cannot work. The server names the header per deployment, so the client replays exactly what it was given rather than a hardcoded X-CSRF-TOKEN that drifts.
+Versioning note: renaming the header is transparent because the name travels in the GET body; adding CSRF to a currently exempt endpoint is breaking for old clients and ships with a versioned path.
+Verification: a test asserting the register POST carries the exact header name from GET /csrf, plus a test asserting pre-auth endpoints send no CSRF header at all.
+
+---
+
+Design decision: Branch refusals only on the stable type URI, and render detail verbatim.
+Contract fragment:
+{ type: 'urn:example:problem:invalid-fields', status: 422, detail: 'Check the highlighted fields.', errors: [{ field: 'email', message: 'Already in use.' }] }
+Pages map type to behavior: email-not-verified offers a resend, invalid-fields renders per-field faults, everything else renders detail; title is never shown
+Why: detail is worded for display and may be reworded, while type is the contract that never renames. Branching on wording or on status alone breaks the resend offer the next time the copy changes, and showing title leaks the HTTP reason instead of a sentence.
+Versioning note: the server may add kinds but never renames or reuses a slug; unknown types render their detail, so new kinds degrade to a readable refusal on old clients.
+Verification: contract tests per handled type plus one unknown-type test asserting detail renders with no offer, plus a wording-change test asserting behavior unchanged when detail text moves.
+
+---
+
+Design decision: Answer enumeration-sensitive writes with 202 and uniform wording, and answer abuse with 429 outside the problem shape.
+Contract fragment:
+POST /login/signup returns 202 empty for any address, known or not
+POST /login/resend-verification returns 202 empty for any address
+429 returns text/plain with Retry-After, no problem body
+Client wording for sent: If that address is waiting for confirmation, a new link is on its way
+Why: the timing and the body say nothing about whether the address exists, so the address book cannot be rebuilt from responses. Rate limiting stays outside the typed shape because it is about the caller, not the account, and the client words it locally instead of parsing it.
+Versioning note: changing a 202 to return per-address truth would be a security regression, not a feature; adding a problem body to 429 is additive only if clients keep their local sentence as fallback.
+Verification: tests posting unknown versus known addresses asserting identical 202 empty plus identical sent wording, and a 429 test asserting the cooldown sentence with Retry-After honored and no retry fired.
+
+---
+
+Design decision: Keep pages and endpoints on disjoint paths of one origin.
+Contract fragment:
+Pages live under /account/ with base /account/, endpoints at the root: POST /reset-password, POST /accept-invitation/preview, POST /signin/password
+BACKEND_PATHS = ['/forgot-password', '/reset-password', '/accept-invitation', '/verify-email-change', '/signin']
+Vite proxies exactly those to http://localhost:8080 with changeOrigin false, nginx holds one location for /account/
+Why: GETs under /account/ can never collide with POSTs at the root, so the router and the backend never fight over a path and there is no CORS to misconfigure. The backend must see the browser host for its host-based chains, which is what changeOrigin false preserves.
+Versioning note: adding a BACKEND_PATHS entry is additive; moving an endpoint under /account/ would collide with the SPA shell and needs a new major path.
+Verification: a test asserting no SPA route starts with any BACKEND_PATHS prefix, plus a dev-proxy test asserting an unlisted backend path serves the SPA instead of the API.
+
+---
+
+Design decision: Exempt emailed-link posts from CSRF and require it for sign-in writes.
+Contract fragment:
+No token: POST /reset-password { token, newPassword }, POST /accept-invitation/preview { token }
+With fresh GET /signin/csrf per write: POST /signin/password, POST /signin/magic-link/consume, DELETE /signin/passkeys
+Why: what authorizes an emailed-link call is the one-time token a forging site cannot know, so CSRF adds nothing; what authorizes a sign-in write is the session cookie the browser attaches to any request, so a forged sign-in would land the victim in the attacker's account without it. Fetching CSRF fresh per write tracks session renewal, where a cached token would 403.
+Versioning note: adding CSRF to an exempt endpoint breaks old emailed links still in inboxes; removing it from a sign-in write is a security regression, not a cleanup.
+Verification: tests asserting emailed-link posts carry no CSRF header while sign-in writes carry the header from GET /signin/csrf, plus a test asserting a forged cross-origin POST without the token fails.
+
+---
+
+Design decision: Word 4xx from the backend and 5xx locally, with 429 as its own sentence.
+Contract fragment:
+if (res.status === 429) return new ApiError(429, TOO_MANY)
+body = await res.json() catch undefined
+message = res.status < 500 ? (problem?.detail ?? FAILED) : FAILED
+Only detail is shown, title is never rendered
+Why: a 4xx sentence describes what the operator did and can be shown, while a 5xx body is for logs and showing it leaks internals. The 429 comes from the limiter as plain text with no problem, so the client owns that one sentence and honors the cooldown instead of retrying into it.
+Versioning note: the backend may reword any detail without breaking clients because they branch on type; changing a 4xx to a 5xx flips which sentence shows and is treated as breaking for copy-sensitive flows.
+Verification: tests over 422 with detail, 429 plain, 502 HTML, and offline TypeError asserting backend sentence, cooldown sentence, generic sentence, and unreachable sentence respectively.
+
+---
+
+Design decision: Retry a write once on 403 after refreshing the body-token, then stop.
+Contract fragment:
+let res = await attempt();
+if (res.status === 403) { clearCsrf(); res = await attempt(); }
+if (res.status === 401) { signInRedirect(); throw new ApiError(401, 'Signing you in…'); }
+GET /csrf returns { headerName, token } with a differently masked token each time unmasking to the same value
+Why: the token is tied to the session and the session can renew between page load and submit, so one stale-token 403 is expected and worth one retry. A second 403 is a real refusal, and treating it as stale would loop a forbidden admin into useless fetches while hiding the message.
+Versioning note: the header name travels in the GET body, so renaming it needs no client change; adding a second retry would turn a permission denial into amplified load.
+Verification: a test with 403 then 200 asserting two writes plus one CSRF refetch, plus a test with 403 then 403 asserting the refusal renders with no third attempt.
+
+---
+
+Design decision: Put the origin in the query string for DELETE.
+Contract fragment:
+POST /admin/tenants/{id}/origins with { origin }
+DELETE /admin/tenants/{id}/origins?origin=https%3A%2F%2Fshop.example.test
+Why: an origin contains :// plus dots, which make poor path segments and worse router matches, while a query value round-trips exactly with one encode. The POST carries JSON for the create path and the DELETE carries the same string as a value, so both sides normalize once.
+Versioning note: moving the value into the path would need double-encoding rules for slashes; keeping it in the query keeps the route table flat.
+Verification: contract tests asserting the DELETE URL encodes :// once and decodes to the identical string server-side, plus a test asserting an origin with a trailing slash does not match its bare sibling.
+
+---
+
+Design decision: Serve the console from one origin with an explicit backend path list.
+Contract fragment:
+BACKEND_PATHS = ['/admin/', '/csrf', '/oauth2/', '/login/oauth2/', '/logout']
+SPA routes never start with those prefixes, vite proxies them with changeOrigin false, nginx forwards them in prod
+GET /admin/me gates the shell: 401 redirects to sign-in with return-to, 403 shows signed-in non-admin warning
+Why: one origin means no CORS and cookies just work, while the list is the choke that keeps app routes from shadowing JSON. Remembering return-to client-side works around the admin chain remembering no JSON request, which once landed sign-in on raw /admin/me after login.
+Versioning note: adding a backend path is additive if the SPA route ban grows with it; removing one needs the SPA ban to stay until bookmarks expire.
+Verification: a test asserting no SPA route collides with any BACKEND_PATHS prefix, plus 401 and 403 gate tests asserting redirect versus warning with no data fetch on the wrong branch.

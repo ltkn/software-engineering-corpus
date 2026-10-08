@@ -146,6 +146,7 @@ Participants: client, authorization server.
 Sequence: each refresh response issues a new refresh token and invalidates the old; presenting an already-used token triggers reuse detection.
 Invariant: at most one live refresh token per chain; a fork in the chain means compromise.
 Validation: rotation with reuse detection is the RFC-mandated baseline for public clients (sender-constrained refresh or rotation/replay detection per RFC 9700); the seconds-scale grace for concurrency races plus revoke-the-family-and-alert on reuse is our deployment policy on top of that mandate, not itself normative.
+`POST /oauth/token {"grant_type":"refresh_token","refresh_token":"rt_02…","client_id":"spa"}` → `400 {"error":"invalid_grant","error_description":"refresh token reuse detected","grant_family":"gf_77"}` and the whole family is revoked — the second presentation of a rotated token is the theft signal, and the response that says so is what makes it investigable instead of mysterious.
 Failure: infinite-reuse refresh tokens let stolen credentials persist for months undetected.
 Remediation: rotation default on; reuse revokes the grant family and pages, never silently re-issues.
 Regression test: reused refresh token revokes the family and fires the alert; concurrent-legitimate race tolerated within the grace window.
@@ -484,6 +485,7 @@ Participants: resource server (RP-less), client (ID token).
 Sequence: Resource server validates the access token: issuer, audience (the resource identifier), expiry, token_use or typ, signature, and the resource-indicator binding to the request. The client validates the ID token: issuer, audience (its own client_id), nonce matches the transaction, auth_time if required, exp/iat, alg matches the approved set.
 Invariant: an ID token is never accepted as an access token and vice versa; audiences are exact and explicit.
 Validation: alg fixed or allow-listed per client; typ or token_use claims cross-checked; no plaintext "none"; JWKS fetched with bound caching and rotation overlap.
+`WWW-Authenticate: Bearer error="invalid_token", error_description="signature verification failed", error_uri="https://kty.test/errs/jwt-signature"` with `Cache-Control: no-store` — the header that tells the client whether to refresh, to re-authenticate, or to stop, and the reason a 401 without it teaches the client to guess.
 Failure: Accepting an ID token at the API gets you a user, not a delegated caller; accepting an access token as identity lets a resource server impersonate the client.
 Remediation: Distinct audience values (api://users vs the client_id) and distinct issuer/type expectations per checkpoint; shared library enforces the split.
 Regression test: The same JWT presented at the wrong checkpoint is rejected with the same class of error; audience mismatch cases covered; none-alg case fails closed.
@@ -498,3 +500,124 @@ Validation: Protected-resource metadata's authorization_servers response is vali
 Failure: Reusing one ambient token across three tool servers lets compromise of the least-defended server replay it against all three.
 Remediation: Per-server audience indicators, per-tool consent at the agent runtime, and token exchange with audience narrowing on delegation. Tool grants are least-privilege per task.
 Regression test: A token minted for server A is rejected by server B; an exchange for a wider audience fails closed; a sub-agent chain cannot mint a wider token than its parent held.
+
+---
+
+Concept (RFC 8414 discovery, RFC 9728 protected-resource metadata; reviewed 2026-10): a resource server that publishes its own metadata tells clients which authorization server it accepts and under which identifier, and the client's job is to check the answer rather than to assume it.
+Participants: client, resource server, authorization server.
+Sequence: client calls the resource server's protected-resource metadata document; it names `authorization_servers` and the resource's own identifier; the client then discovers that authorization server's metadata and compares both values against what it was configured to trust; tokens then carry `aud` equal to the resource identifier.
+Invariant: trust flows from the configured issuer over TLS, never from request input. Metadata is unsigned JSON, so a mismatch is a stop condition, not a hint.
+Validation: the resource identifier in the metadata matches the one the client sends as `resource`; the issuer in `authorization_servers` is the configured issuer; `jwks_uri` and `token_endpoint` are HTTPS and on the expected host; the metadata's `issuer` field equals the document's own origin.
+Failure: the client trusts whatever `authorization_servers` says, so a hostile or misconfigured resource document points the client at an attacker-controlled issuer and the client accepts a token minted there for a name that merely looks familiar.
+Remediation: treat discovered metadata as a confirmation of configuration, not as its source: pin the issuer, assert the match, fail closed on mismatch, and re-fetch on a schedule with the previous document retained on failure so an outage cannot silently change trust.
+Regression test: fixtures where the resource identifier differs, where the issuer differs, and where the document's `issuer` field does not match its origin — all three rejected with an error that names the mismatch.
+
+---
+
+Concept (mix-up defense, RFC 9207 iss parameter; reviewed 2026-10): the client must know which authorization server a response came from before it redeems anything, because an attacker who can inject an authorization response can otherwise make the client redeem a code from one server against another and bind a session to the attacker's account.
+Participants: browser, client with two or more configured identity providers, both authorization servers.
+Sequence: client stores issuer, state and nonce in the transaction at redirect time; the authorization response carries `iss`; the client compares it against the stored issuer before the token endpoint is contacted; only then does it redeem, and only then does it check the ID token's `iss`.
+Invariant: issuer identification before redemption, using the response's own parameter or a binding established before the redirect — the ID token's `iss` cannot help, because it is only obtained after the exchange the check is meant to protect.
+Validation: exact string match of `iss` against the stored issuer; state matched; nonce matched later against the ID token; redirect URI matched exactly, no prefix or wildcard leniency.
+Failure: a response from provider B is redeemed against provider A's token endpoint, the code is rejected or — worse — accepted in a session that now points at the attacker's identity, and the user's next privileged action runs under the wrong principal.
+Remediation: require the `iss` parameter where the provider supports it; where it does not, bind the transaction to the provider in the request state or use a distinct redirect path per provider so the binding is structural rather than remembered.
+Regression test: an authorization response carrying the other provider's `iss` is rejected before any token request is issued, asserted by a test that fails the token endpoint call if it happens.
+
+---
+
+Concept (RFC 9470 step-up authentication; reviewed 2026-10): a resource can declare that the authentication already performed is not enough, and the client can re-present the user with a stronger assurance requirement without starting a new login flow.
+Participants: user, client, authorization server with two assurance levels, resource server owning the risk rule.
+Sequence: resource server requires, say, `acr` at the higher level or `amr` containing a phishing-resistant method; it returns 401 with `error=insufficient_aal` or an `algs`/`acr_values` challenge in the WWW-Authenticate header; the client re-authorizes with `acr_values` or `claims` requesting that level and `prompt=login`; the new ID token carries the higher `acr`, `amr` and a fresh `auth_time`; the retried request succeeds.
+Invariant: the elevation decision is made by the resource and verified from claims in a token, never from a client assertion or a query parameter. `auth_time` must be after the point the policy requires, and a cached session cannot fake it.
+Validation: the resource's challenge names the exact requirement; the server refuses to mint the higher level without actually performing it; `acr` values come from a registry the two sides share; the step-up token is otherwise ordinary, so ordinary validation still applies.
+Failure: a client trusts a `loa=2` flag it set itself, so a passive session walks into the payout endpoint; or the server honours `prompt=none` for a step-up request and returns the same weak session with a fresh signature.
+Remediation: publish the `acr`/`amr` vocabulary in the API contract, enforce it at the resource server from claims, and make the client's only job the re-authorization. Passkeys surface here as an `amr` value rather than as a protocol extension.
+Regression test: a session without a phishing-resistant method gets 401 with the challenge, the step-up flow returns the required `acr`, and the same session replaying the endpoint without elevation never succeeds by retrying.
+
+---
+
+Concept (RFC 9449 DPoP; reviewed 2026-10): a proof-of-possession binding turns a stolen access token into half a credential, because each request must also carry a signature made by a key the token was bound to, over request-specific material.
+Participants: client holding a private key, authorization server embedding `cnf`/thumbprint, resource server verifying proofs.
+Sequence: client signs a JWT proof with `htm`, `htu`, `iat`, a fresh `jti`, the key in the header, and `ath` hashing the access token; it sends `DPoP` alongside `Authorization: DPoP <token>`; the resource server verifies the signature against the key bound in the token's `cnf`, checks `htm`/`htu` match the actual request, checks freshness, and records the `jti`.
+Invariant: the `jti` must be single-use per key for the freshness window. A proof that can be replayed is a proof that leaks the token's authority, so replay rejection is not an optimisation, it is the property the mechanism exists for.
+Validation: signature verifies against the bound key; `htm`/`htu` match the request as received, including the case-sensitivity and path of the actual call; `iat` inside the accepted window; `jti` unseen for that key; sender-constrained tokens rejected when presented as a plain bearer and vice versa.
+Failure: the resource server validates the signature and the binding but keeps no `jti` store, so an attacker who captures one request replays the pair until the token expires — which is the theft the mechanism was supposed to prevent, with extra steps and a valid signature.
+Remediation: keep the replay store keyed per key and bounded by the freshness window, size it deliberately (it is a memory budget with a security job), and treat its failure as a rejection, not a bypass. DPoP plus PAR plus RAR is optional scaffolding, each verified separately.
+Regression test: same proof replayed twice, second rejected with `use_dpop_nonce` or an invalid-proof error; proof sent to another `htu` rejected; token used as bearer rejected.
+
+---
+
+Concept (refresh rotation and reuse detection, RFC-mandated baseline for public clients; reviewed 2026-10): a rotated refresh token that shows up again is evidence the old copy was taken, and the response to that evidence is a family decision rather than a single revocation.
+Participants: client, authorization server owning the token family, resource server holding short access tokens.
+Sequence: refresh returns a new refresh token and marks the old one consumed; a later presentation of a consumed token triggers reuse detection; the server revokes the family — the whole chain of descendants — and the user re-authenticates; access tokens already issued run to their own expiry unless revoked out of band.
+Invariant: the baseline for public clients is rotation with reuse detection; the grace window that tolerates two in-flight refreshes from honest apps is deployment policy on top of that baseline, and the residue window for access tokens is documented, not assumed.
+Validation: consumed-token presentation is distinguishable from an unknown token; family revocation actually reaches descendants; introspection or a revocation list narrows the residue window; the client treats a failed refresh as re-authentication, not as a 500.
+Failure: the grace window is widened to "fix" a mobile client refreshing twice, and with it the detection window: a stolen refresh token now works for the length of the grace, silently, while the real device keeps refreshing and nobody sees an anomaly.
+Remediation: keep the grace small and measurable, log which token in the chain was presented, alert on cross-device reuse of one chain, and state the residue window in the API contract so consumers design for a token that dies mid-call.
+Regression test: rotate then replay the consumed token and assert the whole family is dead and the honest client is forced to re-authenticate; assert access tokens are still accepted inside the documented residue and refused after it.
+
+---
+
+Concept (NIST SP 800-63-4 memorized secrets; reviewed 2026-10): user passwords and OAuth client secrets use different KDFs behind different beans, so either can rotate without touching the other.
+Participants: operator or customer account store holding Argon2id hashes, authorization server holding bcrypt client-secret hashes, deploy config owning both.
+Sequence: login password hashed and verified with operatorPasswordEncoder set to Argon2PasswordEncoder.defaultsForSpringSecurity_v5_8; SAS client-secret validation autowires the @Primary PasswordEncoder set to BCryptPasswordEncoder strength 10; the login provider requests the Argon2 bean by qualifier, never the primary.
+Invariant: user-credential work is memory-hard with a single platform configuration, while machine-secret work stays on the SAS default; a change to one never rehashes the other.
+Validation: qualifier on every user-password path points at the Argon2 bean; SAS path resolves the primary bcrypt bean; both hashes carry their own algorithm markers so verification never guesses.
+Failure: one bcrypt bean for everything because it was already there, so a future Argon2 upgrade rewrites all client secrets or a client-secret rotation forces a user-password migration.
+Remediation: keep the two beans and the qualifier, labeled as deployment policy on top of the memorized-secret length-first plus breached-list rule; rotate each store independently.
+Regression test: login with an Argon2 fixture succeeds while a bcrypt user hash is rejected before work, and a client-secret check with an Argon2 hash fails closed.
+
+---
+
+Concept (timing as an enumeration oracle; reviewed 2026-10): password verification costs the same whether or not an account or hash exists.
+Participants: sign-in caller supplying a username string, repository returning an Optional account plus nullable hash, Argon2 verifier owning the fallback hash.
+Sequence: repository reads account plus hash in one LEFT JOIN statement; verifier calls encoder.matches with the supplied password against the stored hash when present and against a random-hash sealed at startup when absent; it returns matched only when both inputs were non-null.
+Invariant: as deployment policy, unknown address, passwordless account, and refused-status account all pay the same Argon2id work as a live account, so response time says nothing about which addresses exist.
+Validation: single-statement read in the repository; fallback hash generated once per process from random bytes; null inputs still run matches before returning false.
+Failure: early return on missing account skips Argon2, so wrong-password on a real address measures slower than unknown-address and the address book is rebuilt from timing whatever the body says.
+Remediation: run the same encoder call on every path, keep the repository to one statement, and assert the property in a timing test rather than by reading the code.
+Regression test: unknown versus known addresses both invoke matches once with overlapping duration distributions, and null password versus null hash both return false after work.
+
+---
+
+Concept (pepper rotation without a dual-read window; reviewed 2026-10): minted tokens carry their pepper version inline, so verification is a single hash lookup.
+Participants: issuer holding a versioned pepper map, token row storing hash plus version, verifier parsing the version from the presented value.
+Sequence: mint builds version plus random 32 bytes as version colon base64url, hashes SHA-256 of value plus secret at that version, stores hash and version; verify parses the integer before the colon, looks up that one secret, hashes once, compares; rotation adds a higher version for new mints while in-flight tokens verify under their own.
+Invariant: as deployment policy, no token is ever valid under two versions at once, and dropping an old secret only kills tokens minted under it, which have already expired.
+Validation: config entries parsed as version colon secret with the highest as current; unknown or malformed version returns no hash rather than throwing; external values without a prefix use hashCurrent on write plus a stored version column with hashWith on compare.
+Failure: unversioned pepper where rotation needs a dual read of old and new secrets for a release, doubling lookup cost and leaving a window where either secret works.
+Remediation: keep version inline for minted values and version column for external values, and refuse to boot production on the dev fallback except when explicitly allowed.
+Regression test: token minted before rotation verifies after rotation, new tokens carry the new version, and removal of the old secret rejects only the old family.
+
+---
+
+Concept (RFC 6749 section 3.1.2 redirection; RFC 8414 discovery; reviewed 2026-10): customer authorization servers validate redirect_uri against verified tenant origins, not against client input.
+Participants: tenant host serving the app, customer auth host serving the IdP, tenant_origins table as the verified origin registry, client registration per tenant host.
+Sequence: tenant admin verifies an origin out of band and it lands in platform.tenant_origins; customer SAS loads per-tenant client registrations with redirect URIs under that origin; at authorize time the server string-compares redirect_uri to the registered value and to the verified origin set; mismatch aborts before owner interaction.
+Invariant: codes and tokens go only to pre-registered destinations on verified origins; the request never creates trust in a new origin.
+Validation: exact string match on scheme host port path as RFC 6749 MUST; tenant binding resolved from the saved authorize request, not from a tenant query parameter; per-chain issuer per RFC 8414 metadata for the customer auth host distinct from the operator auth host.
+Failure: prefix match where https://tenant.example.test/callback also matches https://tenant.example.test/callback.evil.test, or tenant taken from a query field the caller controls, so one tenant mints codes redeemable on another origin.
+Remediation: exact match plus origin-registry check as a MUST on this deployment, one URI per environment, native apps under loopback rules only.
+Regression test: sibling-prefix URI rejected, foreign-tenant origin rejected, and cross-tenant authorize state replayed on another tenant rejected.
+
+---
+
+Concept (emailed-token storage and single use; reviewed 2026-10): raw tokens never touch the database; consumption is one atomic statement.
+Participants: issuer minting a versioned token, mail row carrying no secret, token table holding SHA-256 of token plus pepper with consumed_at plus expires_at, consumer presenting the raw value once.
+Sequence: mint returns version colon random and stores SHA-256 of the full string plus pepper; the mail carries the raw value with an expiry; consume runs UPDATE SET consumed_at equals now WHERE token_hash equals hash plus consumed_at IS NULL plus expires_at greater than now RETURNING user_id; zero rows means invalid, expired, consumed, or wrong-browser with no distinction.
+Invariant: as deployment policy, every present is indistinguishable on the outside, and concurrent presents can succeed at most once because the predicate is part of the write.
+Validation: MessageDigest SHA-256 over UTF-8 bytes of value plus secret; token_hash column unique; browser-binding predicate included for operator flows so a mismatch does not burn the token; verification promotion runs in the same transaction as the burn.
+Failure: SELECT then UPDATE in code where two concurrent presents both read unconsumed and both succeed, or raw token stored so a replica leak becomes a login.
+Remediation: keep the single UPDATE WHERE RETURNING shape, keep raw out of logs and error messages, and retire sibling links in the same statement family.
+Regression test: double-present the same token concurrently and assert exactly one RETURNING row, and present expired and consumed fixtures asserting the same caller-visible refusal.
+
+---
+
+Concept (session binding as theft detection, not as prevention; reviewed 2026-10): each session pins a peppered user-agent hash with a version, checked toxically on use.
+Participants: login handler minting the session, session row storing ua_hash plus ua_hash_version plus created IP, request filter recomputing the hash on each call.
+Sequence: at issue, hashCurrent of the User-Agent plus store of currentVersion; on use, hashWith of the presented User-Agent under the stored version and compare; mismatch on a customer session returns 401 without invalidating so a transient UA change does not log the user out everywhere, while mismatch telemetry is kept; operator bearer paths skip the check, session-cookie paths enforce it.
+Invariant: as deployment policy, a stolen cookie from a different UA fails closed on that request, IP is captured for triage and never enforced, and version rotation keeps old sessions verifying under their own version.
+Validation: pepper purpose separated per use with distinct env names; version column read before hashWith; constant-time compare on the hash bytes; touch throttled so every request does not rewrite the row.
+Failure: UA compared as raw strings in the app tier where a minor version bump logs out a fleet, or binding invalidated on first mismatch so one attacker probe logs out the victim and hides the theft.
+Remediation: keep hashed binding with version, fail the request not the session, and alert on cross-UA reuse of one session id.
+Regression test: replay a session cookie with a different User-Agent and assert 401 with the session still live, and rotate the UA pepper asserting old sessions still verify until expiry.

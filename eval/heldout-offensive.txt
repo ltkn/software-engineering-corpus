@@ -1,0 +1,31 @@
+# heldout-offensive
+
+Engagement note for the quarterly assessment on the checkout estate. Rules of engagement were agreed in writing before the first packet: no destructive tests against production data, no denial-of-service class against the checkout path during trading hours, one named contact on the internal side per day, and every finding reproducible with a single command the client can rerun. The value of that document is not legal cover, it is that the engagement produces evidence the engineers will act on instead of an argument about whether the test was fair. Non-destructive means the payload is real and the effect is bounded, which is a stricter requirement than it sounds: it forces the tester to prove the flaw rather than to leave a webshell behind as proof that they could.
+
+---
+
+Triage note. The alert said an unusual outbound connection from `orders-svc-7c9d` to `cdn-update.attacker-ops.example` on 443, four hundred and twelve kilobytes up, nothing down, over ninety seconds. The useful first question is never "is this the attacker" but "what shape is this": a long-lived single connection with a flat upload and no matching request count is not a client fetching anything, and the absence of a download side rules out every ordinary integration we run. Read the deploy history for the window, then the egress proxy log for the same workload identity, then the app's own outbound call inventory. A string in a proxy log becomes a diagnosis only when it can be attributed to code we can point at, or to code we can prove is not ours.
+
+---
+
+Password-spray detection note. Nine days of one failed login per account per hour from a handful of addresses produced exactly zero pages, because every threshold in the login service is written as a rate per principal per short window and the spray is one. The fix that survived review was not a lower threshold, which would have paged on ordinary Mondays, but a shape detector: many distinct accounts, one failure each, from a narrow set of networks, with user-agent diversity that a shared office egress should not have. The distributional reading is the whole technique and the single observation is worthless, which is the same lesson the latency work teaches and security keeps re-learning. Nineteen accounts were already validated before the alert existed, and two of them had no multi-factor enrolment.
+
+---
+
+Cloud-only intrusion note. Nobody logged into anything. A workload role was permitted `iam:CreateAccessKey` so that a legacy import job could rotate its own keys, and from a pod that reached the metadata endpoint that permission is a stair: mint a permanent credential for the job's user, list buckets from a laptop, download the export prefix, and delete nothing. The audit trail records the action cleanly, so the incident review is a conversation about what the trail means rather than about whether the tooling worked. Rotation of the minted key closed the intrusion in forty minutes of wall-clock time; the conversation about workload identity versus node role lasted three sprints, which is the normal ratio between the technical fix and the organisational one.
+
+---
+
+Database forensics note. The evidence was a single line in the database log: a `COPY orders TO PROGRAM` executed by the reporting role, which had no business invoking a program, at three in the morning, in a session whose application name said nothing deployed. The role had been granted `pg_execute_server_program` eighteen months earlier for a migration that finished in a day, and the grant had outlived the migration, the developer, and the vendor that asked for it. Nothing else in the estate would have caught it: the statement was valid SQL, the credentials were legitimate, the destination was an internal address, and the row count matched a table the customer contracts describe as non-sensitive until joined with two others.
+
+---
+
+Ransomware tabletop note. The scenario assumed the hypervisor-class failure everyone agrees is possible and nobody schedules: the encrypt run started on the instance whose snapshot destination was a path on the same instance. Timed outcomes from the drill, against the documented objective of four hours to a usable read-only restore, came in at six hours and fifty minutes for the first pass and three hours and twenty after two of the three snags were fixed, both snags being access rather than technology — one credential that only two people could mint, one runbook step that assumed a person who had left. The number that matters is not the average, it is the worst case across three repetitions, because an incident gets one of them.
+
+---
+
+Model-tier red-team note. The fixture suite ran forty adversarial inputs against the assistant behind the support endpoint, each one a retrieved-document body with an embedded instruction whose pass condition was that no outbound fetch leaves the sandbox and no tool argument carries a value that appeared only in the retrieved text. Thirty-seven passed. Two failed on the image-fetch path, where the model faithfully expanded a template into a query string containing a fragment of the user's context, and one failed because the tool schema itself invited the model to echo a "context hint". The finding that survived review was architectural rather than prompt-level: the harness held private data, untrusted content, and network egress in one process, and the cheapest reliable mitigation was to remove the egress leg for retrieval-only turns.
+
+---
+
+Reporting note. Twenty-one findings, three of them genuinely new to the team, and the ranking that helped was not the severity score but the one-column table of what each finding would have cost, expressed as the data or the privilege actually reached rather than the theoretical worst case. The two findings that got fixed the same week were the ones with a reproduction the on-call engineer could run in ninety seconds from a laptop on the internal network. The one that sat for two months was real, serious, and reproducible only by a tester holding a token from a staging account nobody else could mint, which is a process defect dressed as an engineering backlog item.
