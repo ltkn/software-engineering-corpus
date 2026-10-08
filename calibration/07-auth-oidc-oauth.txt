@@ -555,3 +555,69 @@ Validation: consumed-token presentation is distinguishable from an unknown token
 Failure: the grace window is widened to "fix" a mobile client refreshing twice, and with it the detection window: a stolen refresh token now works for the length of the grace, silently, while the real device keeps refreshing and nobody sees an anomaly.
 Remediation: keep the grace small and measurable, log which token in the chain was presented, alert on cross-device reuse of one chain, and state the residue window in the API contract so consumers design for a token that dies mid-call.
 Regression test: rotate then replay the consumed token and assert the whole family is dead and the honest client is forced to re-authenticate; assert access tokens are still accepted inside the documented residue and refused after it.
+
+---
+
+Concept (NIST SP 800-63-4 memorized secrets; reviewed 2026-10): user passwords and OAuth client secrets use different KDFs behind different beans, so either can rotate without touching the other.
+Participants: operator or customer account store holding Argon2id hashes, authorization server holding bcrypt client-secret hashes, deploy config owning both.
+Sequence: login password hashed and verified with operatorPasswordEncoder set to Argon2PasswordEncoder.defaultsForSpringSecurity_v5_8; SAS client-secret validation autowires the @Primary PasswordEncoder set to BCryptPasswordEncoder strength 10; the login provider requests the Argon2 bean by qualifier, never the primary.
+Invariant: user-credential work is memory-hard with a single platform configuration, while machine-secret work stays on the SAS default; a change to one never rehashes the other.
+Validation: qualifier on every user-password path points at the Argon2 bean; SAS path resolves the primary bcrypt bean; both hashes carry their own algorithm markers so verification never guesses.
+Failure: one bcrypt bean for everything because it was already there, so a future Argon2 upgrade rewrites all client secrets or a client-secret rotation forces a user-password migration.
+Remediation: keep the two beans and the qualifier, labeled as deployment policy on top of the memorized-secret length-first plus breached-list rule; rotate each store independently.
+Regression test: login with an Argon2 fixture succeeds while a bcrypt user hash is rejected before work, and a client-secret check with an Argon2 hash fails closed.
+
+---
+
+Concept (timing as an enumeration oracle; reviewed 2026-10): password verification costs the same whether or not an account or hash exists.
+Participants: sign-in caller supplying a username string, repository returning an Optional account plus nullable hash, Argon2 verifier owning the fallback hash.
+Sequence: repository reads account plus hash in one LEFT JOIN statement; verifier calls encoder.matches with the supplied password against the stored hash when present and against a random-hash sealed at startup when absent; it returns matched only when both inputs were non-null.
+Invariant: as deployment policy, unknown address, passwordless account, and refused-status account all pay the same Argon2id work as a live account, so response time says nothing about which addresses exist.
+Validation: single-statement read in the repository; fallback hash generated once per process from random bytes; null inputs still run matches before returning false.
+Failure: early return on missing account skips Argon2, so wrong-password on a real address measures slower than unknown-address and the address book is rebuilt from timing whatever the body says.
+Remediation: run the same encoder call on every path, keep the repository to one statement, and assert the property in a timing test rather than by reading the code.
+Regression test: unknown versus known addresses both invoke matches once with overlapping duration distributions, and null password versus null hash both return false after work.
+
+---
+
+Concept (pepper rotation without a dual-read window; reviewed 2026-10): minted tokens carry their pepper version inline, so verification is a single hash lookup.
+Participants: issuer holding a versioned pepper map, token row storing hash plus version, verifier parsing the version from the presented value.
+Sequence: mint builds version plus random 32 bytes as version colon base64url, hashes SHA-256 of value plus secret at that version, stores hash and version; verify parses the integer before the colon, looks up that one secret, hashes once, compares; rotation adds a higher version for new mints while in-flight tokens verify under their own.
+Invariant: as deployment policy, no token is ever valid under two versions at once, and dropping an old secret only kills tokens minted under it, which have already expired.
+Validation: config entries parsed as version colon secret with the highest as current; unknown or malformed version returns no hash rather than throwing; external values without a prefix use hashCurrent on write plus a stored version column with hashWith on compare.
+Failure: unversioned pepper where rotation needs a dual read of old and new secrets for a release, doubling lookup cost and leaving a window where either secret works.
+Remediation: keep version inline for minted values and version column for external values, and refuse to boot production on the dev fallback except when explicitly allowed.
+Regression test: token minted before rotation verifies after rotation, new tokens carry the new version, and removal of the old secret rejects only the old family.
+
+---
+
+Concept (RFC 6749 section 3.1.2 redirection; RFC 8414 discovery; reviewed 2026-10): customer authorization servers validate redirect_uri against verified tenant origins, not against client input.
+Participants: tenant host serving the app, customer auth host serving the IdP, tenant_origins table as the verified origin registry, client registration per tenant host.
+Sequence: tenant admin verifies an origin out of band and it lands in platform.tenant_origins; customer SAS loads per-tenant client registrations with redirect URIs under that origin; at authorize time the server string-compares redirect_uri to the registered value and to the verified origin set; mismatch aborts before owner interaction.
+Invariant: codes and tokens go only to pre-registered destinations on verified origins; the request never creates trust in a new origin.
+Validation: exact string match on scheme host port path as RFC 6749 MUST; tenant binding resolved from the saved authorize request, not from a tenant query parameter; per-chain issuer per RFC 8414 metadata for the customer auth host distinct from the operator auth host.
+Failure: prefix match where https://tenant.example.test/callback also matches https://tenant.example.test/callback.evil.test, or tenant taken from a query field the caller controls, so one tenant mints codes redeemable on another origin.
+Remediation: exact match plus origin-registry check as a MUST on this deployment, one URI per environment, native apps under loopback rules only.
+Regression test: sibling-prefix URI rejected, foreign-tenant origin rejected, and cross-tenant authorize state replayed on another tenant rejected.
+
+---
+
+Concept (emailed-token storage and single use; reviewed 2026-10): raw tokens never touch the database; consumption is one atomic statement.
+Participants: issuer minting a versioned token, mail row carrying no secret, token table holding SHA-256 of token plus pepper with consumed_at plus expires_at, consumer presenting the raw value once.
+Sequence: mint returns version colon random and stores SHA-256 of the full string plus pepper; the mail carries the raw value with an expiry; consume runs UPDATE SET consumed_at equals now WHERE token_hash equals hash plus consumed_at IS NULL plus expires_at greater than now RETURNING user_id; zero rows means invalid, expired, consumed, or wrong-browser with no distinction.
+Invariant: as deployment policy, every present is indistinguishable on the outside, and concurrent presents can succeed at most once because the predicate is part of the write.
+Validation: MessageDigest SHA-256 over UTF-8 bytes of value plus secret; token_hash column unique; browser-binding predicate included for operator flows so a mismatch does not burn the token; verification promotion runs in the same transaction as the burn.
+Failure: SELECT then UPDATE in code where two concurrent presents both read unconsumed and both succeed, or raw token stored so a replica leak becomes a login.
+Remediation: keep the single UPDATE WHERE RETURNING shape, keep raw out of logs and error messages, and retire sibling links in the same statement family.
+Regression test: double-present the same token concurrently and assert exactly one RETURNING row, and present expired and consumed fixtures asserting the same caller-visible refusal.
+
+---
+
+Concept (session binding as theft detection, not as prevention; reviewed 2026-10): each session pins a peppered user-agent hash with a version, checked toxically on use.
+Participants: login handler minting the session, session row storing ua_hash plus ua_hash_version plus created IP, request filter recomputing the hash on each call.
+Sequence: at issue, hashCurrent of the User-Agent plus store of currentVersion; on use, hashWith of the presented User-Agent under the stored version and compare; mismatch on a customer session returns 401 without invalidating so a transient UA change does not log the user out everywhere, while mismatch telemetry is kept; operator bearer paths skip the check, session-cookie paths enforce it.
+Invariant: as deployment policy, a stolen cookie from a different UA fails closed on that request, IP is captured for triage and never enforced, and version rotation keeps old sessions verifying under their own version.
+Validation: pepper purpose separated per use with distinct env names; version column read before hashWith; constant-time compare on the hash bytes; touch throttled so every request does not rewrite the row.
+Failure: UA compared as raw strings in the app tier where a minor version bump logs out a fleet, or binding invalidated on first mismatch so one attacker probe logs out the victim and hides the theft.
+Remediation: keep hashed binding with version, fail the request not the session, and alert on cross-UA reuse of one session id.
+Regression test: replay a session cookie with a different User-Agent and assert 401 with the session still live, and rotate the UA pepper asserting old sessions still verify until expiry.

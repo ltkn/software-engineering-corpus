@@ -645,3 +645,109 @@ try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
 Why: a platform-thread pool exists to amortize thread cost, which disappears here; what remains scarce is the resource behind the call — a connection pool, a downstream quota. Closing the executor blocks until submitted tasks finish, which makes the shutdown path explicit instead of a leak. Holding a monitor across a blocking call pins the carrier, and a large fan-out with pinned carriers is a slow queue with no error.
 Counter-pattern: an `Executors.newFixedThreadPool(200)` renamed to "virtual" because `Thread.ofVirtual` was used to build it, or `synchronized` blocks around a blocking HTTP call, or unbounded fan-out with no semaphore and no downstream limit.
 Check: `jdk.VirtualThreadPinned` events in a 60-second recording under load read as zero for the hot path; the semaphore bound is asserted by a test that counts concurrent downstream calls; the executor is closed, not abandoned.
+
+---
+
+Concept: Per-request identity lives in a ScopedValue binding, not in a ThreadLocal field. API guarantee, ScopedValue final in 25.
+Modern form:
+public final class TenantContext {
+    public static final ScopedValue<TenantContext> CURRENT = ScopedValue.newInstance();
+    private Mode mode = Mode.UNRESOLVED;
+    private UUID tenantId;
+    public static TenantContext current() { return CURRENT.get(); }
+    public static boolean isBound() { return CURRENT.isBound(); }
+}
+TenantContext ctx = new TenantContext();
+ctx.setMode(Mode.CUSTOMER);
+String out = ScopedValue.where(TenantContext.CURRENT, ctx).call(() -> service.handle());
+Why: the binding is lexically scoped and inherited by child virtual threads, so a request cannot leak into the next one on a pooled carrier, and an unbound read fails fast instead of reading stale state. The carrier stays mutable on purpose where layered filters fill fields in, but the binding itself is replaced, never mutated in place.
+Counter-pattern: a static ThreadLocal cleared in a finally block that is skipped on an async hop, so the next request on the thread sees the previous tenant; or a singleton holder set at filter entry and read in the repository.
+Check: a test calling the repository outside any binding asserts default-deny, and a test binding two tenants on two virtual threads asserts neither sees the other.
+
+---
+
+Concept: Async hand-off re-binds a fresh carrier from a snapshot taken on the submitting thread. Convention with implementation-behavior consequences for virtual threads.
+Modern form:
+public Runnable decorate(Runnable task) {
+    TenantContextSnapshot snap = TenantContext.isBound() ? TenantContextSnapshot.of(TenantContext.current()) : TenantContextSnapshot.empty();
+    boolean wasAdmin = AdminContext.isAdmin();
+    return () -> {
+        TenantContext fresh = new TenantContext();
+        fresh.restore(snap);
+        ScopedValue.Carrier c = ScopedValue.where(TenantContext.CURRENT, fresh);
+        Runnable scoped = wasAdmin ? c.where(AdminContext.CURRENT, Boolean.TRUE).run(task) : c.run(task);
+        scoped.run();
+    };
+}
+Why: the snapshot must be taken synchronously inside the bound scope, because the submitter scope may unwind before the worker runs. Each task gets a fresh mutable carrier so concurrent tasks do not step on each other's writes, and admin is re-bound only when the submitter was admin, otherwise a worker would observe isBound and wrongly treat itself as a re-entrant no-op.
+Counter-pattern: sharing the submitter instance across tasks, or capturing TenantContext.current() lazily inside the worker where it is already unbound; or binding admin false unconditionally and silently downgrading to the primary pool.
+Check: an @Async test asserting the worker sees the tenant id and the admin flag of the submitter, plus a parallel-fork test asserting two tasks mutating their copies do not interfere.
+
+---
+
+Concept: A closed set of outcomes is a sealed interface with record members, matched exhaustively. Language guarantee, exhaustiveness checked by javac 25.
+Modern form:
+public sealed interface Decision permits Decision.Allowed, Decision.Denied {
+    record Allowed() implements Decision {}
+    record Denied(String reason, long retryAfterMs) implements Decision {}
+}
+Decision d = limiter.check(key);
+if (d instanceof Decision.Denied denied) {
+    return problem(429, denied.reason(), denied.retryAfterMs());
+}
+Why: the compiler proves every branch is handled, so adding a third outcome breaks the build instead of falling through a default. Records carry the denial payload without an exception, which keeps the hot path allocation-free enough and the policy swappable behind the interface.
+Counter-pattern: a boolean plus an out-param reason string, or an enum with a nullable detail field where half the cases ignore it; or catching a generic exception to mean denied.
+Check: javac fails when a switch over Decision lacks a case; a unit test asserts every Denied carries a non-empty reason and a positive retry window.
+
+---
+
+Concept: Tunables for pools and clients are immutable records bound by @ConfigurationProperties. API guarantee for binding, convention for immutability.
+Modern form:
+@ConfigurationProperties("cortex.db")
+public record CortexDbProperties(Pool app, Pool admin, Pool oauth2, Pool session) {
+    public record Pool(String url, String username, String password, int maximumPoolSize, int minimumIdle) {}
+}
+Why: the record makes the configuration surface explicit and unchangeable after binding, so a pool size cannot be mutated halfway through a test. Nested records keep per-pool values together instead of a flat prefix soup, and Boot validates the shape at startup rather than at first checkout.
+Counter-pattern: @Value strings scattered across three config classes with different defaults, so staging and prod disagree on timeouts; or a mutable @Component holding pool sizes with setters called from a test that leaks into the next one.
+Check: the context fails fast on a missing url in a slice test, and a properties-binding test asserts defaults for pool sizes without opening a connection.
+
+---
+
+Concept: Keyset pages ask for one row more than they return, and the extra row decides the cursor. Heuristic turned into a tested invariant.
+Modern form:
+public record Page<T>(List<T> items, String next) {
+    public static final int MAX_SIZE = 200;
+    public static int fetchSize(int size) {
+        if (size < 1 || size > MAX_SIZE) throw new IllegalArgumentException("page size must be between 1 and " + MAX_SIZE);
+        return size + 1;
+    }
+    public static <T> Page<T> of(List<T> fetched, int size, java.util.function.Function<T, String> cursorOf) {
+        if (fetched.size() <= size) return new Page<>(fetched, null);
+        List<T> items = fetched.subList(0, size);
+        return new Page<>(items, cursorOf.apply(items.getLast()));
+    }
+}
+SELECT id, created_at FROM audit_log WHERE tenant_id = $1 AND (occurred_at, id) < ($2, $3) ORDER BY occurred_at DESC, id DESC LIMIT $4;
+Why: the plus-one row means the last page never hands out a cursor to an empty page, and the (occurred_at, id) tiebreak keeps duplicate timestamps stable. MAX_SIZE bounds one request whatever the client asks, which is the same overflow policy as the API rate limit.
+Counter-pattern: OFFSET with a page number from the client, scanning and discarding 10k rows by page 400; or a next token that is a row offset the client can edit to skip ahead.
+Check: a concatenation test asserting pages stitched together equal the full ordered query with no gaps or duplicates, and a test asserting size 0 and size 201 both throw before any SQL runs.
+
+---
+
+Concept: Cursors are opaque, unsigned, and strictly decoded, because RLS already authorizes every row. Convention, enforced by review and test.
+Modern form:
+public static String encode(Object... parts) {
+    StringBuilder raw = new StringBuilder("1");
+    for (Object p : parts) raw.append("|").append(String.valueOf(p));
+    return Base64.getUrlEncoder().withoutPadding().encodeToString(raw.toString().getBytes(StandardCharsets.UTF_8));
+}
+public static <K> K decode(String cursor, int parts, Function<List<String>, K> parse) {
+    if (cursor.isEmpty() || cursor.length() > 512) throw new InvalidCursorException();
+    String raw = new String(Base64.getUrlDecoder().decode(cursor), StandardCharsets.UTF_8);
+    List<String> split = List.of(raw.split("\\|", -1));
+    if (split.size() != parts + 1 || !split.getFirst().equals("1")) throw new InvalidCursorException();
+    return parse.apply(split.subList(1, split.size()));
+}
+Why: a forged cursor only moves the starting position, because the query re-applies tenant filters and RLS, so signing adds cost without security. Strictness still matters: bounded length, exact version, exact part count, caller-owned parsing, anything else mapped to 400 so a probe cannot smuggle a second predicate through the token.
+Counter-pattern: a JSON cursor the client can edit to change sort order, or a signed cursor whose verification runs after the query; or lenient Base64 decoding that accepts newlines and padding variants and then fails deep in the mapper.
+Check: a forged cursor test asserts 200 with tenant-scoped rows only, and a fuzz test over truncated, overlong, and wrong-version tokens asserts InvalidCursorException on every input.

@@ -221,3 +221,35 @@ Micro-example: A coding agent edits a file, re-runs the test, reads the same ass
 Assumption: Each step emits a structured event (tool, arguments, result hash, token cost), so identical calls and repeated failures are detectable; the task carries a step limit, a token limit and a wall-clock limit, and exhausting one is a normal terminal state, not an error to swallow.
 Misuse cost: Undetected looping is the most expensive class of agent failure: it looks like work in the transcript, it produces cost without progress, and it scales with the autonomy granted. Retry-on-empty-response, added to help, multiplies it.
 Verification: A test with a stubbed tool that always fails the same way asserts the run terminates within the step budget and the terminal event names the reason; a replay of a recorded loop transcript asserts the detector fires on it, and the eval reports per-task step counts so a distributional change in looping shows up as a metric rather than as a bill (the cost-accounting requirement is 29's, the suite discipline is 18's).
+
+---
+
+Concept: Section-104 pooled average cost for same-asset holdings.
+Micro-example: buy 100 shares at 200.00, buy 100 at 220.00, sell 100 at 250.00. Pool before sale holds 200 shares at total cost 42000.00, average 210.00. The disposal takes 100 at 210.00, gain 4000.00. Pool after holds 100 at 210.00. A second buy of 50 at 240.00 moves the pool to 150 shares at 33000.00, average 220.00.
+Assumption: all acquisitions are in the pool unless same-day or 30-day rules claim them first; costs include fees that are part of allowable expenditure; the pool is per asset class, not per account.
+Misuse cost: averaging across different assets, or resetting the average after each sale, which understates gains on rising books and overstates them on falling ones.
+Verification: pool cost plus gains reconciles to total proceeds minus total costs to the penny; a sell-all empties the pool to zero shares and zero cost; the recompute gate reruns the arithmetic from the trade list.
+
+---
+
+Concept: Same-day and 30-day bed-and-breakfast matching before the pool.
+Micro-example: sell 50 at 300.00 on 10 May, buy 50 at 290.00 on 12 May, pool average 200.00. The 30-day rule matches the sale against the 12 May buy first: gain 500.00 on that leg, not 5000.00 from the pool. Same-day buys match first in the same way; only the unmatched remainder touches Section-104.
+Assumption: matching order is statutory: same-day, then 30-day, then pool; losses on the matched legs follow the same order; corporate actions adjust the pool before matching runs.
+Misuse cost: pooling everything and ignoring the 30-day leg, which manufactures a loss to harvest while repurchasing the same exposure.
+Verification: a sale flanked by a same-day buy and a 12-day-later buy asserts both legs matched before any pool quantity moves; a sale with no nearby buys asserts full pool treatment.
+
+---
+
+Concept: Money as an explicit amount plus currency with one MathContext, plus taxpayer-favourable rounding per year.
+Micro-example: proceeds 1000.60 floored to 1000, allowable costs 400.40 ceilinged to 401, gain for the year 599. Two legs in different currencies never sum: GBP 100 plus USD 100 throws Currency mismatch rather than 200 of something. All intermediate products use DECIMAL128 HALF_EVEN so the Java port matches the reference implementation on fixtures.
+Assumption: rounding applies once per year to totals, not per trade; FX conversion happens before combining via a dated rate table; zero adopts the other operand's currency only for accumulator seeding.
+Misuse cost: double rounding on money objects plus float arithmetic, drifting a gain by whole units across a year; or silently summing mixed currencies at par.
+Verification: floor and ceiling fixtures assert whole units in the favouring direction, mixed-currency addition asserts a throw, and a 20-trade year recomputes identically under DECIMAL128 from the trade list.
+
+---
+
+Concept: Fiscal-year cutover on 6 April, and never returning partial history as complete.
+Micro-example: a disposal on 5 April 2025 falls in tax year 2024, a disposal on 6 April 2025 falls in 2025. A price table covering 1 Jan to 1 Mar asked for a gain needing February prices succeeds; the same table asked for a gain needing December prices throws HyperliquidHistoryTooLong instead of pricing from an incomplete window.
+Assumption: year identifier is the calendar year the period begins in; residency splits the same cutover per person; the history window is a stated input, not an inferred one.
+Misuse cost: calendar-year grouping that moves April gains a year early, or truncating missing prices and presenting a partial gain as final.
+Verification: 5 April versus 6 April fixtures assert adjacent years, and an over-window request asserts the named exception with no partial result returned.
