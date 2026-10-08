@@ -628,3 +628,44 @@ Wiring:
 Why: recording the mail_sent row synchronously means a rollback sends nothing, and dispatching from an AFTER_COMMIT listener on a worker thread means the response never waits for the mail API. The MailRequest factories encode the choice: of derives the idempotency key from the value for one-time tokens where a retry must dedup, occurrence mints a fresh key for notices whose value legitimately repeats.
 Misconfiguration: sending synchronously in the controller, so a slow provider becomes a login timeout; or AFTER_COMMIT without a TaskDecorator, so the worker loses TenantContext and audit writes default-deny; or using of for a repeatable notice, suppressing the second mail forever as ALREADY_SENT.
 Verification: a test rolling back the transaction asserting no provider call, a test asserting the response returns before the provider stub completes, and a duplicate-send test asserting token mails dedup while notice mails do not.
+
+---
+
+Goal: Approve or deny a refund with ownership, idempotency, and a single transaction.
+Wiring:
+import java.util.Objects;
+import java.util.UUID;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+@Service
+final class RefundService {
+    private final RefundRepository refunds;
+    private final OrderQueries orders;
+    RefundService(RefundRepository refunds, OrderQueries orders) {
+        this.refunds = Objects.requireNonNull(refunds, "refunds");
+        this.orders = Objects.requireNonNull(orders, "orders");
+    }
+    @Transactional
+    RefundOutcome decide(UUID tenantId, UUID orderId, long amountMinor, String idempotencyKey) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        Objects.requireNonNull(orderId, "orderId");
+        if (idempotencyKey == null || idempotencyKey.isBlank()) throw new IllegalArgumentException("idempotencyKey required");
+        var existing = refunds.findByIdempotencyKey(tenantId, idempotencyKey);
+        if (existing.isPresent()) return existing.get();
+        var order = orders.findOwned(tenantId, orderId);
+        if (order.isEmpty()) throw new OrderNotOwnedException(orderId);
+        if (!order.get().status().equals("paid")) throw new IllegalStateException("only paid orders are refundable");
+        var outcome = new RefundPolicy(50_00).decide(orderId, amountMinor, order.get().fraudFlag(), order.get().firstRefund());
+        refunds.insert(tenantId, orderId, outcome, idempotencyKey);
+        return outcome;
+    }
+}
+Why: the first hypothesis was trusting the tenant_id from the request body; it was killed by a test posting another tenant's order id and getting 200 instead of 403. The discriminating measurement is service-level ownership (findOwned scoped by tenant) versus database RLS denial — the service returns 403 with a problem body, RLS would raise 42501. Constructor injection plus requireNonNull fails fast at wiring time; the idempotency lookup makes retries safe; one transaction means the refund row and the audit row commit together or not at all.
+Misconfiguration: field injection with a null repository failing at 2am; check-then-insert in application code racing duplicate refunds under retry; catching the ownership exception and returning an empty approval that the controller maps to 200.
+Verification: slice test posts a foreign order id and asserts the problem body
+{
+  "type": "urn:acme:problem:forbidden",
+  "title": "Not your order",
+  "status": 403
+}
+plus a concurrent double-submit test asserting one row, and a rollback test asserting no refund row survives a failed audit write.

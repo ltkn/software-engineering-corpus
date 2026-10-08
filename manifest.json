@@ -12,8 +12,8 @@
   },
   "bundle": {
     "target_tokens": "200k-250k weighted",
-    "blocks_counted": 1449,
-    "unweighted_estimate": "~201.8k est of 1444 counted blocks in the 28 weighted files (bytes/5.5 pre-check, reasoning pass 2026-10-07; ~813.6k as sum(tokens x weight); all 31 bundle-scope files including the unweighted 29/30 are 1449 blocks)",
+    "blocks_counted": 1475,
+    "unweighted_estimate": "~214.1k est of 1470 counted blocks in the 28 weighted files (bytes/5.5 pre-check, code-density pass 2026-10-08 +8 blocks plus edit-mechanics pass 2026-10-08 +6 blocks plus comprehension-algo-dialect pass 2026-10-08 +12 blocks; ~865.2k as sum(tokens x weight); all 31 bundle-scope files including the unweighted 29/30 are 1475 blocks)",
     "eval": [
       "eval/heldout-se.txt",
       "eval/heldout-general.txt",
@@ -33,8 +33,8 @@
     },
     {
       "id": "02-repair-loops",
-      "blocks": 87,
-      "tokens": "est ~11.9k (pre-check 64.0 KB, ~137/block, 2026-10-07)",
+      "blocks": 89,
+      "tokens": "est ~12.7k (pre-check 68.3 KB, ~143/block, 2026-10-08)",
       "share": 4.5,
       "code_forward_target": null
     },
@@ -54,8 +54,8 @@
     },
     {
       "id": "05-agentic-coding",
-      "blocks": 53,
-      "tokens": "est ~9.7k (pre-check 52.1 KB, ~183/block, 2026-10-07)",
+      "blocks": 55,
+      "tokens": "est ~10.4k (pre-check 56.0 KB, ~190/block, 2026-10-08)",
       "share": 5.0,
       "code_forward_target": null
     },
@@ -89,22 +89,22 @@
     },
     {
       "id": "10-java",
-      "blocks": 77,
-      "tokens": "est ~10.6k (pre-check 57.1 KB, ~138/block, 2026-10-07)",
+      "blocks": 80,
+      "tokens": "est ~12.2k (pre-check 65.6 KB, ~153/block, 2026-10-08)",
       "share": 7.5,
       "code_forward_target": ">=40%"
     },
     {
       "id": "11-spring",
-      "blocks": 65,
-      "tokens": "est ~8.2k (pre-check 44.3 KB, ~127/block, 2026-10-07)",
+      "blocks": 66,
+      "tokens": "est ~8.7k (pre-check 46.9 KB, ~132/block, 2026-10-08)",
       "share": 7.0,
       "code_forward_target": ">=40%"
     },
     {
       "id": "12-postgresql",
-      "blocks": 68,
-      "tokens": "est ~9.1k (pre-check 48.6 KB, ~133/block, 2026-10-07)",
+      "blocks": 71,
+      "tokens": "est ~10.6k (pre-check 56.9 KB, ~149/block, 2026-10-08)",
       "share": 6.0,
       "code_forward_target": ">=40%"
     },
@@ -124,29 +124,29 @@
     },
     {
       "id": "15-typescript",
-      "blocks": 54,
-      "tokens": "est ~7.6k (pre-check 40.6 KB, ~140/block, 2026-10-07)",
+      "blocks": 56,
+      "tokens": "est ~8.4k (pre-check 45.3 KB, ~151/block, 2026-10-08)",
       "share": 4.0,
       "code_forward_target": ">=45%"
     },
     {
       "id": "16-vue",
-      "blocks": 56,
-      "tokens": "est ~8.1k (pre-check 43.4 KB, ~144/block, 2026-10-07)",
+      "blocks": 58,
+      "tokens": "est ~9.0k (pre-check 48.6 KB, ~156/block, 2026-10-08)",
       "share": 3.5,
       "code_forward_target": ">=40%"
     },
     {
       "id": "17-tanstack",
-      "blocks": 52,
-      "tokens": "est ~7.8k (pre-check 41.6 KB, ~149/block, 2026-10-07)",
+      "blocks": 53,
+      "tokens": "est ~8.3k (pre-check 44.6 KB, ~157/block, 2026-10-08)",
       "share": 3.0,
       "code_forward_target": ">=35%"
     },
     {
       "id": "18-testing",
-      "blocks": 42,
-      "tokens": "est ~4.8k (pre-check 25.6 KB, ~114/block, 2026-10-07)",
+      "blocks": 43,
+      "tokens": "est ~5.1k (pre-check 27.6 KB, ~120/block, 2026-10-08)",
       "share": 3.0,
       "code_forward_target": ">=25%"
     },
@@ -159,22 +159,22 @@
     },
     {
       "id": "20-observability",
-      "blocks": 30,
-      "tokens": "est ~4.1k (pre-check 22.1 KB, ~137/block, 2026-10-07)",
+      "blocks": 31,
+      "tokens": "est ~4.5k (pre-check 24.0 KB, ~144/block, 2026-10-08)",
       "share": 2.5,
       "code_forward_target": ">=25%"
     },
     {
       "id": "21-linux-infra",
-      "blocks": 42,
-      "tokens": "est ~5.4k (pre-check 29.1 KB, ~129/block, 2026-10-07)",
+      "blocks": 45,
+      "tokens": "est ~6.5k (pre-check 34.9 KB, ~144/block, 2026-10-08)",
       "share": 3.5,
       "code_forward_target": ">=45%"
     },
     {
       "id": "22-python",
-      "blocks": 29,
-      "tokens": "est ~3.4k (pre-check 18.5 KB, ~119/block, 2026-10-07)",
+      "blocks": 34,
+      "tokens": "est ~5.7k (pre-check 30.4 KB, ~166/block, 2026-10-08)",
       "share": 2.5,
       "code_forward_target": ">=40%"
     },

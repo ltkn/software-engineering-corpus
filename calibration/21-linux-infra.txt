@@ -373,3 +373,84 @@ sysctl net.netfilter.nf_conntrack_max net.netfilter.nf_conntrack_tcp_timeout_est
 Reading: the upstream's logs are silent because the packet never arrived, so the first question is not which service is broken but where the path drops. The counters answer it directly: `insert_failed` and `drop` climbing during bursts, with the kernel log saying so, is the whole diagnosis, and the reason it is burst-shaped and not load-shaped is that a conntrack entry is created per new connection — a burst of short connections exhausts the table while a steady stream of keep-alive connections does not. The wrong fixes are all timeouts: raising `established` timeouts makes it worse, because entries live longer and the table fills sooner.
 Misconfiguration: fixing it by adding a service mesh sidecar "for observability", which adds another conntrack-using layer to the same node; or raising `nf_conntrack_max` per node while leaving the default 5-day `established` timeout, which just postpones the full table by a predictable interval.
 Verification: the counters stay flat through a synthetic connection burst (`hey` or `wrk2` with keep-alive disabled), the table size and the `established` timeout are both in the node configuration with the burst rate that motivated them, and an alert on `insert_failed` growth exists so the next occurrence names the node before a user files the ticket.
+
+---
+
+Goal: GitHub Actions with pinned actions and secretless forks, as runnable shape rather than advice.
+Wiring:
+name: verify
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions: {}
+jobs:
+  pinlint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd7198a0f7a9e8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b
+      - run: ./ops/pin-lint .github/workflows
+  verify:
+    needs: [pinlint]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd7198a0f7a9e8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b
+      - uses: actions/setup-java@5c1c8a3d6f3e2b1c0a9d8f7e6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1
+        with:
+          java-version: "25"
+          distribution: temurin
+      - run: ./mvnw -q verify
+  deploy:
+    needs: [verify]
+    if: github.ref == 'refs/heads/main' && github.event.pull_request.head.repo.fork == false
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11bd7198a0f7a9e8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b
+      - run: ./deploy/release.sh --sha ${{ github.sha }}
+Why: every action pinned by hash so a moved tag changes nothing; default-empty permissions so each job declares exactly what it needs; the fork condition plus the environment gate means untrusted code runs the verify jobs with zero secrets while only main with approval reaches the deploy that mints cloud credentials from OIDC. The first hypothesis when fork builds fail is "runners are broken"; it is killed by the secret audit showing main green on the same runner pool.
+Misconfiguration: actions/checkout@v4 floating plus secrets shared into fork runs, so a tag move breaks main and a malicious fork reads production credentials; or one job doing lint plus test plus deploy with write-all permissions, where any step can exfiltrate anything.
+Verification: pin-lint on workflow files clean; fork-job secret audit asserts zero secrets resolvable; 5 consecutive builds green across fork and main; the failing shape before the fix was 2026-10-08T09:14:02Z ##[error] deploy job on fork resolved DEPLOY_KEY — failing closed now instead.
+
+---
+
+Goal: Multi-stage image builds that stay fast and land non-root by digest.
+Wiring:
+FROM eclipse-temurin:25-jre AS deps
+WORKDIR /build
+COPY mvnw ./
+COPY .mvn/ .mvn/
+COPY pom.xml ./
+RUN ./mvnw -q dependency:go-offline
+FROM deps AS build
+COPY src ./src
+RUN ./mvnw -q package -DskipTests
+FROM gcr.io/distroless/java25-debian@sha256:9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a19087f6e5d4c3b2a19087f6e5d4c3b2
+USER 65532
+COPY --from=build --chown=65532:65532 /build/target/orders-api.jar /app/orders-api.jar
+ENTRYPOINT ["/usr/bin/java", "-jar", "/app/orders-api.jar"]
+Why: dependency layers copy lockfiles only, so code changes reuse the cached deps layer; the runtime stage copies one artifact onto a digest-pinned distroless base with no shell and no package manager, running as non-root. The first hypothesis when builds take 6 minutes is "the runner is slow"; it is killed by layer inspection showing the deps layer rebuilding on every keystroke because source was copied before install. Digest pins make rollback meaningful: the previous revision still refers to the previous image, which a floating tag destroys.
+Misconfiguration: COPY . . before install (every edit invalidates deps); FROM ...:latest as root with curl and git for debugging, 400 CVEs per image; HEALTHCHECK hitting a personalized endpoint so the probe passes for one tenant and fails the rollout for the rest.
+Verification: no-op rebuild 8s with deps CACHED, code-only rebuild 41s against 342s before the reorder; image scan zero criticals past SLA; whoami returns 65532; shell-absence probe fails closed. BuildKit lines after the fix read => [deps 3/3] CACHED and => [build] exporting to image with digest sha256:9f8e… recorded in the release notes.
+
+---
+
+Goal: Prove the deployed digest equals the built digest, in shell with jq, failing closed.
+Wiring:
+set -euo pipefail
+BUILT="$(docker inspect "registry.internal/orders-api:${TAG}" | jq -r '.[0].RepoDigests[0]')"
+RUNNING="$(kubectl get deploy/orders-api -n orders -o json | jq -r '.spec.template.spec.containers[0].image')"
+if [ "${BUILT}" != "${RUNNING}" ]; then
+  echo "DIGEST MISMATCH built=${BUILT} running=${RUNNING}" >&2
+  exit 1
+fi
+echo "DIGEST OK ${RUNNING}"
+kubectl rollout history deploy/orders-api -n orders | awk '/REVISION/ {next} {print $1}' | tail -2
+Why: tags move and digests do not, so the comparison is on the digest strings with -r raw output (quoted JSON strings never equal their bare forms, and the missing -r is the classic silent-always-mismatch). set -euo pipefail plus the explicit non-zero exit means a mismatch fails the pipeline — a script that echoes MISMATCH and exits 0 is the failure mode this shape exists to prevent, and the drill asserts the exit code, not the message. jq owns the JSON (one expression per document, no grep/sed on structured output); awk owns the columnar rollout history (skip the header, print the revision column). The first hypothesis when the check flakes is "the registry is slow"; it is killed by rerunning with the two captured values printed — equal strings with different tags is a tag problem, different strings is a real drift.
+Misconfiguration: comparing tags (latest equals latest while the digests differ); grep -o on docker inspect JSON breaking on the next field reorder; the check as an echo-only step whose failure scrolls past in a green pipeline.
+Verification: a stale-digest drill (deploy the previous revision, run the script) exits 1 naming both digests; shellcheck clean; the sample below is the passing shape:
+$ docker inspect "registry.internal/orders-api:2026.10.08-142" | jq -r '.[0].RepoDigests[0]'
+registry.internal/orders-api@sha256:9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a19087f6e5d4c3b2a19087f6e5d4c3b2
+DIGEST OK registry.internal/orders-api@sha256:9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a19087f6e5d4c3b2a19087f6e5d4c3b2

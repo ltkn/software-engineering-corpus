@@ -597,3 +597,73 @@ curl -s -H 'Cookie: ab_bucket=b' https://shop.test/orders | diff - <(curl -s htt
 Why: mismatch means two renders disagree, and behind a cache the two renders may not be the same *request*. The ladder: (1) render the same URL twice from the origin and compare — if the origin is non-deterministic, it is the app (locale from the container default, a date in the template, an id generated per render rather than `useId`); (2) if the origin is deterministic but the CDN copy differs, the cache is serving one user's markup to another — a personalisation or experiment read *before* the cache decision, so a bucket-b variant is cached for bucket-a users; (3) if the mismatch appears only after a client-side update, it is not hydration at all but a render-phase side effect, and the warning text says which.
 Pitfall: "fixing" it by silencing hydration — a `v-if="mounted"` wrapper around the panel, or filtering the warning out of `app.config.warnHandler` — that turns a correctness bug into a flash and a longer time-to-interactive, and it hides case (2) entirely, which is the expensive one because it also leaks one user's markup to another.
 Verification: a pipeline job fetches a page through the CDN twice with different bucket cookies and asserts the cached copy differs where personalisation is expected and does not differ where it is not; the hydration test compares server and client HTML strings for a fixture rather than watching the console.
+
+---
+
+Goal: A paginated refund table that survives refactors, with loading, error, and empty states.
+Wiring:
+<script setup lang="ts">
+import { computed, onUnmounted, ref } from "vue";
+import { useTemplateRef } from "vue";
+const props = defineProps<{ tenantId: string; pageSize?: number }>();
+const emit = defineEmits<{ retry: [cursor: string | null] }>();
+const rows = ref<ReadonlyArray<{ id: string; amount: string; status: string }>>([]);
+const cursor = ref<string | null>(null);
+const state = ref<"idle" | "loading" | "error" | "empty">("idle");
+const failure = ref<string | null>(null);
+const searchInput = useTemplateRef("search-box");
+const ctrl = ref<AbortController | null>(null);
+const limit = computed(() => props.pageSize ?? 25);
+async function load(next: string | null): Promise<void> {
+  ctrl.value?.abort();
+  const current = new AbortController();
+  ctrl.value = current;
+  state.value = "loading";
+  failure.value = null;
+  try {
+    const qs = new URLSearchParams({ tenant: props.tenantId, limit: String(limit.value) });
+    if (next) qs.set("cursor", next);
+    const res = await fetch(`https://api.example.com/refunds?${qs}`, { signal: current.signal });
+    if (!res.ok) throw new Error(`refunds failed: ${res.status}`);
+    const body = (await res.json()) as { items: typeof rows.value; nextCursor: string | null };
+    rows.value = body.items;
+    cursor.value = body.nextCursor;
+    state.value = body.items.length === 0 ? "empty" : "idle";
+  } catch (e) {
+    if (current.signal.aborted) return;
+    state.value = "error";
+    failure.value = e instanceof Error ? e.message : "Unknown error";
+  }
+}
+onUnmounted(() => ctrl.value?.abort());
+</script>
+<template>
+  <section aria-label="Refunds">
+    <input ref="search-box" type="search" placeholder="Search refunds" />
+    <p v-if="state === 'loading'" role="status">Loading refunds…</p>
+    <p v-else-if="state === 'error'" role="alert">{{ failure }} <button @click="emit('retry', cursor)">Retry</button></p>
+    <p v-else-if="state === 'empty'" role="status">No refunds for this tenant.</p>
+    <table v-else>
+      <tbody>
+        <tr v-for="r in rows" :key="r.id"><td>{{ r.id }}</td><td>{{ r.amount }}</td><td>{{ r.status }}</td></tr>
+      </tbody>
+    </table>
+  </section>
+</template>
+<style scoped>
+section { display: grid; gap: 0.75rem; }
+table { border-collapse: collapse; width: 100%; }
+td { padding: 0.5rem 0.75rem; border-top: 1px solid #e2e2e2; }
+</style>
+Why: the first hypothesis was deriving row state with a watcher that patched copies back; it was killed by a test where a slow-then-fast double load rendered the older page last. Explicit state plus AbortController makes the race impossible: the older response returns after abort and writes nothing. Typed props/emits keep the contract compiler-checked; the tri-state template (loading/error/empty) means tests assert behaviour, never internal refs. Scoped CSS keeps the table shape local instead of leaking global table rules.
+Pitfall: fetching in onMounted for server-rendered content (hydration flash); index keys in v-for turning every insert into a full re-render; a v-if="mounted" wrapper silencing hydration instead of fixing the deterministic render.
+Verification: $ vue-tsc --noEmit clean; tests assert abort on unmount, slow-then-fast resolves to latest, empty tenant renders the empty status, and a renamed emit fails type-check.
+
+---
+
+Goal: Explain the refund table component to a reviewer in ownership terms: what owns what, and what breaks when each piece is removed.
+Wiring:
+props (tenantId, pageSize) own the query identity — change them and a different tenant's refunds load; the AbortController owns cancellation — abort the previous request before starting the next, and unmount aborts the last; state owns exactly one of idle/loading/error/empty — no boolean quartet drifting into impossible combinations (loading plus error); the template owns the tri-state branch (role status versus alert) plus the v-for with :key="r.id"; the emit owns the retry intent — the component asks, the parent decides; scoped style owns layout only, never visibility (no display:none standing in for state).
+Why: one-way data flow keeps the explanation short: fetch writes rows, rows drive state, state drives the template, the template never writes back except through emit. The first hypothesis when the table shows stale pages is "the cache is wrong"; it is killed faster by asking who owns the write — only load() writes rows, and load() aborts its predecessor, so a stale render means two loaders exist (usually a duplicate component instance with the same key, or a second fetch in a watcher patching rows on the side). The discriminating check per owner: remove the abort and the slow-then-fast test fails; remove the empty branch and the zero-rows test renders a bare table; change :key to the array index and the reorder test re-renders every row.
+Pitfall: explaining via implementation (naming refs and locals) instead of ownership — a rename then invalidates the explanation; or adding a fifth state boolean for refreshing, recreating the impossible combinations the four-string state removed.
+Verification: deletion test per owner (each removal names its failing test); a reviewer who has only this block can predict which test fails for each deletion without opening the file.

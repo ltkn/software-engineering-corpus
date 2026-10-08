@@ -767,3 +767,125 @@ Modern form: `ApiError` permits `NotFound`, `Conflict`, `Forbidden`, `RateLimite
 Why: the failure mode it removes is the silent default. `default -> 500` compiles forever and quietly maps a new 429 to a 500, which changes client retry behaviour, which changes load under incident, which changes the incident. Exhaustiveness makes the addition site pay the cost, immediately, in the file that added the type — the cheapest possible moment to notice.
 Counter-pattern: sealed interfaces with a wildcard branch everywhere, which keeps the syntax and throws away the reasoning; or an enum with an integer status field maintained by a `Map` that no compiler checks and no test covers, so the map silently lacks the newest entry.
 Check: deleting a branch fails the build (assert this by mutation, not by habit); an architecture test forbids `default ->` in mappings over sealed error types, and the mapping's test enumerates the permits list so a new permit without a test is visible.
+
+---
+
+Concept: A complete refund-decision module holds validation, exhaustiveness, and error mapping in one place. Language guarantee plus convention.
+Modern form:
+import java.util.Objects;
+import java.util.UUID;
+sealed interface RefundOutcome permits RefundOutcome.Approved, RefundOutcome.Denied, RefundOutcome.NeedsReview {
+    record Approved(UUID orderId, long amountMinor, String reason) implements RefundOutcome {
+        Approved {
+            Objects.requireNonNull(orderId, "orderId");
+            if (amountMinor <= 0) throw new IllegalArgumentException("amountMinor must be positive");
+            reason = Objects.requireNonNull(reason, "reason").trim();
+            if (reason.isEmpty()) throw new IllegalArgumentException("reason required");
+        }
+    }
+    record Denied(UUID orderId, String code, String detail) implements RefundOutcome {
+        Denied {
+            Objects.requireNonNull(orderId, "orderId");
+            if (!code.matches("[A-Z_]{4,40}")) throw new IllegalArgumentException("code must be UPPER_SNAKE");
+        }
+    }
+    record NeedsReview(UUID orderId, String queue, int slaHours) implements RefundOutcome {
+        NeedsReview {
+            Objects.requireNonNull(orderId, "orderId");
+            if (slaHours < 1 || slaHours > 72) throw new IllegalArgumentException("slaHours 1..72");
+        }
+    }
+}
+final class RefundPolicy {
+    private final long autoApproveLimitMinor;
+    RefundPolicy(long autoApproveLimitMinor) {
+        if (autoApproveLimitMinor < 0) throw new IllegalArgumentException("limit must be non-negative");
+        this.autoApproveLimitMinor = autoApproveLimitMinor;
+    }
+    RefundOutcome decide(UUID orderId, long amountMinor, boolean fraudFlag, boolean firstOffense) {
+        Objects.requireNonNull(orderId, "orderId");
+        if (fraudFlag) return new RefundOutcome.Denied(orderId, "FRAUD_HOLD", "manual review required");
+        if (amountMinor <= autoApproveLimitMinor && firstOffense)
+            return new RefundOutcome.Approved(orderId, amountMinor, "within auto-approve limit");
+        return switch (Long.signum(amountMinor - autoApproveLimitMinor)) {
+            case -1, 0 -> new RefundOutcome.Approved(orderId, amountMinor, "within auto-approve limit");
+            default -> new RefundOutcome.NeedsReview(orderId, "refunds", 24);
+        };
+    }
+    int status(RefundOutcome o) {
+        return switch (o) {
+            case RefundOutcome.Approved ignored -> 200;
+            case RefundOutcome.Denied ignored -> 403;
+            case RefundOutcome.NeedsReview ignored -> 202;
+        };
+    }
+}
+Why: the first hypothesis was an OFFSET-paged refund list plus a stringly-typed outcome; it was killed by two measurements — the page-400 scan at 900ms and a test where a new outcome compiled while the status map silently kept the old entries. Records put validation in the compact constructor so no caller can build an invalid outcome; the sealed permits list plus the exhaustive switch turns a new outcome into a build break at every mapping; the policy object carries the limit as state instead of a magic constant. A sanity check before believing: construct each outcome with blank and boundary values and assert the exact exception message names the field.
+Counter-pattern: a mutable RefundDto with setters plus a static Map<String, Integer> status table maintained beside the code; or a switch statement with a default that maps every future outcome to 500 and changes retry behaviour under incident.
+Check: unit tests construct boundary values (zero and negative amounts rejected, 72h accepted, 73h rejected); deleting any switch branch fails compilation; architecture test bans default branches over RefundOutcome; test run reports [INFO] Tests run: 9, Failures: 0, Errors: 0.
+
+---
+
+Concept: Spot the bug: a status map that compiles, passes three tests, and lies about the fourth. Language guarantee versus convention.
+Modern form:
+int status(RefundOutcome o) {
+    return switch (o) {
+        case RefundOutcome.Approved ignored -> 200;
+        case RefundOutcome.Denied ignored -> 403;
+        case RefundOutcome.NeedsReview ignored -> 202;
+    };
+}
+Why: spotting it is mechanical, not clever. Enumerate the permits list (Approved, Denied, NeedsReview) against the branches: three and three, no default, so a fourth permit breaks the build at the mapping instead of at 2am. The first hypothesis during the incident was a gateway misconfiguration returning 500s on rate-limited checkouts; it was killed by reading the service log, which showed the 500 originating in this method, not at the edge. The sanity check that ends it: add a fourth permit in a scratch branch and watch this file fail compilation before any test runs.
+Counter-pattern (the bug, as found):
+static final Map<String, Integer> STATUS = Map.of("NotFound", 404, "Conflict", 409, "Forbidden", 403);
+static int status(Object e) {
+    return STATUS.getOrDefault(e.getClass().getSimpleName(), 500);
+}
+Three failures in one shape: the stringly-typed key drifts from the class name on the first rename; the new RateLimited outcome is absent so getOrDefault quietly maps 429 to 500, which turns a retryable throttle into a non-retryable failure and changes load under incident; and no compiler or test names the missing entry, so the three existing tests stay green while production lies.
+Check: a test enumerating the permits list asserts each maps to its contract status; against the buggy form it fails red with expected: <429> but was: <500>; architecture test bans getOrDefault-default maps over sealed error types.
+
+---
+
+Concept: Statutory-order matching as group, sort, then linear sweep — with the complexity stated, not implied. Language guarantee plus measured performance.
+Modern form:
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+record TradePair(String asset, LocalDate day, long qtyMinor, long priceMinor) {}
+interface MatchExecutor {
+    void apply(TradePair acquisition, TradePair disposal, long matchedQty);
+}
+final class OrderMatcher {
+    private final MatchExecutor executor;
+    OrderMatcher(MatchExecutor executor) { this.executor = executor; }
+    void match(String asset, List<TradePair> acquisitions, List<TradePair> disposals) {
+        Map<LocalDate, List<TradePair>> byDay = new LinkedHashMap<>();
+        for (TradePair a : acquisitions) byDay.computeIfAbsent(a.day(), d -> new ArrayList<>()).add(a);
+        List<TradePair> ordered = new ArrayList<>(acquisitions);
+        ordered.sort(Comparator.comparing(TradePair::day).thenComparing(TradePair::priceMinor));
+        for (TradePair d : disposals) {
+            matchSameDay(byDay, d);
+            matchBedAndBreakfast(ordered, d);
+            matchPool(ordered, d);
+        }
+    }
+    private void matchSameDay(Map<LocalDate, List<TradePair>> byDay, TradePair d) {
+        List<TradePair> same = byDay.getOrDefault(d.day(), List.of());
+        for (TradePair a : same) executor.apply(a, d, Math.min(a.qtyMinor(), d.qtyMinor()));
+    }
+    private void matchBedAndBreakfast(List<TradePair> ordered, TradePair d) {
+        for (TradePair a : ordered) {
+            if (!a.day().isAfter(d.day()) || a.day().isAfter(d.day().plusDays(30))) continue;
+            executor.apply(a, d, Math.min(a.qtyMinor(), d.qtyMinor()));
+        }
+    }
+    private void matchPool(List<TradePair> ordered, TradePair d) {
+        for (TradePair a : ordered) executor.apply(a, d, Math.min(a.qtyMinor(), d.qtyMinor()));
+    }
+}
+Why: grouping is O(n), the sort is O(n log n), each sweep is O(n) in the acquisitions, so the whole match is O(n log n) time and O(n) memory — the sort dominates and nothing is quadratic. The first hypothesis was a single pass with no sort; it was killed by a fixture where two same-day lots matched in arrival order instead of price order and the gain differed by 3 cents. The executor interface keeps the ordering rules testable without I/O, and the LinkedHashMap preserves day-insertion order so the sweep is deterministic for equal keys. A sanity check before trusting: the sum of matched quantities plus the pool remainder equals the input quantities exactly.
+Counter-pattern: nested loops per disposal rescanning all acquisitions with a contains check inside (O(n squared) per disposal, minutes at 10k trades); or recomputing the day groups inside the disposal loop instead of once.
+Check: fixture with a same-day lot, a 30-day lot, and a pool lot asserts the exact matched pairs in statutory order; a 10k-trade timing test asserts the sweep stays under the budget the quadratic form exceeds fortyfold; [INFO] Tests run: 7, Failures: 0, Errors: 0.

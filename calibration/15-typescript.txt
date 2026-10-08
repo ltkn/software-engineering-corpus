@@ -636,3 +636,67 @@ export function accountUrl(kind: 'id' | 'auth'): string {
 Why: reading inside the function lets tests set import.meta.env per case, while a module-top constant freezes the first value for the whole suite. The template keeps the scheme fixed to https, so a test host cannot smuggle http into production links.
 Counter-form: a top-level const HOST read once where the second test still sees the first value; or string-concatenated links that accept any scheme from env.
 Verification: both compilers clean with noUnusedLocals on, plus tests setting different hosts per case asserting exact URLs and asserting http in env never produces an http link.
+
+---
+
+Goal: Parse RFC 9457 problem bodies once, with a retry predicate callers can trust.
+Wiring:
+type ProblemBody = {
+  type: string;
+  title: string;
+  status: number;
+  detail?: string;
+  errors?: ReadonlyArray<{ field: string; message: string }>;
+};
+const RETRYABLE = new Set([408, 425, 429, 500, 502, 503, 504]);
+export function toProblem(status: number, body: unknown): ProblemBody {
+  if (typeof body === "object" && body !== null && "type" in body && "title" in body) {
+    const p = body as Record<string, unknown>;
+    return {
+      type: String(p.type),
+      title: String(p.title),
+      status,
+      detail: typeof p.detail === "string" ? p.detail : undefined,
+      errors: Array.isArray(p.errors)
+        ? (p.errors as Array<Record<string, unknown>>)
+            .filter(e => typeof e.field === "string" && typeof e.message === "string")
+            .map(e => ({ field: e.field as string, message: e.message as string }))
+        : undefined,
+    };
+  }
+  return { type: "about:blank", title: "Unexpected response", status };
+}
+export function isRetryable(status: number, method: string): boolean {
+  if (method !== "GET" && method !== "HEAD") return status === 429 || status === 503;
+  return RETRYABLE.has(status);
+}
+export async function fetchProblem(
+  input: string,
+  init: RequestInit,
+  signal: AbortSignal,
+): Promise<ProblemBody | null> {
+  const res = await fetch(input, { ...init, signal });
+  if (res.ok) return null;
+  const text = await res.text();
+  try {
+    return toProblem(res.status, JSON.parse(text) as unknown);
+  } catch {
+    return { type: "about:blank", title: res.statusText || "Unexpected response", status: res.status };
+  }
+}
+Why: the first hypothesis was throwing on any non-2xx with the raw text; it was killed by a test where a 422 with field errors surfaced as "Unprocessable Entity" with no field to highlight. Centralizing the parse keeps the fallback in one place (about:blank plus statusText) and the retry rule beside it: safe methods retry the transient set, writes retry only 429/503 where the server promises idempotency handling. A sanity check before merging: feed a body without type/title and assert the fallback preserves the HTTP status instead of inventing 500.
+Counter-form: per-call-site response.json() casts to any with status ignored, so a 403 renders as a success with missing data; or a global retry-3 on mutations that duplicates a charge the server already applied.
+Verification: both compilers clean (tsc 7 plus tsc6 for the API-dependent lint), plus tests asserting a 422 fixture yields two field errors, an HTML error page yields the about:blank fallback with the real status, and a POST 500 asserts isRetryable false while GET 503 asserts true. Failing evidence before the fix was { "type": "https://api.example.com/probs/validation", "title": "Invalid", "status": 422 } parsed as unknown and retried as if transient.
+
+---
+
+Goal: Predict what fetchProblem and isRetryable return for five inputs before running the tests.
+Wiring:
+Row 1: GET https://api.example.com/refunds → 422 with {"type":"https://api.example.com/probs/validation","title":"Invalid","status":422,"errors":[{"field":"cursor","message":"required"}]}
+Row 2: GET https://api.example.com/refunds → 503 with <html>Service Unavailable</html>
+Row 3: GET https://api.example.com/refunds → 200 with {"items":[]}
+Row 4: POST https://api.example.com/refunds → 500 with {"type":"x","title":"y"}
+Row 5: GET https://api.example.com/refunds → 422 with {"message":"bad"} (no type/title)
+Why: walk each row through the code. Row 1 parses, carries type/title plus one field error, and isRetryable(422, GET) is false — 422 is not in the set, so validation never retries. Row 2 throws in JSON.parse, lands in the catch, and returns the about:blank fallback with the real 503 and the statusText — the status is preserved instead of invented, and isRetryable(503, GET) is true. Row 3 is ok, so the function returns null (no problem to report). Row 4 parses but isRetryable(500, POST) is false — writes retry only 429/503, so a charge-like write never duplicates on a 500. Row 5 has no type/title, so toProblem returns about:blank with status 422 rather than crashing on the missing keys. The sanity check before believing: feed an empty-string body with status 500 and assert the fallback keeps 500 instead of defaulting.
+Counter-form: calling res.json() directly per call site (throws on row 2's HTML and the throw escapes as an unhandled rejection); or a single isRetryable(status) without the method, retrying row 4's POST 500 and duplicating the write it guards.
+Verification: a five-row vitest table asserting each predicted outcome; run reports Test Files 1 passed (1), Tests 5 passed (5); mutating the POST rule to retry 500 fails the row-4 case red.

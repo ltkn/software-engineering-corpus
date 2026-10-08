@@ -706,3 +706,81 @@ SELECT phase, heap_blks_total, heap_blks_scanned FROM pg_stat_progress_vacuum;
 Reading: dead tuples explain the slowdown arithmetically — an index scan that walks hundreds of dead entry versions costs the same as a bigger table, so "the table is smaller and slower" is not a paradox. The next question is why vacuum did not clean it, and the answer is usually a horizon: the second query finds a session with `backend_xmin` set and an `idle in transaction` state that has been open since the import began, which pins the oldest xmin and makes every vacuum run *skip* the very rows that were deleted. The wrong fix is `VACUUM FULL` on a hot table: it takes an access-exclusive lock, so the symptom you are trying to remove is replaced by a queue.
 Pitfall: treating bloat as an index problem and reindexing, which rewrites the same dead tuples and locks the table while doing it; or killing the long transaction without noting that its owner is a report notebook that will reconnect in ten minutes.
 Verification: `n_dead_tup` falls and stays down, `Heap Fetches` in the affected plans returns to near zero, `pg_stat_progress_vacuum` is monitored rather than guessed during the cleanup, and `idle_in_transaction_session_timeout` is set per role so the class of cause cannot recur (the same loop, told as a transcript, is 02).
+
+---
+
+Task: Approve a refund through a hardened function, never through direct table writes.
+SQL:
+CREATE OR REPLACE FUNCTION app.approve_refund(p_tenant uuid, p_order uuid, p_amount bigint, p_key text)
+RETURNS app.refund_outcome
+LANGUAGE plpgsql STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $func$
+DECLARE
+  v_status text;
+  v_fraud boolean;
+  v_existing app.refund_outcome;
+BEGIN
+  IF p_key IS NULL OR btrim(p_key) = '' THEN
+    RAISE EXCEPTION 'idempotency key required' USING ERRCODE = '22000';
+  END IF;
+  SELECT NULLIF(o.status, NULL), o.fraud_flag INTO v_status, v_fraud
+  FROM app.orders o WHERE o.tenant_id = p_tenant AND o.id = p_order;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'order not owned by tenant' USING ERRCODE = '42501';
+  END IF;
+  IF v_fraud THEN
+    RAISE EXCEPTION 'fraud hold, manual review required' USING ERRCODE = 'P0001';
+  END IF;
+  IF v_status IS DISTINCT FROM 'paid' THEN
+    RAISE EXCEPTION 'only paid orders are refundable, got %', v_status USING ERRCODE = '22000';
+  END IF;
+  SELECT r.outcome INTO v_existing FROM app.refunds r
+  WHERE r.tenant_id = p_tenant AND r.idempotency_key = p_key;
+  IF FOUND THEN RETURN v_existing; END IF;
+  INSERT INTO app.refunds(tenant_id, order_id, amount_minor, idempotency_key, outcome)
+  VALUES (p_tenant, p_order, p_amount, p_key, 'needs_review')
+  ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
+  RETURNING outcome INTO v_existing;
+  RETURN v_existing;
+END;
+$func$;
+ALTER FUNCTION app.approve_refund(uuid, uuid, bigint, text) OWNER TO app_func_owner;
+REVOKE ALL ON FUNCTION app.approve_refund(uuid, uuid, bigint, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION app.approve_refund(uuid, uuid, bigint, text) TO app_role;
+Reading: SECURITY DEFINER plus a pinned search_path lets the function touch rows the caller cannot write directly, while the tenant predicate inside keeps every path scoped; the idempotency lookup before the insert plus ON CONFLICT makes retries return the first outcome instead of double-refunding. The first hypothesis was a direct UPDATE from the service; it was killed by a test where a swapped tenant id updated another tenant's row before RLS was enabled on the new table. A sanity check before believing: call with a foreign order id and assert 42501, then with a duplicate key and assert the same outcome returns without a second row.
+Pitfall: LEAKPROOF or VOLATILE mislabeled functions inlining tenant checks away; search_path left to the caller so a shadowed table hijacks the write; application-level check-then-insert racing under retry storms.
+Verification: cross-tenant call raises ERROR: order not owned by tenant (SQLSTATE 42501); double-submit returns one row; EXPLAIN shows index scans on (tenant_id, id) and (tenant_id, idempotency_key).
+
+---
+
+Task: Predict which plan each refund lookup takes before running EXPLAIN.
+SQL:
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, outcome FROM app.refunds WHERE tenant_id = $1 AND idempotency_key = $2;
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, outcome FROM app.refunds WHERE tenant_id = $1 AND created_at > $2 ORDER BY created_at, id LIMIT 25;
+Reading: the first query names two equality columns that match the unique index on (tenant_id, idempotency_key) exactly, so the predicted plan is an index scan returning one row with buffers hit near zero — selectivity comes from the key, not the table size. The second query predicts differently: equality on tenant_id plus a range on (created_at, id) resolves to one bounded range scan on the (tenant_id, created_at, id) index, with the id tiebreak keeping duplicate timestamps stable. The case that flips both predictions is the skewed tenant holding 90 percent of rows: the planner prices the range scan against the tenant's fraction, not the table's, and past the skew threshold the same SQL prefers a bitmap heap scan — same text, different plan, which is why the prediction names the tenant shape beside the SQL. A prepared statement adds one more branch: the generic plan chosen after five executions may keep the small-tenant plan for the large tenant, so predict-then-verify runs both parameter shapes through the prepared path, not just the ad-hoc one.
+Pitfall: adding a covering index that EXPLAIN never chooses because the query filters a created_at range while the index leads with tenant_id (the wasted afternoon in 02); or reading BUFFERS hit ratios without the tenant fraction, declaring the plan healthy on the small tenant while the large one bitmaps.
+Verification: pg_stat_statements shows per-shape mean times beside call counts; a test asserts the equality lookup yields an Index Scan node and the skewed-tenant range yields the predicted node type, and both shapes are exercised through the prepared-statement path the service actually uses.
+Index Scan using refunds_tenant_key on app.refunds (actual rows=1, Buffers: shared hit=4)
+Bitmap Heap Scan on app.refunds with Recheck Cond: (tenant_id = 'acme-large-1') and Rows Removed by Filter tracked per tenant fraction
+
+---
+
+Task: Carry the refund write path to MySQL and SQLite — name what breaks, not just what renames.
+SQL:
+-- Postgres 18 (this file's home, kept for contrast):
+-- RLS: CREATE POLICY tenant_isolation ON app.refunds USING (tenant_id = app.current_tenant_id());
+-- Upsert: INSERT INTO app.refunds ... ON CONFLICT (tenant_id, idempotency_key) DO NOTHING RETURNING outcome;
+-- Ids: gen_random_uuid() / timestamptz stored in UTC.
+-- MySQL shape (no CREATE POLICY, no RETURNING, no search_path):
+CREATE VIEW app.refunds_mine AS SELECT * FROM app.refunds WHERE tenant_id = CAST(@app_tenant AS CHAR(36));
+INSERT IGNORE INTO app.refunds(tenant_id, order_id, amount_minor, idempotency_key, outcome) VALUES (...);
+-- then SELECT ROW_COUNT() to distinguish inserted vs ignored, and SELECT outcome in a second statement.
+-- SQLite shape (ON CONFLICT and RETURNING both available, no policies, no in-DB functions):
+-- same ON CONFLICT (tenant_id, idempotency_key) DO NOTHING RETURNING outcome works; ids generated in the application as TEXT; timestamps stored as TEXT ISO-8601 in a fixed UTC format so comparisons stay lexicographic.
+Reading: the judgment call is per construct, and the question that had to be asked first is which constructs even exist elsewhere. Row-level policies exist nowhere else: both dialects move the tenant predicate into every query plus a scoped view, revoke direct table grants from the app role, and add the cross-tenant test that RLS used to make redundant — the enforcement moves from the database to code review, which is a downgrade stated plainly, not a translation. The upsert splits three ways: SQLite keeps the Postgres text nearly verbatim; MySQL needs two statements (INSERT IGNORE has no RETURNING, so the outcome requires a follow-up SELECT, and ROW_COUNT tells inserted from ignored). Identity and time follow the same pattern: gen_random_uuid becomes the application's UUID generator on SQLite and MySQL's UUID string (version-1 form, not v4 — never compare them as versions); timestamptz becomes an explicit UTC contract, with MySQL TIMESTAMP converting on session timezone (so pin the session timezone or prefer DATETIME with application-side UTC) and SQLite TEXT with one fixed format. SECURITY DEFINER plus search_path pinning has no counterpart: MySQL's DEFINER model differs (no search_path to pin, so qualify every table as schema.table) and SQLite has no in-database functions at all, so the approve function moves into the service beside the ownership check it used to share the database with.
+Pitfall: ON DUPLICATE KEY UPDATE treated as identical to ON CONFLICT DO NOTHING (different match semantics — unique-key match versus the named constraint — so the double-submit case is re-tested per dialect, never assumed); storing local datetimes as TEXT in mixed formats, which sorts wrong silently; comparing a v1 UUID string against a v4 one as versions.
+Verification: the double-submit test runs per dialect asserting one row and the same returned outcome; the cross-tenant test asserts denial through the view plus grants (not through a policy); the timestamp test round-trips a DST-boundary instant and asserts the same UTC value back on all three.
