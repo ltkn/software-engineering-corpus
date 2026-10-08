@@ -428,3 +428,26 @@ Misconfiguration: renewing by polling more while holding a batch whose lease was
 `orders-ack   Stable   orders.events  3          1842201       12   0   consumer-1`
 Share groups get their own describe tool in 4.3; a reader that appears only in `kafka-consumer-groups.sh` is a different kind of subscriber, which is worth knowing before someone else's subscriber shows up there (31 owns that adversary).
 Verification: a drill where one record's processing exceeds the lease asserts either a successful renewal or a single deliberate redelivery, and the sink's idempotent upsert makes the overlap harmless (the ordering guarantee itself stays per key, as with any other group).
+
+---
+
+Goal: Consumer lag rising with no errors, no rebalances, and throughput that looks normal on the dashboard.
+Wiring:
+kafka-consumer-groups.sh --bootstrap-server 10.0.14.7:9092 --describe --group orders-svc   # per-partition LAG, not the sum
+kafka-run-class.sh kafka.tools.GetOffsetShell --broker-list 10.0.14.7:9092 --topic orders.events   # or the LOG-END-OFFSET column above
+Rate check: compare `MessagesInPerSec` with `BytesInPerSec` and with consumer `records-lead`/`bytes-consumed-rate` over the same window.
+Why: the group total hides the shape. Sixteen partitions with fourteen idle and two saturated gives a healthy mean and a growing lag, and the two hot partitions are hot because one key carries the traffic — so the discriminating measurement is lag *per partition against its median*, not lag against a threshold. The second discriminator is the message-size ratio: if message bytes doubled while counts stayed flat, single-threaded per-partition throughput fell by half without any code change and without one error line.
+Misconfiguration: raising the partition count as a reflex. It is the right answer to a capacity problem and the wrong answer to a skew problem, and the test that tells them apart is cheap — if the hot tenant hashes onto the same two partitions after the increase, nothing was fixed and the rebuild cost was real.
+Verification: max per-partition lag under the stated bound at current volume, an alert on any partition exceeding a multiple of the median, and a key-distribution report on the hot topic so the next twentyfold tenant is a plan rather than an incident (the transcript version is 02).
+
+---
+
+Goal: A producer occasionally blocks for the whole `max.block.ms` and then throws, with no broker-side error anywhere.
+Wiring:
+props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 60000);
+props.put(ProducerConfig.BUFFER_MEMORY_CONFIG, 33554432L);
+props.put(ProducerConfig.LINGER_MS_CONFIG, 20);
+props.put(ProducerConfig.BATCH_SIZE_CONFIG, 32768);
+Reading: `max.block.ms` bounds two different waits and the exception text says which. Waiting for *metadata* means the leader for that partition is unknown — a topic that does not exist yet, a `UNKNOWN_TOPIC_OR_PARTITION` behind the scenes, or a blocked egress path to the controller; waiting for *buffer memory* means the accumulator is full, which means the network cannot drain at the rate records arrive. The discriminator is therefore not "is Kafka slow" but which of the two counters moved: buffer exhaustion shows up in producer metrics as `waiting-threads` and memory usage at the ceiling, metadata waits show up with a fresh cluster or a first send after a leader change.
+Misconfiguration: raising `max.block.ms` to 120s, which converts a stall into a longer stall and moves the failure into the request path, where the caller's timeout has already fired and the caller is retrying — so the buffer fills faster than before and the incident looks like a Kafka problem with a Kafka-shaped cause.
+Verification: a test asserts the producer fails fast with the exception naming the reason under a drained-buffer fixture, producer metrics for buffer utilisation and waiting threads are exported with the same dashboard as the endpoint's p99, and the sizing of buffer memory is stated in the config with the throughput number that motivated it.

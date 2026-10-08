@@ -493,3 +493,58 @@ Step 3. Ratio here: 10000 rows versus 25, four hundred times the work for the sa
 Step 4. The requirement keyset adds is a unique, total ordering. (created_at) alone is ambiguous when two rows share a timestamp, so the tuple must end in a tiebreak such as id, and the index must match that order.
 Step 5. Skipping the tiebreak is the classic bug: rows are dropped or repeated at page boundaries, and the test that concatenates pages and compares against a full scan is what catches it.
 Answer: 10000 rows against 25, and keyset additionally demands a unique ordering with an explicit tiebreak column, backed by an index in exactly that order.
+
+---
+
+Q: A DNS-tunnelling exfil channel uses one label of at most 63 characters under its attacker-owned domain, base32-encoded payloads, and one query per second. What is the honest throughput, and what does that say about how much of a 30 MB dump goes that way?
+Step 1. Base32 carries 5 bits per character, so a 63-character label carries 63 × 5 ÷ 8 = 39.4 bytes of raw payload.
+Step 2. One query per second for one hour is 3600 queries, so 39.4 × 3600 = 141750 bytes per hour, which is 138 KiB per hour.
+Step 3. 30 MB over that channel is 30 × 1024 KiB ÷ 138 KiB/h ≈ 222 hours, so nine days of uninterrupted querying for one dump.
+Step 4. Read the consequence rather than the number: the channel is for picking the next target, not for carrying the prize, so the attacker takes three tables and a schema and sends the rest over HTTPS or a presigned upload.
+Answer: About 140 KB per hour; a 30 MB dump takes days, so DNS is for credentials and schema, and bulk goes where bandwidth is cheap. (This is the arithmetic behind 31's DNS block.)
+
+---
+
+Q: A test fails on 1 run in 40. Across 50 CI runs of the suite, what is the chance it goes red at least once, and what does that imply for a "green main" policy?
+Step 1. P(no failure in one run) = 39/40 = 0.975.
+Step 2. P(no failure in 50 independent runs) = 0.975^50 = 0.282.
+Step 3. P(at least one red) = 1 - 0.282 = 0.718, so 71.8%.
+Step 4. The policy reading: with that single flake, a week of merges on a protected branch is nearly certain to include a red run nobody caused, so the branch policy must either distinguish re-run-from-revert or the flake gets fixed. Anything that "retries the test" converts the 72% into silence, which is why quarantine needs an owner and an expiry.
+Step 5. Independence is the load-bearing assumption. Failures cluster on one runner class, one shard, or one time window, so the real-world probability of a streak is higher than 72% and the diagnostic is a per-runner breakdown, not a rerun.
+Answer: 71.8% under independence, and worse under clustering; that is the cost of leaving a 1-in-40 flake in a required check.
+
+---
+
+Q: A request fans out two independent calls taking 190ms and 175ms. After a refactor the endpoint's p95 goes from 180ms to 380ms with no errors. What does the arithmetic say, and what would it say if the bug were a slow dependency instead?
+Step 1. Concurrent: expected latency ≈ max(190, 175) = 190ms plus overhead, which matches the pre-change 180ms.
+Step 2. Sequential: 190 + 175 = 365ms plus overhead, which matches the post-change 380ms within measurement noise.
+Step 3. A genuinely slow dependency would move one operand, so the sum would grow without the ratio between the two shapes changing; here the *dependency span times were unchanged* and only their arrangement changed, which is the signature of serialization rather than slowness.
+Step 4. So the diagnostic is not "which dependency is slow" but "why did independent work stop overlapping", and the check that generalises is a p95-by-dependency panel: the sum-versus-max comparison is visible per request rather than inferred from the total.
+Answer: The doubling equals the sum of two spans that used to overlap; serialization is a shape bug, not a slowness bug, and it shows up as the total growing while every part stays the same.
+
+---
+
+Q: Prove that a keyset cursor over (created_at, id) cannot skip or repeat a row when rows are inserted concurrently, and that OFFSET paging can, and state the exact condition under which the keyset argument fails.
+Step 1. Keyset: the predicate is (created_at, id) > ($1, $2) with ORDER BY created_at, id. Because id is unique, the ordering is total and strict, so the set of rows satisfying the predicate is monotone under insertion: inserting a row cannot move an already-returned row into or out of the set.
+Step 2. Therefore the page boundary is a position in a total order, not a count, and concurrent inserts to the left of the cursor leave the remaining set unchanged. No skip, no repeat.
+Step 3. OFFSET: the position is a count over a mutable set, so an insert before the boundary shifts every later row by one and a row is either skipped or repeated depending on direction. The failure is definitional, not a race.
+Step 4. Where the keyset argument breaks: the tie-breaker must make the order total and stable. It fails if (a) the ordering column is non-unique and no unique tie-breaker is included, (b) the ordering column can be updated after insertion — then a returned row can move across the cursor, or (c) the index and the predicate disagree on collation or null ordering, so the "total order" the code assumes is not the one the plan uses.
+Answer: Keyset is a position in a total order, OFFSET is an offset in a mutable count; keyset fails exactly when the order is not total and immutable.
+
+---
+
+Q: An endpoint's p99 doubled and error rate stayed flat. Three dashboards — dependency latency, CPU, database mean time — are unchanged. Do the data decide between "a slow dependency" and "lost concurrency"? What is the cheapest measurement that does?
+Step 1. Enumerate predictions, not explanations: a slow dependency predicts the dependency's own span time grows; lost concurrency predicts span times unchanged and total time growing by roughly the sum of what stopped overlapping.
+Step 2. Check the observations against each prediction. Dependency span unchanged is evidence against the slow-dependency hypothesis, but only if the spans are measured at the boundary — a client that times only the future's completion while the work queues elsewhere would show an unchanged span under both hypotheses, so the instrumentation itself is suspect.
+Step 3. The data as stated do not decide, because "unchanged means unchanged" is unfalsifiable when the measurement could hide queuing. The distinguishing measurement is the one with different predictions under the two hypotheses: wall-clock time inside the handler split into "in flight" and "waiting to start" per task — queuing appears only under lost concurrency.
+Step 4. Cost order matters: that split is one span with two events on an existing trace, cheaper than adding a thread-pool metric, cheaper than a load test, and cheaper than a speculative fix and a redeploy.
+Answer: No, the dashboards are consistent with both; measure queueing versus execution inside the handler, and until then write both hypotheses down so a future reader can see which one the numbers excluded.
+
+---
+
+Q: A controller adds a caller-supplied path segment as a metric tag on `http.server.requests`. The metric has 11 time-series with 12 histogram buckets. The tag cardinality is 21411. What is the resulting series count for that metric, and why is the backend's rejection the least interesting consequence?
+Step 1. Series = tag values × the other label combinations, so 21411 × 12 = 256932 series from one metric on its own, before the other five labels multiply it further.
+Step 2. The consequences scale differently: the registry's memory grows with live meters, the export payload grows with series count on every interval, the backend's ingest cost grows with the same number, and — this is the one that hurts — every *query* on that metric now scans a cardinality the dashboard author never intended, so latency and cost land on the readers.
+Step 3. The rejection is the least interesting consequence because it is the only one that is loud. Silent ones: alert rules that query the metric start timing out, the SLO burn query gets slower and its window shrinks, and a new endpoint with high-cardinality paths can be merged with no test failing, because nothing in the build measures cardinality.
+Step 4. Prevention is arithmetic made visible: assert cardinality after a generated request sweep, and export the count as a metric with an alert on growth, which turns a 250k-series mistake into a page rather than a quarterly incident.
+Answer: 256932 series from one metric; the loud failure is cheap, the quiet ones are the readers and the alerts, so cardinality belongs in CI next to the tests.

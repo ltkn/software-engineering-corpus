@@ -349,3 +349,27 @@ Why: a rollback only means something if the previous revision still refers to th
 `kubectl rollout history deploy/orders-api` then prints `REVISION  CHANGE-CAUSE` with `43  2026.10.07-142-a3f9c1d`, and the CHANGE-CAUSE being an immutable tag is the only reason `--to-revision=42` means what the on-call thinks it means.
 Misconfiguration: secrets referenced without declaring whether they are optional, so a missing one appears as a crash loop on first traffic; rollback performed by re-running the pipeline, which re-resolves `:latest` and redeploys the broken build with a green check; no recorded revision, so "the last good one" is a guess.
 Verification: a drill deploys a deliberately broken image and the automatic rollback fires with an alert; a second drill rehearses a manual undo to a named revision under a time budget; the deploy record names the revision, the tag and the diff.
+
+---
+
+Goal: Diagnose a container that is killed for memory while its JVM reports a healthy heap.
+Wiring:
+container_memory_working_set_bytes{pod="import-7d9"}          # what the eviction controller actually compares
+cat /sys/fs/cgroup/memory.max                 # the limit as the kernel sees it
+jcmd 1 VM.native_memory summary                # requires -XX:NativeMemoryTracking=summary
+grep -E 'Rss|Anonymous' /proc/1/smaps_rollup
+Reading: the ladder, cheapest first, because the wrong first move (raising the limit) hides the answer for a fortnight and then returns. (1) Working set, not RSS: page cache is excluded, so "node says memory pressure but heap is flat" is not automatically a leak. (2) Heap versus limit: a 400Mi heap under a 512Mi limit leaves 112Mi for metaspace, code cache, direct buffers, thread stacks and allocator arenas — the arithmetic that most sizing skips. (3) `smaps_rollup`'s Anonymous versus the heap tells you whether the memory is Java's or native. (4) NMT attributes the native part: Direct Buffer entries point at the client, Internal/Other growth plus a high thread count points at allocator arenas, which `MALLOC_ARENA_MAX` bounds. (5) Only now is a limit change meaningful, and it is meaningful as `heap + max direct + threads × stack + headroom`, written down.
+Why: Kubernetes compares the working set against the limit, the JVM compares the heap against `-Xmx`, and neither of those numbers is the other. Every "healthy JVM, killed pod" incident is a disagreement between two measurements that are both correct.
+Misconfiguration: raising the limit and calling it fixed; or `-Xmx` set as a percentage of the container with no accounting for the non-heap budget, so the sizing depends on how busy the machine happens to be.
+Verification: a test asserts heap plus max direct buffers plus thread stacks fits under the limit with the numbers in the assertion; the alert pages on working-set ratio, not on the node's `MemoryPressure` condition, so it fires minutes before the eviction rather than after it.
+
+---
+
+Goal: Intermittent 502s from the edge only during bursts, with healthy upstreams and nothing in the application logs.
+Wiring:
+conntrack -S 2>/dev/null || cat /proc/net/stat/nf_conntrack    # insert_failed / drop counters
+dmesg -T | grep -i conntrack | tail                              # "nf_conntrack: table full, dropping packet"
+sysctl net.netfilter.nf_conntrack_max net.netfilter.nf_conntrack_tcp_timeout_established
+Reading: the upstream's logs are silent because the packet never arrived, so the first question is not which service is broken but where the path drops. The counters answer it directly: `insert_failed` and `drop` climbing during bursts, with the kernel log saying so, is the whole diagnosis, and the reason it is burst-shaped and not load-shaped is that a conntrack entry is created per new connection — a burst of short connections exhausts the table while a steady stream of keep-alive connections does not. The wrong fixes are all timeouts: raising `established` timeouts makes it worse, because entries live longer and the table fills sooner.
+Misconfiguration: fixing it by adding a service mesh sidecar "for observability", which adds another conntrack-using layer to the same node; or raising `nf_conntrack_max` per node while leaving the default 5-day `established` timeout, which just postpones the full table by a predictable interval.
+Verification: the counters stay flat through a synthetic connection burst (`hey` or `wrk2` with keep-alive disabled), the table size and the `established` timeout are both in the node configuration with the burst rate that motivated them, and an alert on `insert_failed` growth exists so the next occurrence names the node before a user files the ticket.

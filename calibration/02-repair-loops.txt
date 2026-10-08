@@ -190,6 +190,7 @@ count matches tenant fixture
 Failure:
 EXPLAIN ANALYZE shows Seq Scan on users, Execution Time: 912ms for page 400 with LIMIT 25 OFFSET 10000.
 Diagnosis: OFFSET scans and discards 10k rows; no usable index order for (created_at, id) paging.
+Ruled out first, in order: connection pool exhaustion (pool utilisation was flat at 4 of 10 the whole time), then the index being missing (it existed and `pg_indexes` proved it), then statistics drift (`ANALYZE` changed nothing). The measurement that ended it was `Buffers: shared hit=1982 read=14412` — an index scan that reads 14k pages from disk is a visibility-map problem, not a plan problem, and the first two hypotheses would have been "fixed" without changing that number.
 Fix: Keyset pagination on the composite index.
 CREATE INDEX users_tenant_created ON users (tenant_id, created_at, id);
 SELECT id, email, created_at FROM users
@@ -228,6 +229,7 @@ Validated successfully, staging and local agree
 Failure:
 Consumer group orders-svc lags 400k, rebalance every 2 minutes, logs show JoinGroup failed: Member revoked.
 Diagnosis: max.poll.interval.ms (5m default) exceeded by a slow transaction that also calls the payment API inline; the broker evicts the member.
+Two hypotheses died quickly: a slow consumer (max poll interval was 5 minutes and the batch finished in 40 seconds) and a broker problem (the controller log showed the group being *evicted*, not crashing). The eviction line `Member … detected as failed` with a `max.poll.interval.ms` breach was the discriminator — the batch exceeded the interval only for the one partition holding the large tenant, which is why the whole group kept paying for one partition's tail.
 Fix: Move payment capture out of the poll loop via the outbox, shorten processing under 60s, raise max.poll.interval.ms to 10m as belt and braces.
 Verify:
 Lag drains to 0, zero rebalances over 1h soak
@@ -349,6 +351,7 @@ Idle socket survives 10m, order events stream continuously
 Failure:
 SSE /orders/{id}/events arrives in 30s bursts instead of live.
 Diagnosis: Nginx buffers proxied responses by default; event-stream chunks wait for the buffer to fill.
+Wrong fix that survived review first: raising the proxy timeout to 300s, which changed the burst size to 300s and made the bug look configurable rather than wrong. The discriminator was comparing `curl -N` from inside the pod network against the same request through the edge — first event at 0.4s versus 28s, so the application was never the suspect after that.
 Fix:
 location /events/ { proxy_buffering off; proxy_cache off; }
 plus header X-Accel-Buffering: no from upstream.
@@ -369,6 +372,7 @@ Verify:
 Failure:
 Pod OOMKilled at 512Mi during the morning import, heap dump shows a full in-memory CSV accumulator.
 Diagnosis: Batch job loads the whole file into a List before writing; container limit kills it before GC can help.
+Ruled out: a leak in the CSV parser (RSS was flat until the first progress log), and the JVM heap (a heap dump showed 180Mi live of a 400Mi heap — nothing near the limit). The gap between cgroup memory and heap was the whole story: 512Mi of limit with a 400Mi heap leaves 112Mi for metaspace, direct buffers, thread stacks and glibc arenas, and the import's 200 threads spent it. The passing test had never measured anything but the heap.
 Fix: Stream rows with a cursor-backed reader and chunked writes (Spring Batch chunk 500), set -Xmx to 75% of the limit.
 Verify:
 Import of 2M rows peaks at 380Mi, completes in 11m
@@ -466,6 +470,7 @@ Concurrent-edit test: second writer gets 409 with mergeable state, zero 500s
 Failure:
 HikariPool - Connection is not available, request timed out after 30000ms at peak.
 Diagnosis: Pool max 10 with checkout transactions holding connections across a 2s downstream call; threads queue then time out.
+The obvious hypothesis was pool size, and the first fix — `maximum-pool-size=50` — made the incident worse, which is itself evidence: if waiting on the pool were the cause, more pool would help; if the database were the bottleneck, more connections mean more contention. `pg_stat_activity` showed 50 active sessions waiting on `Lock:tuple`, and the actual cause was one long transaction holding a row lock while a retry loop kept requesting connections.
 Fix: Shrink transaction scope to the DB touch only, move the downstream call outside, raise max to 25 with leak detection at 60s.
 Verify:
 Peak replay: 0 timeouts, median checkout 180ms
@@ -545,6 +550,7 @@ Kill -9 drill mid-relay: zero duplicates downstream over 20 runs
 Failure:
 Spring Batch import slows from 20k rows/s to 2k rows/s after the first million.
 Diagnosis: JPA persist without flush/clear grows the persistence context unboundedly; every flush gets slower.
+Killed in order: GC (pause times unchanged in JFR), the target table's indexes (the plan was identical at 1M and 10M rows), and the database host's I/O (IOPS flat). What stayed standing was the *commit-interval-chunk retry* path: an item-level exception late in a chunk rolled back 10,000 rows and re-read them, and the retry budget made it invisible as an error. Batching the exception counter per chunk turned 2k rows/s back into 18k.
 Fix: Chunk 500 with clear, stateless inserts via JdbcTemplate batch for the hot path.
 Verify:
 Throughput flat at 19k rows/s across the full 2M file
@@ -563,6 +569,7 @@ p95 back to 175ms; dependency panel attributes time per call; deploy-diff checkl
 Failure:
 Throughput halved overnight with zero errors: batch import crawls, no exceptions, GC logs show Full GC every 90 seconds where weekly used to be the norm.
 Diagnosis: JFR allocation bisection between builds: Tuesday's "harmless" DTO enrichment boxes 3M Integers per file, tripling allocation rate; the collector spends its time reclaiming garbage, not serving work.
+The silence is the clue, so the first move was to look for something that *reduced work per second* rather than anything that failed: no deploys, no requeues, no leader change. The discriminator was `kafka_server_BrokerTopicMetrics_MessagesInPerSec` per topic versus consumer poll sizes — poll sizes had halved while message sizes had doubled, and the overnight change was one producer switching from delta rows to full rows. Same messages, twice the bytes, same single-threaded partition handler.
 Fix: Primitive fields on the hot DTO plus streaming writes, restoring the old allocation rate.
 Verify:
 Allocation back under the baseline MB/sec; Full GC gone from the steady state; allocation-rate alert added at the heuristic threshold so the next regression pages instead of oozing.
@@ -572,6 +579,7 @@ Allocation back under the baseline MB/sec; Full GC gone from the steady state; a
 Failure:
 Kafka consumer lag creeps 2% daily for three weeks, no errors, no rebalances, throughput nominally fine.
 Diagnosis: Partition-count vs key-distribution diff across the creep window: one tenant grew 40x and hashes onto two partitions; per-partition single-threaded processing caps those partitions while the rest idle. Not an error — a skew the dashboards average away.
+Hypotheses, in the order they were discarded: partition count too low (raising it changed nothing for the hot tenant, which is the test that proves skew rather than capacity), a slow dependency (dependency p99 flat), and GC (unchanged). What the dashboards averaged away was per-partition lag: 40x growth in one tenant hashing onto two of sixteen partitions caps throughput at an eighth of the group's capacity while the other fourteen partitions look excellent.
 Fix: Split the hot tenant's key space (tenant plus shard suffix), raise concurrency to match partition count, add per-partition lag to the dashboard.
 Verify:
 Max per-partition lag under 30s at current volume; skew alert fires when any partition exceeds 3x the median.
@@ -756,3 +764,136 @@ Diagnosis: recorded JFR profiles from the last known-good build and the current 
 `logs/postgresql-2026-10-07.csv: duration: 588.412 ms  statement: SELECT l.* FROM order_lines l WHERE l.order_id = $1` repeated 41 times for one request, same `application_name=orders-api`, same connection.
 Fix: restore the fetch plan on the repository method with an explicit join fetch, and add the assertion the release lacked: statement count per request as a metric with a threshold, not a manual review of query logs.
 Verify: EXPLAIN shows the join restored; statement-count metric reads 3 at p99 in the load rehearsal; p99 back under 500 ms on the same load shape for two consecutive days.
+
+---
+
+Failure:
+`orders-api` p99 doubles only in the cluster; the same image under k6 locally is flat, and CPU is 71% of request with no throttling.
+Diagnosis: Wrong hypothesis first: CPU limit, because the spike looked load-shaped. Killed it by reading `container_cpu_cfs_throttled_periods_total` — flat at zero. Second hypothesis: the database, killed by a flat `pg_stat_statements` mean over the window. What survived was the boring one: the cluster's DNS lookup took 12ms where the laptop's took 0.3ms, because the pod's `resolv.conf` carries `ndots:5` and the outbound call uses a relative-ish name, so every call did three failed search-domain queries first. Discriminator: `time curl -s http://payments.test/health` versus `time curl -s --resolve payments.test:80:10.0.14.21 http://payments.test/health` inside the same pod.
+Fix: Fully-qualified names, `ndots: 1` on the pod's `dnsConfig` for the latency-sensitive workload, and a warm connection pool so the resolution is not on the request path at all.
+Verify:
+`dig +short payments.test` inside the pod returns in 0.4ms; p99 in the cluster matches the local number; a test in the pipeline resolves the outbound hostnames it is configured to use and fails on a relative name.
+
+---
+
+Failure:
+`checkout.spec.ts` passes in CI, fails on one engineer's laptop 3 times in 10 with `expected "12.444,00 €" to be "€12,444.00"`, and the diff is always a format.
+Diagnosis: Wrong hypothesis: parallelism, because the failure rate looked like a race. Killed it by running the file alone with `--workers=1` and reproducing at the same rate. Second hypothesis: a locale plugin loading late, killed by logging `navigator.language` and `Intl.DateTimeFormat().resolvedOptions()` inside the failing run — both were already correct. The actual difference was the fixture: the test built its expected string with `toLocaleString()` in the test body, so the expectation inherited the machine's locale while the component was pinned to `en-IE` by the app config. It failed on one laptop because that laptop was the only one set to a German locale.
+Fix: Expected values in tests are literals, not computations with the same API under test; the app's locale is pinned in the test context (`newContext({ locale: 'en-IE', timezoneId: 'Europe/Dublin' })`), and the CI runner's locale is asserted at suite start rather than assumed from the image.
+Verify: The suite fails when the expected value is produced by `toLocaleString()` again; `TZ=America/Sao_Paulo LANG=pt_BR.UTF-8 npx playwright test checkout` is green, and the pipeline runs the suite under two locales on purpose.
+
+---
+
+Failure:
+One tenant gets `500` on the customer search endpoint; every other tenant is fine, and the SQL works when pasted into `psql` by hand.
+Diagnosis: Wrong hypothesis: bad rows in that tenant, killed by running the same query manually with that tenant's id and getting 12 rows back. Second hypothesis: permissions, killed by the fact the error was not an authorization error but `ERROR: could not determine which collation to use for string comparison` — and it only appeared in the log because the API wraps errors. The pasted query worked because the hand-run session had the client's default collation; the application session set `options=-c lc_collate=C` in its connection string, and the migration that added the trigram index had built it with `COLLATE "de_DE"` for that tenant's database only.
+Fix: Collation is declared per index and per query in one migration, the application's connection settings are part of the environment contract and asserted by a startup check, and the error mapping stops collapsing database errors into a bare 500.
+Verify: The failing tenant's fixture search passes in the container test with the real collation; a startup assertion fails the build when a connection setting is missing, and the error body carries the problem-details type rather than prose.
+
+---
+
+Failure:
+`/actuator/metrics` latency grows over a week and the metrics backend starts dropping ingests; the app's own p99 is fine.
+Diagnosis: Wrong hypothesis: the metrics backend, killed by reading its ingest log first — it was rejecting a client, not failing internally. Second hypothesis: memory pressure in the agent, killed by a flat heap. The number that named it: `curl -s localhost:8081/actuator/metrics/http.server.requests | jq '.availableTags'` showed 21411 distinct `uri` values, because one controller passed a caller-supplied path segment into the `uri` tag instead of the route template. Every unbounded tag multiplies the registry, the export payload and the backend's series count.
+Fix: Tag values come from the route template (`/v1/orders/{id}`), never from a parameter; a test asserts `uri` tag cardinality stays under a stated ceiling after a generated request sweep; the cardinality is exported as its own metric with an alert on growth.
+Verify: `availableTags` returns 41 values after the sweep instead of 21k, ingest rejections stop, and the cardinality guard fails the build when someone tags a parameter again.
+
+---
+
+Failure:
+A transactional producer throws `InvalidProducerEpochException` roughly once a day under load; the transaction eventually commits and nothing is duplicated.
+Diagnosis: Wrong hypothesis: broker instability, killed by a healthy controller log and no unclean leader elections. Second hypothesis: fencing from a rolling deploy (the classic shape), killed by the timestamps — no restart had happened in nine hours. The exception name was the discriminator: fencing names a different producer id, whereas this run logged `InvalidTxnTimeoutException` on one attempt and the epoch error on its retry, meaning the transaction had already timed out on the broker at `transaction.timeout.ms=60000` while the consumer's batch occasionally ran 90 seconds. The producer aborted, retried, and the epoch bumped — no data loss, one spurious error class per day.
+Fix: Align the budgets deliberately rather than by accretion: batch p99 plus headroom under `max.poll.interval.ms`, and `transaction.timeout.ms` above the same p99 but under the broker's `transaction.max.timeout.ms`; a config test asserts the ordering of the three numbers instead of leaving it to whoever edited last.
+Verify: The daily error disappears over a week of production, and a unit test asserts both timeouts exceed the measured batch p99 with the numbers stated in the test name.
+
+---
+
+Failure:
+After the 17 to 18 major upgrade, the same report query goes from 90ms to 1.4s; `ANALYZE` was run and autovacuum is healthy.
+Diagnosis: Wrong hypothesis: the upgrade broke the planner, killed by the same query being fast in a fresh database on the same version. Second hypothesis: missing index, killed by `pg_indexes` and by the fact both clusters had identical indexes and near-identical row counts. The discriminator was `EXPLAIN (ANALYZE, BUFFERS, SETTINGS)`: the settings block showed `random_page_cost=4.0` and `effective_cache_size=512MB` carried over from a spinning-disk tuning file on the upgraded host, while the new host is NVMe with 32GB. Same plan shape, different costs: the planner chose a sequential scan because it still believed random I/O was expensive.
+Fix: `random_page_cost=1.1`, `effective_cache_size` to the real cache, both declared in the environment's own configuration rather than inherited, and the pre/post EXPLAIN baseline run against the production tuning file, not the container default.
+Verify: The query returns to 88ms, the baseline job that compares plans across environments reports no diff, and the configuration is asserted in the upgrade checklist rather than remembered.
+
+---
+
+Failure:
+Hydration mismatch warning on the order total after the router change: server renders `€0,00`, client renders `€1.234,00`, and only in production builds.
+Diagnosis: Wrong hypothesis: the async setup change, killed by removing the `await` and watching the warning stay. Second hypothesis: an ordering bug in the query cache, killed by logging the payload — identical on server and client, so the data agreed and the rendering disagreed. What separated the two renders was a formatting helper calling `Intl.NumberFormat()` with no locale argument, which on the server resolved to the container's default and on the client to the browser's. It only showed in production builds because development keeps server and client in one process with one locale.
+Fix: Locale is passed explicitly from the request's negotiated locale into the formatting helper, both renders in the test use the same pinned locale, and the hydration assertion compares the two HTML strings in CI rather than waiting for the browser console.
+Verify: The server and client markup strings compare equal for the fixture, the mismatch test fails when the locale argument is removed again, and the SSR smoke test runs with the container locale deliberately different from the browser locale.
+
+---
+
+Failure:
+A 401 storm for ten minutes after the IdP's key rotation; then it heals by itself, which is the worst kind of bug.
+Diagnosis: Wrong hypothesis: clock skew, killed by `chronyc tracking` being clean on every node. Second hypothesis: the IdP itself, killed by its status page and by other services being unaffected. The discriminator was in the app's own cache: `kid` values seen since start versus `kid` values in the live JWKS — the app had never fetched the new key because its JWKS client sent `If-None-Match` with a stale ETag the IdP honoured with a 304, so the validator kept using a key set that no longer contained the signing key. It healed when the cache's own TTL finally expired, which is exactly the "fixes itself" signature.
+Fix: ETag is dropped from the JWKS request or the 304 path is validated by `kid` presence, rotation tolerance is a stated window rather than a TTL accident, and a periodic check asserts every `kid` currently in use is present in the fetched set.
+Verify: A test that serves a rotated key set with a 304 response proves the client refetches; a synthetic rotation drill on staging produces zero 401s; the alert on a `kid` not found fires without paging for in-flight tokens.
+
+---
+
+Failure:
+CI green, production image missing a migration that exists in the branch; the pod crashes on the first request that reads the new column.
+Diagnosis: Wrong hypothesis: the migration order, killed by `flyway info` showing it applied in staging. Second hypothesis: a race between pods at startup, killed by the fact no pod had ever run it. The discriminator was `docker history` on the production image versus the CI image: the layer that copies resources was a `CACHED` layer restored from the shared cache backend, and the cache key was built from the Dockerfile digest and the base tag — not the lockfile or the source tree hash. A build that changed only a resource file therefore hit a cache entry from before the migration existed.
+Fix: Cache keys include the content hash of the inputs the layer copies, `--no-cache-filter` is used for the release build of anything that ships migrations, and the release pipeline asserts the migration list inside the image matches the repository list.
+Verify: The image assertion fails when the cache key drops back to the digest, and a drill that changes only a resource file produces a correct image.
+
+---
+
+Failure:
+`./gradlew build` goes from 90s to 11 minutes after two modules are added, with `--parallel` and the daemon on.
+Diagnosis: Wrong hypothesis: the daemon being corrupt, killed by a cold `--no-daemon` build with the same 11 minutes. Second hypothesis: dependency resolution network cost, killed by `--offline` reproducing it. The discriminator was `--scan` task-graph timing: one task occupied the whole wall clock, `:audit-processor:compileJava`, running annotation processing without incremental compilation and blocking everything downstream — so parallelism was real and useless, with an unavoidable serial node in the graph.
+Fix: Incremental annotation processing enabled with the processor's supported options, the processor isolated to one module so unrelated modules no longer wait on it, and the build-time budget asserted in CI by reporting the critical path rather than total time.
+Verify: Critical path under 3 minutes on the same machine; the CI job fails when a single task exceeds a stated share of build time, which is the metric that caught this in the first place.
+
+---
+
+Failure:
+`PaymentRetryTest` passes alone, fails 1 in 4 in the suite, and the failure only appears when `TenantSeedTest` runs before it.
+Diagnosis: Wrong hypothesis: a genuine concurrency bug in the retry policy, killed by running the two tests in the same JVM sequentially and reproducing at the same rate. Second hypothesis: the shared container being slow, killed by raising timeouts to no effect. The discriminator was a counter printed in `@AfterAll`: a migration had inserted a default row into a shared table with a fixed id, and Testcontainers' reuse kept the container — so the second test's cleanup deleted a row the next test's fixture assumed it owned. Reuse was not the bug, it was the amplifier of a fixture that mutated global state.
+Fix: Fixtures create their own rows with generated ids and never mutate a shared default; reuse is disabled for the suite that seeds globally; and the suite is shuffled by seed with the seed printed, so ordering dependencies are reproducible instead of weekly surprises.
+Verify: 50 shuffled runs green with the seed recorded, and a deliberately global mutation in the fixture makes the suite fail, proving the guard is live.
+
+---
+
+Failure:
+An invoice total is off by one cent for 3 of 41000 orders a month, and every hand-built example comes out right.
+Diagnosis: Wrong hypothesis: display rounding, killed by the discrepancy existing in the stored value, not the rendered one. Second hypothesis: the VAT rate table, killed by the affected orders all sharing one rate. The discriminator was a property test over generated line items rather than a hand-picked example: it found the failing case in six seconds and shrank it to two lines of 0.005 each, which pointed at a DTO field declared `double` that Jackson 3 happily filled, so the sum was done in binary floating point and rounded once at the end instead of per line.
+Fix: Money is an integer minor-unit value object with the currency beside it (the representation decision is 28's), DTOs carry that type rather than a floating-point number, and the reconciliation invariant — sum of line discounts equals basket discount, sum of lines equals total — runs as a property test on every build.
+Verify: The property test finds the `double` again when it is reintroduced, the exception list on the reconciliation job empties, and the cent-level drift has a test named after it.
+
+---
+
+Failure:
+`checkout` p99 doubles in eu-west-1 only, three weeks after the change that "cannot be it", and the deploy that day was docs-only.
+Diagnosis: Eleven steps across two days, and the interesting part is what got ruled out and how. (1) Edge latency — ruled out with per-POP real-user data showing first byte normal everywhere except origin response time. (2) Read-replica lag — ruled out with `pg_stat_replication` replay lag flat at zero. (3) A hot tenant — ruled out by per-tenant p99, uniform. (4) The dependency's own latency — ruled out: its span time had not moved. (5) A CPU limit — ruled out via the throttling counter. (6) The first plausible explanation, and the one that nearly shipped: pricing, because pricing's span had grown by 180ms. That was a symptom — pricing was being called once per line item instead of once per cart, and something upstream had changed the batching. (7) The batching change was a flag, `pricing.perLineItem.vat`, rolled to 100% in one region on the day of the docs deploy, because a flag rollout is a deploy and the change stream is what said so. (8) The wrong fix that survived review first: a per-line pricing cache, which hid the regression for two days until a TTL change brought the p99 back worse; that cache is why nobody noticed for a week. (9) The question that should have been asked on day one and was asked on day two: may pricing be called per line item at all, or is that a product decision someone already made? Answer: no — cart-level in that market, and the flag was a bug. (10) So the fix was semantic, not a performance fix: one pricing call per cart, flag deleted, the region's rollout state reconciled. (11) What the trace looked like in the end: a 190ms sequential dependency inside a request that used to fan out, with the fan-out restored and the time attributed per dependency.
+Fix: Cart-level pricing call; flag deleted rather than rolled back; the change stream includes flag rollouts so a docs deploy cannot hide a behavioural one; a p99-by-dependency panel so the next serialization is named instead of mysterious.
+Verify:
+p99 back to 178ms in eu-west-1 and unchanged elsewhere; a test asserts one pricing call per cart for any basket size; a drill flips a flag on staging and confirms it appears on the change graph inside the alert window; the per-dependency panel is required by the review checklist for path-touching changes.
+
+---
+
+Failure:
+Every few hours a burst of "session expired" reports; the auth logs show refresh-token rejections, nothing else, and nobody can reproduce it on demand.
+Diagnosis: Nine steps and two wrong turns. (1) Clock skew — ruled out, NTP clean. (2) The IdP's availability — ruled out, no other service saw anything. (3) Token size — ruled out, header sizes flat. (4) An edge keepalive bug — ruled out because the 401s came from the resource server, not the edge. (5) The first wrong fix: retry once on 401, which was merged, and the burst got bigger — the measurement that reoriented everything, because retrying meant more refreshes, so refreshes were the contended resource. (6) Per-device correlation showed the same user issuing four refreshes within 40ms across four browser tabs. (7) The IdP rotates refresh tokens and treats a reused token as theft by revoking the whole family, so the second tab's refresh of an already-rotated token killed the family and the retry fix dutifully amplified that. (8) The second wrong turn was accepting "some sessions drop, that's multi-tab"; the counter was the support pattern — it hit users with exactly one tab open, because a background service worker refreshes too. (9) What had to be decided, and needed asking rather than measuring: is single-session-per-device a requirement, and is a short rotation grace acceptable? Both yes.
+Fix: A single-flight refresh (one in-flight refresh per device, others await it), the rotation grace window configured on the IdP rather than assumed, retry-on-401 removed from the refresh path and kept only for the resource call, and the reuse-revocation event surfaced as a metric instead of a support ticket.
+Verify:
+Zero reuse rejections under a four-tab drill with a service worker running; a test fires four concurrent refreshes and asserts one token exchange; the metric alerts before support does.
+
+---
+
+Failure:
+Nodes report `MemoryPressure` at 03:10 nightly and evict two pods; the JVMs involved look healthy, with 400Mi live heap in a 512Mi container.
+Diagnosis: Eight steps and one bad fix. (1) Limits too low — plausible, and the bad fix: raising to 768Mi stopped the evictions for nine days and then they returned, which is why the raise got reverted rather than kept as a win. (2) Heap leak — ruled out by a dump showing 180Mi live. (3) Page cache counted as usage — ruled out via `container_memory_working_set_bytes`, which excludes it. (4) Log files on the container filesystem — ruled out, ephemeral storage flat. (5) `smaps_rollup` versus heap showed 300Mi of anonymous memory outside the heap, the number that split the problem in two. (6) `jcmd 1 VM.native_memory summary` with NMT on attributed most of it to native (Internal plus Other): direct buffers from a Netty client, plus per-thread arenas. (7) The arenas were glibc's — 200 worker threads, default arena count, several hundred Mi of fragmentation that grows with the import's thread count and never comes back. (8) The question nobody asked until step 7: is the container limit a measured need or a number copied from another service? It was copied.
+Fix: `MALLOC_ARENA_MAX=2`, direct-buffer memory bounded explicitly and included in the limit calculation, thread count sized to the pool it serves, limits recomputed from the working set plus stated headroom, and the eviction alert wired to the working-set ratio rather than to the node condition.
+Verify:
+Working set peaks at 380Mi under the same import, zero evictions across a fortnight of nights, and a test asserts heap plus max direct buffers plus thread stacks fits under the container limit with the numbers written out.
+
+---
+
+Failure:
+A 400ms p99 tail on the reporting read path every night between 02:00 and 03:30, no errors, and the application's own dashboards look normal.
+Diagnosis: Seven steps and one wasted afternoon. (1) The batch import — real, but the trigger rather than the cause, because the same import ran a month ago without the tail. (2) Lock contention — ruled out: `pg_stat_activity` showed tuple-lock waits for a handful of queries, nowhere near the tail's frequency. (3) Autovacuum not running — ruled out by the logs, it ran constantly. (4) The index being skipped — the wasted afternoon: an index was added, the tail did not move, and `EXPLAIN` later showed it was never chosen because the query filters on a `created_at` range and the new index led with `tenant_id`. (5) The number that ended the guessing: `Heap Fetches: 21433` in an otherwise clean index-only scan, and `pg_stat_user_tables.n_dead_tup` for that table range had grown fortyfold since the import started writing and deleting. (6) Autovacuum was running and losing: the default scale factor for a table that size fires far too late, and its cost limit throttled it into irrelevance against the import's write rate. (7) The scope question that mattered: is the import allowed to run in the primary's window at all, or is that an accident of history? Answer: accident.
+Fix: Per-table `autovacuum_vacuum_scale_factor=0.02` with a raised cost limit on that table, the import moved to its own window with a batch size bounded by the write-rate budget, and the covering index dropped — it cost writes and bought nothing.
+Verify:
+`Heap Fetches` near zero during the nightly window, p99 flat at 61ms through the import, and a monitoring assertion on dead-tuple ratio per hot table so the next occurrence is a page about a number rather than a hunt through plans.

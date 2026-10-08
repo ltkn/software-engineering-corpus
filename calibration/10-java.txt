@@ -751,3 +751,19 @@ public static <K> K decode(String cursor, int parts, Function<List<String>, K> p
 Why: a forged cursor only moves the starting position, because the query re-applies tenant filters and RLS, so signing adds cost without security. Strictness still matters: bounded length, exact version, exact part count, caller-owned parsing, anything else mapped to 400 so a probe cannot smuggle a second predicate through the token.
 Counter-pattern: a JSON cursor the client can edit to change sort order, or a signed cursor whose verification runs after the query; or lenient Base64 decoding that accepts newlines and padding variants and then fails deep in the mapper.
 Check: a forged cursor test asserts 200 with tenant-scoped rows only, and a fuzz test over truncated, overlong, and wrong-version tokens asserts InvalidCursorException on every input.
+
+---
+
+Concept: A p99 that no pool, queue or dependency metric explains is a diagnosis ladder, not a mystery. Failure-transcript shape is 02; the ladder is here.
+Modern form: Work the elimination order, cheapest and safest first: (1) is the time inside the process at all — a span from the client and one from the server separate network from code; (2) is it scheduling — `jcmd 1 Thread.dump_to_file -format=json dump.json` plus JFR `jdk.VirtualThreadPinned`, `jdk.JavaMonitorEnter`, `jdk.GCPhasePause`; (3) is it contention — the monitor-enter events name the lock and the frame; (4) is it allocation — `jdk.ObjectAllocationInNewTLAB` at a rate that explains the pauses. Each rung has a measurement that would disprove it, which is what makes it a ladder rather than a list of suspicions.
+Why: the metrics that teams watch are aggregate and average-friendly; pinning, monitor inflation and safepoint stalls are *shaped* problems, so an unchanged p50 with a doubled p99 is normal and the aggregate dashboards are structurally blind to it. The ladder works because it is ordered by cost per unit of information: two spans and one JFR recording settle what a week of speculation will not.
+Counter-pattern: raising pool sizes and timeouts until the symptom moves, then declaring the cause found. A symptom that moves under a knob change is not an explained symptom — it is a masked one, and the next load shape brings it back with a worse ratio.
+Check: the diagnosis names the event type or the frame that produced the delay; a performance test that reproduces the pinned-thread event fails when the `synchronized` block returns, so the fix is covered rather than remembered.
+
+---
+
+Concept: Exhaustive `switch` over a sealed type is a reasoning tool, not a style rule — the compiler enumerates the hypotheses you had not thought about.
+Modern form: `ApiError` permits `NotFound`, `Conflict`, `Forbidden`, `RateLimited`; `status(ApiError e)` is an exhaustive expression with a branch per case. Adding a permitted type breaks every mapping in the build, which turns "did we handle the new error everywhere" from a review question into a compile error, and the error list *is* the checklist.
+Why: the failure mode it removes is the silent default. `default -> 500` compiles forever and quietly maps a new 429 to a 500, which changes client retry behaviour, which changes load under incident, which changes the incident. Exhaustiveness makes the addition site pay the cost, immediately, in the file that added the type — the cheapest possible moment to notice.
+Counter-pattern: sealed interfaces with a wildcard branch everywhere, which keeps the syntax and throws away the reasoning; or an enum with an integer status field maintained by a `Map` that no compiler checks and no test covers, so the map silently lacks the newest entry.
+Check: deleting a branch fails the build (assert this by mutation, not by habit); an architecture test forbids `default ->` in mappings over sealed error types, and the mapping's test enumerates the permits list so a new permit without a test is visible.

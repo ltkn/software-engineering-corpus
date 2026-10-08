@@ -574,3 +574,26 @@ Wiring:
 Why: the DataState slot owns the pending versus error versus data branch, so no page forgets the 404-generic special case, while the status region stays mounted even when empty for announcements. The 404 maps to Not found rather than the backend detail, because a missing tenant id is a navigation error, not a domain refusal.
 Pitfall: per-page v-if chains that render nothing on error and leave the region empty; or mounting the live region only with its text so the announcement never fires.
 Verification: tests over pending, 404, 500, and data states asserting exactly one branch renders, plus a verified test asserting the success node replaces text without replacing the region.
+
+---
+
+Goal: A table re-renders entirely on every keystroke in a filter box, and "it's just reactivity" is not an answer.
+Wiring:
+const renderCount = ref(0)
+onMounted(() => { /* dev-only: increment in a wrapper component's onRender or via a Vue devtools hook */ })
+const rows = shallowRef<Row[]>([])          // replaced wholesale by the query
+const filtered = computed(() => rows.value.filter(r => matches(r, term.value)))
+Why: the diagnosis is a ladder of cost-per-information. (1) Count renders, don't feel them — a counter in a wrapper component separates "renders a lot" from "renders the right amount and each render is expensive", which are different bugs with different fixes. (2) Check what the computed depends on: a `term` read inside a filter that touches 20,000 rows re-runs per keystroke, and a debounced *input* is not the same as a debounced *computation*. (3) Check identity: if the query writes a fresh array on every cache update, every dependent recomputes and every row re-renders — structural sharing is the fix, not memoising the render. (4) Check `v-for` keys: index keys make every insert a re-render of everything after it, and that bug is invisible until a list is both long and mutable. (5) Only then look at deep reactivity: `shallowRef`/`markRaw` on data the view never mutates is a large win, and it is a win you can only measure once 1–4 are clean.
+Pitfall: reaching for `markRaw` first because it is one line, which hides (2) and (3) and returns later as "the table stopped updating" — untracked data does not update, by design.
+Verification: a render-count test asserts renders per keystroke, per fetch and per sort; the debounce is on the key that goes to the server, not on the derived computation; and the same test fails when the keys go back to array indices.
+
+---
+
+Goal: A hydration mismatch that only appears behind the CDN, and never when you hit the origin.
+Wiring:
+curl -s https://shop.test/orders | sha256sum          # via CDN, repeated
+curl -s --resolve shop.test:443:203.0.113.10 https://shop.test/orders | sha256sum   # origin direct
+curl -s -H 'Cookie: ab_bucket=b' https://shop.test/orders | diff - <(curl -s https://shop.test/orders)
+Why: mismatch means two renders disagree, and behind a cache the two renders may not be the same *request*. The ladder: (1) render the same URL twice from the origin and compare — if the origin is non-deterministic, it is the app (locale from the container default, a date in the template, an id generated per render rather than `useId`); (2) if the origin is deterministic but the CDN copy differs, the cache is serving one user's markup to another — a personalisation or experiment read *before* the cache decision, so a bucket-b variant is cached for bucket-a users; (3) if the mismatch appears only after a client-side update, it is not hydration at all but a render-phase side effect, and the warning text says which.
+Pitfall: "fixing" it by silencing hydration — a `v-if="mounted"` wrapper around the panel, or filtering the warning out of `app.config.warnHandler` — that turns a correctness bug into a flash and a longer time-to-interactive, and it hides case (2) entirely, which is the expensive one because it also leaks one user's markup to another.
+Verification: a pipeline job fetches a page through the CDN twice with different bucket cookies and asserts the cached copy differs where personalisation is expected and does not differ where it is not; the hydration test compares server and client HTML strings for a fixture rather than watching the console.

@@ -678,3 +678,31 @@ RETURNING user_id;
 Reading: the predicate plus RETURNING makes issue and burn one statement, so two concurrent presents cannot both succeed. The stored value is SHA-256 of version-prefixed token plus pepper, never the raw token, and a zero-row result is indistinguishable across invalid, expired, consumed, or wrong-browser cases.
 Pitfall: SELECT then UPDATE in application code, where a replay inside the race window burns twice; or storing the raw token so a read replica leak becomes a login.
 Verification: a concurrent-present test asserting exactly one RETURNING row, and a test asserting expired and consumed fixtures both return zero rows with the same caller-visible outcome.
+
+---
+
+Task: The plan says index scan, production says slow. Diagnose the case where the plan you measured is not the plan that runs.
+SQL:
+PREPARE orders_page(int, text) AS SELECT * FROM orders WHERE tenant_id = $1 AND status = $2;
+EXPLAIN (ANALYZE) EXECUTE orders_page(7, 'open');   -- real params: custom plan
+EXPLAIN (EXECUTE) PREPARE orders_page(int, text);  -- the generic plan the cache may prefer (PG 12+)
+SELECT queryid, calls, mean_exec_time, stddev_exec_time,
+       regexp_match(query, 'status = [^ ]+') AS pred
+FROM pg_stat_statements WHERE query ILIKE '%orders%status%';
+SELECT attname, n_distinct, correlation FROM pg_stats WHERE tablename = 'orders' AND attname IN ('tenant_id','status');
+Reading: three hypotheses in cost order, each with its own disproof. (1) The index is missing or unused — check `pg_indexes` and the plan; if the plan you take by hand is good, this hypothesis is dead. (2) Statistics lie — `pg_stats` shows `n_distinct` far from reality or a strong correlation the planner cannot see; `ANALYZE` and re-plan, and if nothing changes, it is dead too. (3) The prepared statement has moved to a *generic* plan: after five executions the planner may prefer a plan that works for all parameter values, which is the wrong plan for the one tenant holding 60% of the rows. The generic plan is what `EXPLAIN (EXECUTE) PREPARE` prints; the custom plan is what `EXPLAIN (ANALYZE) EXECUTE` prints with the skewed parameters, and the spread in `stddev_exec_time` is the fingerprint of two plans living in one query id.
+Pitfall: "adding an index" to a plan-cache problem — the index gets used by the ad-hoc session that tested it and ignored by the cached generic plan, so the fix appears to work in staging and do nothing in production.
+Verification: the fix (plan selection reconsidered: forced generic/custom behaviour, statistics target on the offending column, or splitting the query so the parameter is not the skewed one) shows up as `stddev_exec_time` collapsing on that query id, and a test runs both the skewed and the ordinary tenant's parameters through the same prepared statement path.
+
+---
+
+Task: A bulk delete finished, the table grew, and everything got slower. Diagnose vacuum debt without making it worse.
+SQL:
+SELECT relname, n_live_tup, n_dead_tup, last_autovacuum, last_autoanalyze
+FROM pg_stat_user_tables WHERE relname = 'orders';
+SELECT pid, state, xact_start, backend_xmin, left(query, 60) AS q
+FROM pg_stat_activity WHERE backend_xmin IS NOT NULL ORDER BY xact_start;
+SELECT phase, heap_blks_total, heap_blks_scanned FROM pg_stat_progress_vacuum;
+Reading: dead tuples explain the slowdown arithmetically — an index scan that walks hundreds of dead entry versions costs the same as a bigger table, so "the table is smaller and slower" is not a paradox. The next question is why vacuum did not clean it, and the answer is usually a horizon: the second query finds a session with `backend_xmin` set and an `idle in transaction` state that has been open since the import began, which pins the oldest xmin and makes every vacuum run *skip* the very rows that were deleted. The wrong fix is `VACUUM FULL` on a hot table: it takes an access-exclusive lock, so the symptom you are trying to remove is replaced by a queue.
+Pitfall: treating bloat as an index problem and reindexing, which rewrites the same dead tuples and locks the table while doing it; or killing the long transaction without noting that its owner is a report notebook that will reconnect in ten minutes.
+Verification: `n_dead_tup` falls and stays down, `Heap Fetches` in the affected plans returns to near zero, `pg_stat_progress_vacuum` is monitored rather than guessed during the cleanup, and `idle_in_transaction_session_timeout` is set per role so the class of cause cannot recur (the same loop, told as a transcript, is 02).
