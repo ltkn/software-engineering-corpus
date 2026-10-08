@@ -20,7 +20,8 @@
 #   VENV_PY     branch venv python (default: $OMLX_REPO/.venv-3.12/bin/python)
 #   OQUP        run artifacts: logs + imatrix caches (default: ~/oqup)
 #   MODELS_OUT  quant outputs, one subdir per version (default: ~/models-out)
-#   NGRAM_BITS  PLE N-gram table width, default 8 (rest follows oQ level 4)
+#   NGRAM_BITS  PLE N-gram table width, default 8 (rest follows OQ_LEVEL)
+#   OQ_LEVEL    oQ base level, default 4 (oQ4e). scripts/omlx_oq5e.sh sets 5.
 #   OQ_SAMPLES  imatrix samples, default 128
 #   OQ_SEQLEN   imatrix sequence length, default 512
 #
@@ -49,6 +50,7 @@ VENV_PY="${VENV_PY:-$OMLX_REPO/.venv-3.12/bin/python}"
 OQUP="${OQUP:-$HOME/oqup}"
 MODELS_OUT="${MODELS_OUT:-$HOME/models-out}"
 NGRAM_BITS="${NGRAM_BITS:-8}"
+OQ_LEVEL="${OQ_LEVEL:-4}"
 OQ_SAMPLES="${OQ_SAMPLES:-128}"
 OQ_SEQLEN="${OQ_SEQLEN:-512}"
 
@@ -64,12 +66,12 @@ if [ -z "$SRC" ]; then
 fi
 
 BUNDLE="/tmp/calibration-se.txt"
-OUT="$MODELS_OUT/Qwen3.8-Flash-Next-Uncensored-oQ4e-$VERSION"
+OUT="$MODELS_OUT/Qwen3.8-Flash-Next-Uncensored-oQ${OQ_LEVEL}e-$VERSION"
 NPZ="$OQUP/imatrix-$VERSION.npz"
-LOG="$OQUP/oq4e-$VERSION.log"
-RUNNER="$OQUP/run_oq4e_$VERSION.py"
+LOG="$OQUP/oq${OQ_LEVEL}e-$VERSION.log"
+RUNNER="$OQUP/run_oq${OQ_LEVEL}e_$VERSION.py"
 
-echo "== omlx_oq4e $VERSION =="
+echo "== omlx_oq${OQ_LEVEL}e $VERSION =="
 echo "corpus repo : $CORPUS_REPO"
 echo "omlx repo   : $OMLX_REPO ($(git -C "$OMLX_REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'NOT A GIT CHECKOUT'))"
 echo "source      : $SRC"
@@ -98,7 +100,7 @@ from omlx.oq import quantize_oq_streaming
 quantize_oq_streaming(
     model_path="$SRC",
     output_path="$OUT",
-    oq_level=4, enhanced=True,
+    oq_level=$OQ_LEVEL, enhanced=True,
     calib_dataset="$BUNDLE",
     sensitivity_calib_dataset="$BUNDLE",
     ngram_bits=$NGRAM_BITS,
@@ -116,11 +118,11 @@ fi
 echo "== launching (log: $LOG) =="
 "$VENV_PY" "$RUNNER" > "$LOG" 2>&1
 echo "== quantize returned, verifying =="
-"$VENV_PY" - "$OUT" "$BUNDLE" <<'PY'
+"$VENV_PY" - "$OUT" "$BUNDLE" "$OQ_LEVEL" "$NGRAM_BITS" <<'PY'
 import json
 import sys
 
-out, bundle = sys.argv[1], sys.argv[2]
+out, bundle, level, ngram_bits = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
 report = json.load(open(f"{out}/oq_imatrix_report.json"))
 q = json.load(open(f"{out}/config.json"))["quantization"]
 ngram = {k: v for k, v in q.items() if "ngram" in k}
@@ -135,8 +137,12 @@ ok = (
     report["calib_dataset"] == bundle
     and report["cache_reused"] is False
     and report["entry_count"] > 0
+    and q.get("bits") == level
     and ngram
-    and all(v.get("bits") == 8 and v.get("group_size") == 32 for v in ngram.values())
+    and all(
+        v.get("bits") == ngram_bits and v.get("group_size") == 32
+        for v in ngram.values()
+    )
 )
 print("VERIFY:", "OK" if ok else "FAILED")
 sys.exit(0 if ok else 1)
