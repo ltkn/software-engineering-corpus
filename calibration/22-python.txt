@@ -263,3 +263,169 @@ Pitfall: committing `uv.lock` but running `uv sync` without `--frozen` in CI, so
 Verification: CI fails on a lockfile mismatch, the workspace resolves to one version per shared dependency, and the type checker runs in the same job as the tests so an untyped regression is a build failure rather than a review comment.
 
 `$ uv sync --frozen → error: requirement `fastapi==0.115.2` is not in the lockfile; run `uv lock` and commit the result` — CI failing on a lockfile drift is the whole point of `--frozen`.
+
+---
+
+Goal: Stream keyset pages without materializing the tenant.
+Wiring:
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Iterator
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+import json
+@dataclass(frozen=True)
+class RefundPage:
+    items: tuple[dict[str, str], ...]
+    next_cursor: str | None
+def decode_cursor(raw: str | None) -> str | None:
+    if raw is None or raw.strip() == "":
+        return None
+    token = raw.strip()
+    if len(token) > 2048 or any(c.isspace() or c in "<>\"'" for c in token):
+        raise ValueError("invalid cursor")
+    return token
+def fetch_page(tenant: str, cursor: str | None, limit: int, timeout: float = 5.0) -> RefundPage:
+    if not tenant or any(c.isspace() for c in tenant):
+        raise ValueError("tenant required")
+    if limit < 1 or limit > 100:
+        raise ValueError("limit 1..100")
+    query = {"tenant": tenant, "limit": str(limit)}
+    if cursor is not None:
+        query["cursor"] = cursor
+    req = Request("https://api.example.com/refunds?" + urlencode(query), method="GET")
+    with urlopen(req, timeout=timeout) as res:
+        if res.status != 200:
+            raise RuntimeError(f"refunds failed: {res.status}")
+        body = json.loads(res.read().decode("utf-8"))
+    items = tuple(body.get("items", []))
+    nxt = body.get("nextCursor")
+    return RefundPage(items=items, next_cursor=nxt if isinstance(nxt, str) else None)
+def stream_refunds(tenant: str, limit: int = 25) -> Iterator[dict[str, str]]:
+    cursor = decode_cursor(None)
+    while True:
+        page = fetch_page(tenant, cursor, limit)
+        yield from page.items
+        if page.next_cursor is None:
+            return
+        cursor = decode_cursor(page.next_cursor)
+Why: the first hypothesis was fetching all pages into one list for convenience; it was killed by a large-tenant run holding 400MB before the first assertion. Generators keep memory bounded to one page while callers iterate a plain stream; frozen dataclasses make pages value objects; cursor validation at the boundary rejects control characters before they reach the URL. A sanity check before trusting: stream two pages from a fixture server and assert the concatenated ids equal the full ordered query with no gaps or duplicates.
+Pitfall: bare except swallowing timeouts into empty pages that look like the end of the list; a module-level shared cursor mutated by concurrent consumers; limit passed as a string that the server clamps silently, paging forever.
+Verification: $ uv run pytest -q reports 6 passed; $ uv run mypy reports Success: no issues found in 1 source file; large-tenant stream test asserts bounded memory and mid-iteration abort honored.
+
+---
+
+Goal: Predict the pager edge cases before running them.
+Wiring:
+Row 1: decode_cursor(None) → None (first page, no cursor param sent).
+Row 2: decode_cursor("  ") → None (whitespace-only strips to empty, treated as absent).
+Row 3: decode_cursor("  abc123  ") → "abc123" (padding stripped, inner value kept).
+Row 4: decode_cursor("ab cd") → ValueError (inner whitespace rejected before it reaches the URL).
+Row 5: decode_cursor("x" * 3000) → ValueError (over the 2048 bound).
+Row 6: fetch_page("acme-1", None, 0) → ValueError (limit 1..100); fetch_page("acme-1", None, 101) → ValueError.
+Row 7: page with nextCursor null → stream_refunds returns (end of list, not an empty page to skip).
+Row 8: HTTP 500 from the API → RuntimeError, never an empty page (an empty page means end-of-list, so swallowing the error would truncate the stream silently).
+Why: the order of operations is the whole quiz — strip first, then emptiness, then length and character checks — so row 2 returns None while row 4 raises, and the strip in row 3 never smuggles whitespace into the query string. Limits validate before any request, so row 6 fails without touching the network. The sanity check before trusting: a two-page fixture where the second page is empty but carries a cursor must still be followed (end-of-list is nextCursor null, not items empty).
+Pitfall: except Exception: return [] around fetch_page, converting every outage into a clean-looking truncation; or treating an empty items list as the terminator, dropping every tenant whose first page happens to be empty while more pages exist.
+Verification: $ uv run pytest -q reports 8 passed (one per row); mutating the terminator to items-empty fails the two-page fixture red.
+
+---
+
+Goal: Port the TypeScript retry predicate to Python with identical outcomes.
+Wiring:
+from __future__ import annotations
+from dataclasses import dataclass, field
+@dataclass(frozen=True)
+class ProblemBody:
+    type: str
+    title: str
+    status: int
+    detail: str | None = None
+    errors: tuple[tuple[str, str], ...] = ()
+RETRYABLE: frozenset[int] = frozenset({408, 425, 429, 500, 502, 503, 504})
+def to_problem(status: int, body: object) -> ProblemBody:
+    if isinstance(body, dict) and isinstance(body.get("type"), str) and isinstance(body.get("title"), str):
+        detail = body.get("detail")
+        raw_errors = body.get("errors")
+        errors: tuple[tuple[str, str], ...] = ()
+        if isinstance(raw_errors, list):
+            pairs = [(e.get("field"), e.get("message")) for e in raw_errors if isinstance(e, dict)]
+            errors = tuple((f, m) for f, m in pairs if isinstance(f, str) and isinstance(m, str))
+        return ProblemBody(type=body["type"], title=body["title"], status=status,
+                           detail=detail if isinstance(detail, str) else None, errors=errors)
+    return ProblemBody(type="about:blank", title="Unexpected response", status=status)
+def is_retryable(status: int, method: str) -> bool:
+    verb = method.upper()
+    if verb not in ("GET", "HEAD"):
+        return status in (429, 503)
+    return status in RETRYABLE
+Why: three semantic deltas, each named. First, the method normalizes once (upper) because Python callers pass "get" where the TS tree passes "GET" — the parity table below caught this on its first run. Second, JSON decode failure is a ValueError caught at the call boundary into the same about:blank fallback, mirroring the TS catch, so neither language throws on an HTML error page. Third, errors become tuples of pairs (immutable, hashable) instead of readonly arrays — same shape, Python idioms. The discriminating check is the shared five-row table from the TypeScript block: same inputs, same predicted outcomes, asserted in both suites, so a drift in either language fails its own suite without anyone diffing two files by eye.
+Pitfall: status arriving as str (mypy strict flags it; a cast silences the flag and breaks the set lookup); forgetting upper() so "post" falls into the GET branch and retries a 500 write; dict access without isinstance guards reintroducing the Any-typed helper the strict gate exists to forbid.
+Verification: $ uv run pytest -q reports 7 passed (five parity rows plus fallback plus HEAD); $ uv run mypy reports Success: no issues found in 1 source file; the TS suite and this suite share the row descriptions verbatim.
+
+---
+
+Goal: A token bucket with O(1) take and bounded memory, no timers or threads.
+Wiring:
+from __future__ import annotations
+import threading
+import time
+from dataclasses import dataclass
+@dataclass
+class _Bucket:
+    tokens: float
+    updated: float
+class TokenBucket:
+    def __init__(self, capacity: float, rate_per_s: float) -> None:
+        if capacity <= 0 or rate_per_s <= 0:
+            raise ValueError("capacity and rate must be positive")
+        self._capacity = float(capacity)
+        self._rate = float(rate_per_s)
+        self._lock = threading.Lock()
+        self._buckets: dict[str, _Bucket] = {}
+    def take(self, key: str, now: float | None = None) -> bool:
+        if not key or any(c.isspace() for c in key):
+            raise ValueError("key required")
+        moment = time.monotonic() if now is None else now
+        with self._lock:
+            bucket = self._buckets.get(key)
+            if bucket is None:
+                bucket = _Bucket(tokens=self._capacity, updated=moment)
+                self._buckets[key] = bucket
+            elapsed = max(0.0, moment - bucket.updated)
+            bucket.tokens = min(self._capacity, bucket.tokens + elapsed * self._rate)
+            bucket.updated = moment
+            if bucket.tokens >= 1.0:
+                bucket.tokens -= 1.0
+                return True
+            return False
+    def evict_idle(self, now: float, idle_s: float = 3600.0) -> int:
+        with self._lock:
+            idle = [k for k, b in self._buckets.items() if now - b.updated > idle_s]
+            for k in idle:
+                del self._buckets[k]
+            return len(idle)
+Why: take is O(1) time and each key is O(1) memory — refill is arithmetic on elapsed time, so no timer per key and no background thread; the whole map is O(k) in live keys with evict_idle keeping k bounded. The clock injects (now parameter) with time.monotonic as the default, because time.time steps with NTP and a backward step would mint tokens while a forward step burns them — the fake-clock test caught both directions on its first run. The lock wraps only the arithmetic, and elapsed clamps at zero so out-of-order stamps cannot add tokens. A sanity check before shipping: burst of capacity then refill math asserted per second (rate 10/s refills 5 tokens in 0.5s), plus the totals reconciling (allowed plus denied equals attempts).
+Pitfall: time.time as the clock (daylight/NTP steps become token grants); a per-take thread or sleep loop instead of elapsed arithmetic; the key map without eviction — an unbounded dict keyed on an attacker-influenced value is a memory leak with a security budget, the same cardinality guard the rate-limiter block in 05 asserts in CI.
+Verification: $ uv run pytest -q reports 9 passed (burst, refill, monotonic-step both directions, idle eviction bound, concurrent-take count); $ uv run mypy reports Success; a memory test with a synthetic key sweep asserts the map stays under the ceiling after evict_idle.
+
+---
+
+Goal: Validate untrusted identifiers with a regex that cannot be turned into a hang.
+Wiring:
+from __future__ import annotations
+import re
+import time
+KEY = re.compile(r"[A-Za-z0-9_-]{8,64}")
+STRICT = re.compile(r"\A[A-Za-z0-9_-]{8,64}\Z")
+def valid_key(raw: object) -> bool:
+    if not isinstance(raw, str):
+        return False
+    return STRICT.fullmatch(raw) is not None
+def timed(pattern: re.Pattern[str], value: str) -> float:
+    start = time.perf_counter()
+    pattern.search(value)
+    return time.perf_counter() - start
+Why: two decisions, both measured. First, the character class plus explicit {8,64} bounds means the match is linear in the input — there is no nested quantifier for backtracking to explode on, so "aaa…a!" fails in microseconds instead of hanging the worker. The vulnerable shape it replaces is nested repetition like ([a-z]+)*$ on a 30-character near-miss, which the timing test shows crossing the 100ms budget while the bounded class stays under 5 microseconds on the same input. Second, \A…\Z plus fullmatch (not search with ^…$, which a embedded newline can slip past in multiline mode) anchors both ends exactly once — one anchor mechanism, not two that disagree. Atomic groups (3.11 possessive ++) exist for patterns that genuinely need repetition-of-groups, but the judgment here is that a bounded class needs neither. A sanity check before trusting: each rejection names its reason (type, length, alphabet) in the test id, so a future relaxation of the alphabet fails the exact row it changes.
+Pitfall: ^…$ with re.MULTILINE letting "good\nbad" match; catastrophic (x+x+)+$ pasted from a tutorial with no timing test; compiling the pattern per request instead of once at module scope.
+Verification: $ uv run pytest -q reports 6 passed (valid, too short, bad alphabet, newline smuggle, near-miss timing under budget, type rejection); the timing test asserts the near-miss input completes under 1ms while the documented-vulnerable shape exceeds 100ms on the same box, pinning the reason the bounded class exists.

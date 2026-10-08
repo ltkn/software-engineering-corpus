@@ -275,3 +275,17 @@ annotations: team/owner, slo/objective, oncall/route on every workload, read by 
 Why: throttling, eviction and restart-loops arrive as cluster events long before they arrive as user-visible errors, and the owner annotation is what lets an alert route to the team that can act instead of to whoever is awake. A queue consumer's readiness is a signal in its own right: a pod that reports ready while it cannot reach the broker produces a silent, growing lag instead of an obvious failure (the workload-side reading is 21).
 Anti-pattern: cluster events scraped into a dashboard nobody reads, with no owner and no threshold, so the platform team becomes a human log-shipping service; disk usage measured on the node while the pressure is an ephemeral-storage limit on one container.
 Verification: an alert fires on a rising throttling ratio with the owner attached, and a simulated OOMKill plus a readiness-gate failure both route in under the stated window with the owner named, without a human in the loop.
+
+---
+
+Signal needed: level discipline so warn pages a human soon, error means a request failed, and attacker traffic never spends the error budget.
+Schema:
+level in {debug, info, warn, error} plus outcome on every business refusal; debug off in production; 4xx refusals are info-with-outcome, never error.
+logfmt (journald, local tail):
+ts=2026-10-08T09:14:02Z level=info service=orders-api route="POST /refunds" tenant=acme-1 outcome=forbidden ms=3 requestId=req_9f2
+JSON (collector, same event):
+{"ts":"2026-10-08T09:14:02Z","level":"info","service":"orders-api","route":"POST /refunds","tenant":"acme-1","outcome":"forbidden","ms":3,"requestId":"req_9f2"}
+{"ts":"2026-10-08T09:14:05Z","level":"warn","service":"orders-api","pool":"cortex_app","active":10,"idle":0,"waiting":41,"requestId":"req_9f2"}
+Incident reading: the warn line is the cause and any error line is the symptom, joined on requestId — a 403 ownership refusal stays info because the system worked (it refused), while the pool-saturation warn needs a human before it becomes errors. Business-error codes ride in outcome beside the level, so the error-rate alert counts 5xx plus failed outcomes, never 4xx volume that an attacker controls.
+Anti-pattern: log.error on every 404/403, so a credential-stuffing spray becomes a log flood that pages the team — the flood is the DoS completing itself; or debug in the hot path in production, paying double (allocation plus collector cardinality) for lines nobody reads; or one format per service, so the join key changes spelling at the gateway.
+Verification: a fixture 403 produces exactly one info line carrying outcome=forbidden and zero error lines; prod sampling asserts debug lines at zero; the alert routes on error plus warn-rate, and a spray drill (10k forged 403s) pages nobody while a pool-exhaustion drill pages once with the owner attached.

@@ -330,3 +330,32 @@ Example: given buys 100 at 200.00 and 100 at 220.00 then a sale of 100 at 250.00
 Why this technique: the numbers are the contract with the tax authority, so the test pins worked figures the recompute gate can rerun instead of asserting call counts. Fixtures use real-shape broker rows plus dated FX rows, so a parser change that drops a fee breaks the gain rather than passing in isolation.
 Anti-pattern: mocking the pool to return the average the test then asserts, which proves the wiring but not the arithmetic; or one golden-file test for the whole year that cannot name which rule broke.
 Verification: each calculator has its own test class with per-rule fixtures, a red-green check that the test fails when the rule is removed, and streaming-parser tests over sample XML and JSON asserting the same domain events the calculators consume.
+
+---
+
+What to test: ownership as a readable matrix, with the test body showing the whole assertion.
+Example:
+import java.util.UUID;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import static org.assertj.core.api.Assertions.assertThat;
+class RefundOwnershipTest {
+    private final RefundService service = new RefundService(new FakeRefunds(), new FakeOrders());
+    @ParameterizedTest(name = "{0} {1} -> {2}")
+    @CsvSource({
+        "owner,        paid,    200",
+        "stranger,     paid,    403",
+        "anonymous,    paid,    401",
+        "owner,        draft,   409",
+        "owner,        paid_fraud, 403"
+    })
+    void decides(String principal, String orderState, int expectedStatus) {
+        UUID tenant = UUID.fromString("0194f3c2-7a1e-7a1e-7a1e-7a1e7a1e7a1e");
+        UUID order = UUID.fromString("0194f3c2-7a1e-7a1e-7a1e-7a1e7a1e7a1f");
+        int actual = service.httpStatus(principal, tenant, order, orderState);
+        assertThat(actual).as("%s on %s", principal, orderState).isEqualTo(expectedStatus);
+    }
+}
+Why this level: the matrix turns the authorization policy into an executable specification — five principals times five states in one method, each cell naming the exact status. A reviewer extends the matrix instead of debating prose; a new route copies the matrix shape or the review fails. The test reads as arrange (fixed tenant and order ids), act (one httpStatus call), assert (named status) with no mocks of the policy itself.
+Anti-pattern: one happy-path test ("owner can read own profile") leaving stranger, cross-tenant, and anonymous paths untested; or mocking the service to return the status the test then asserts, which proves the wiring but not the rule.
+Verification: the suite runs in milliseconds with no Spring context; removing the ownership check fails red with expected: <403> but was: <200> on the stranger row, then green after the fix; uncovered-matrix lint fails the build when a new action lacks its row.

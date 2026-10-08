@@ -504,3 +504,29 @@ Investigation: The plan was fast to produce and the index was fast to write, and
 Decisions: Drop the candidate index, add a coverage note to the projection job's runbook, and add call count beside mean time in the top-queries report, so the next optimization starts from "how often" beside "how slow".
 Outcome: No index shipped; the actual slow thing (the rebuild) got an owner and a window.
 Verification: The top-queries report includes call count and total time, not mean time alone; a test asserts the candidate index is not present, with a comment naming this investigation, so nobody re-adds it in a month.
+
+---
+
+Goal: Backport the refund-ownership hotfix to the release branch without carrying the migration.
+Context: Main carries fix plus regression test plus a Flyway migration in one commit; the release branch already has the migration under a different version number. CI required, rollout window tonight.
+Investigation: git log --oneline -3 shows the hotfix commit touching RefundService.java, RefundOwnershipTest.java, and V221__refunds.sql; git show --stat confirms the migration is the third file; git status on the release worktree is clean.
+Plan: 1. Cherry-pick with -x for traceability. 2. Exclude the migration file from the pick. 3. Resolve the DTO conflict explicitly. 4. Run the targeted tests plus the rollback drill. 5. Open the backport PR with what/why/tested and the rollback first.
+Decisions: The conflict below is a decision, not a chore: main renamed the DTO field to outcome while release still reads status, so silently taking either side breaks one branch's readers. Adapt the fix to the release DTO (status) and note the divergence in the PR rather than renaming the release field under a hotfix. Rollback is reverting the single backport commit, stated first on the PR because auth changes roll back before they roll forward. A merge conflict between the branches is recorded with the reason for the ordering, never silently resolved.
+Verification: git cherry-pick -x output plus conflict markers reviewed line by line; git diff --check clean; RefundOwnershipTest green on the release branch (5 tests); the migration-exclusion asserted by the release Flyway validate passing with no duplicate version.
+Outcome: Single-commit backport PR with the -x reference line; release deploys in the window; main/release DTO divergence tracked as follow-up work, not hidden in the hotfix.
+$ git cherry-pick -x 9f3c1a2
+Auto-merging src/main/java/com/acme/orders/RefundService.java
+CONFLICT (content): Merge conflict in src/main/java/com/acme/orders/RefundService.java
+$ git status --short
+UU src/main/java/com/acme/orders/RefundService.java
+A  src/test/java/com/acme/orders/RefundOwnershipTest.java
+
+---
+
+Goal: Unblock the frontend slice after the contract-diff gate rejects a required cursor.
+Context: Vertical slice in flight (migration plus backend plus contract done, frontend plus tests next); the gate runs before the frontend slice. Backend added cursor as required; the TanStack hook still sends offset params and the generated test stayed green.
+Investigation: The gate diff names the break: required: [cursor] added to GET /refunds while useRefundPages builds offset URLs, so every old client becomes a 400. The generated test stayed green because it asserts only the new cursor path and never replays a v1 request — read the test before running it, confirmed it passes against both shapes, so it proves nothing about compatibility. Contract tests per version exist for v1; none ran in this branch.
+Plan: 1. Stop the frontend slice. 2. Amend the backend: cursor optional with server default, additive-first. 3. Prove the generated test fails pre-fix (replay a v1 request, assert 400). 4. Update the hook and query key. 5. Re-run the gate plus both version suites.
+Decisions: Fix-forward on the backend, not the frontend: the contract break is the bug, forcing every client to change is scope growth wearing a migration costume. Compatibility check first — additive fields without versions, media-type version only for breaking shapes, sunset header with a date if v1 ever goes away. The conflict between "move fast" and "don't break clients" is resolved by the gate, not by whoever shouts first, and the generated test earns its place by failing before the fix.
+Verification: Contract-diff gate green; v1 replay test red before the amendment (400) and green after (200 with default paging); v1 and v2 suites green; git diff --stat shows the backend amendment plus the hook plus both tests, no unrelated files.
+Outcome: Cursor optional, frontend slice unblocked, the tautological test replaced by a version-pair that actually guards the contract.

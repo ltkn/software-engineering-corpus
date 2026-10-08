@@ -560,3 +560,43 @@ const { data } = useQuery({ ...orderListOptions(tenant), select: page => page.it
 Why: the storm has three independent causes and the network waterfall separates them. (1) `refetchOnWindowFocus` with `staleTime: 0` means every data is stale on every focus, which is correct for a laptop and pathological for an app embedded in a host that steals focus constantly — so the flag is conditioned on the embedding, not disabled globally. (2) Retry amplification: a failing endpoint with default retries turns ten components into thirty requests per focus event, visible as a burst with identical URLs and exponential spacing. (3) The one that is not a request problem at all: a `select` returning a fresh array on every call, which re-renders consumers whenever the cache settles, so the *renders* storm and someone reaches for a network setting to fix a render problem. The waterfall tells you which storm you are in before you change anything.
 Pitfall: setting `staleTime: Infinity` globally to stop the noise, which converts a focus storm into "the app shows yesterday's numbers", the failure mode users report as a data bug rather than a performance one.
 Verification: a test with a fake clock and a focus event asserts zero requests within `staleTime` and exactly one after it; a failing-endpoint test asserts the request count is bounded by `retry × mounted queries`; a render-count test asserts one render per cache update with `select` in place (the derivation semantics are this file's, the invalidation discipline is the key factory's).
+
+---
+
+Goal: An infinite refund list with stable keys, abort, and slice subscriptions.
+Wiring:
+import { useInfiniteQuery, useQueryClient } from "@tanstack/vue-query";
+export const refundKeys = {
+  all: ["refunds"] as const,
+  pages: (tenant: string, limit: number) => [...refundKeys.all, tenant, limit] as const,
+};
+type RefundRow = { id: string; amount: string; status: string };
+type RefundPage = { items: ReadonlyArray<RefundRow>; nextCursor: string | null };
+async function fetchRefundPage(tenant: string, cursor: string | null, limit: number, signal: AbortSignal): Promise<RefundPage> {
+  const qs = new URLSearchParams({ tenant, limit: String(limit) });
+  if (cursor) qs.set("cursor", cursor);
+  const res = await fetch(`https://api.example.com/refunds?${qs}`, { signal });
+  if (res.status === 401) throw new Error("unauthenticated");
+  if (!res.ok) throw new Error(`refunds failed: ${res.status}`);
+  return (await res.json()) as RefundPage;
+}
+export function useRefundPages(tenant: string, limit = 25) {
+  return useInfiniteQuery({
+    queryKey: refundKeys.pages(tenant, limit),
+    queryFn: ({ pageParam, signal }) => fetchRefundPage(tenant, (pageParam as string | null) ?? null, limit, signal),
+    initialPageParam: null as string | null,
+    getNextPageParam: last => last.nextCursor,
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
+    retry: 2,
+    refetchOnWindowFocus: false,
+    select: data => data.pages.flatMap(p => p.items),
+  });
+}
+export function useInvalidateRefunds() {
+  const qc = useQueryClient();
+  return (tenant: string, limit = 25) => qc.invalidateQueries({ queryKey: refundKeys.pages(tenant, limit) });
+}
+Why: the first hypothesis was inline key literals per component; it was killed by a cache dump showing two slots for the same tenant where an invalidation cleared only one. The factory makes identity structural and greppable; the signal plumbs cancellation so unmounts and refetches cannot write stale pages; select subscribes consumers to the flattened rows so unrelated cache updates keep referential stability. staleTime 30s bounds refetch chatter while gcTime 5min survives a background return; refetchOnWindowFocus stays off for this embedded surface where focus events are constant. A sanity check before shipping: dump the keys for two tenants and assert no key lacks the tenant segment.
+Pitfall: cacheTime (v4) instead of gcTime (v5), which type-checks nowhere and silently keeps the default; select returning a fresh object per call, re-rendering every consumer on each settle; a global staleTime Infinity that serves yesterday's refunds as today's.
+Verification: key-equality test (same inputs, identical keys); unmount-mid-fetch asserts abortion; fake-clock focus test asserts zero requests within staleTime; sign-in-as-B test asserts no A-scoped rows while the key dump contains no tenant-less entry. Failing evidence before the fix was two cache slots ["refunds", "acme-1"] and ["refunds", "acme-1", 25] holding divergent pages after one invalidation.

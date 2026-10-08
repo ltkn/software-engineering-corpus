@@ -897,3 +897,55 @@ Diagnosis: Seven steps and one wasted afternoon. (1) The batch import — real, 
 Fix: Per-table `autovacuum_vacuum_scale_factor=0.02` with a raised cost limit on that table, the import moved to its own window with a batch size bounded by the write-rate budget, and the covering index dropped — it cost writes and bought nothing.
 Verify:
 `Heap Fetches` near zero during the nightly window, p99 flat at 61ms through the import, and a monitoring assertion on dead-tuple ratio per hot table so the next occurrence is a page about a number rather than a hunt through plans.
+
+---
+
+Failure:
+$ git apply /tmp/refund-ownership.patch
+error: patch failed: src/main/java/com/acme/orders/RefundService.java:41
+error: src/main/java/com/acme/orders/RefundService.java: patch does not apply
+$ git apply --check /tmp/refund-ownership.patch
+error: refund-ownership.patch: patch does not apply (context changed in RefundService.java)
+Diagnosis: The patch was generated from yesterday's main and the file moved under it — a teammate's rename of findOwned to findOwnedOrder landed first. The first hypothesis was a corrupt patch file; it was killed by `git apply --stat` showing the patch itself parses (2 files, 34 insertions) while `git log --oneline -3 -- RefundService.java` shows the intervening rename. The discriminating measurement is the hunk header against the working tree: the patch expects `findOwned(tenantId, orderId)` at line 41 and the tree has `findOwnedOrder` at line 44. The near-miss fix is `git apply --force` thinking, which does not exist, or hand-editing the target to match the stale context — that would reintroduce the old name the rename just removed.
+Fix:
+$ git apply --3way /tmp/refund-ownership.patch
+Applied patch with conflicts: 1 hunk applied cleanly, 1 hunk left in RefundService.java.rej
+<<<<<<< ours
+        var order = orders.findOwnedOrder(tenantId, orderId);
+=======
+        var order = orders.findOwned(tenantId, orderId);
+>>>>>>> theirs
+Resolve by keeping the new name and re-anchoring the added ownership branch around it, then delete the .rej. The patch content that now applies:
+diff --git a/src/main/java/com/acme/orders/RefundService.java b/src/main/java/com/acme/orders/RefundService.java
+--- a/src/main/java/com/acme/orders/RefundService.java
++++ b/src/main/java/com/acme/orders/RefundService.java
+@@ -41,7 +41,9 @@
+         var order = orders.findOwnedOrder(tenantId, orderId);
++        if (order.isEmpty()) throw new OrderNotOwnedException(orderId);
++        if (!order.get().status().equals("paid")) throw new IllegalStateException("only paid orders are refundable");
+         var outcome = policy.decide(orderId, amountMinor, order.get().fraudFlag(), order.get().firstRefund());
+$ git diff --check
+zero whitespace errors
+Verify:
+$ ./mvnw -q -Dtest=RefundOwnershipTest test
+Tests run: 5, Failures: 0
+$ git status --short
+M src/main/java/com/acme/orders/RefundService.java
+M src/test/java/com/acme/orders/RefundOwnershipTest.java
+
+---
+
+Failure:
+2026-10-08T09:14:02Z ##[error] main branch deploy job failed: secret DEPLOY_KEY unavailable and checkout step behaved differently than yesterday with no code change
+2026-10-08T09:14:03Z ##[error] pin-lint: uses actions/checkout@v4 (floating tag, not a hash)
+Diagnosis: Two faults with one habit behind them. (1) The deploy job requests a secret that fork PRs must never observe, and the workflow shares the job across both triggers — the fork run fails closed while main passes, which reads as flaky CI until the secret audit separates them. (2) The floating tag moved overnight: v4 was repointed upstream and the checkout step changed behavior under an unchanged tree. The first hypothesis was a runner image refresh; it was killed by the pin-lint output naming the exact floating reference plus `git log` showing no tree change between the green and red runs. The discriminating measurement is per-trigger resolution: main resolves the secret, fork resolves nothing, and both resolve the same floating tag — so one symptom is privilege and the other is provenance, and no single retry fixes both. The near-miss fix is re-running the red build until the tag settles, which converts a supply-chain signal into a green check.
+Fix: Pin every action by commit hash with default-empty permissions, split the secretless fork jobs from the maintainer-approved deploy job, and gate the deploy job on the production environment with required reviewers.
+uses: actions/checkout@11bd7198... (full 64-hex SHA in repo, truncated in prose)
+permissions: {}
+jobs: verify (no secrets, runs on forks) and deploy (needs: verify, environment: production, runs only on main with approval).
+Verify:
+$ pin-lint .github/workflows
+zero floating references
+$ audit-fork-secrets
+zero secrets resolvable in fork context
+5 consecutive PR builds green (3 fork, 2 main) plus one approval-gated deploy, with the tag-move drill (repoint a test tag, watch pin-lint fail before any job runs) asserted in the suite.
