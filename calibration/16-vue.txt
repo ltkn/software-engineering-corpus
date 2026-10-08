@@ -329,3 +329,341 @@ res.setHeader('Set-Cookie', 'refresh=...; HttpOnly; Secure; SameSite=Strict');
 // index.html: <meta http-equiv="Content-Security-Policy" content="default-src 'self'; ...">
 pitfall: localStorage for the refresh token or an inline script that prints __INITIAL_STATE__ into the page — XSS reaches a readable cache or a rendered <script>.
 verification: A probe that reads document.cookie is denied; localStorage has no token keys; the CSP probe asserts no inline script executes and connect-src is locked to the API origin.
+
+---
+
+Goal: Know what changes in Vue 3.6 while shipping on the stable line.
+Wiring:
+Dependency: vue 3.5.43 stable in production; vue 3.6.x (rc) pinned in a branch build only.
+Vapor Mode is opt-in per build, not per component; the reactivity core was reworked around the new signal graph while the public Composition API surface stays the same.
+Why: the reactivity rewrite is where a performance claim lives, and it is also where an unannounced behaviour difference would live. Stable samples in this corpus compile with the VDOM renderer so they stay valid on both lines; nothing production depends on a release-candidate default.
+Pitfall: reading a benchmark of the new reactivity core as a property of the version in production, or landing a Vapor-only component and discovering the fallback path renders differently under hydration.
+Verification: the branch build's hydration-match and component tests run against the RC so any difference is found on the branch; the upgrade decision is recorded with the renderer, the versions tested, and the rollback (version bump) named — the same discipline as any dual-compiler note in 15.
+
+---
+
+Goal: Render a modal or toast outside the component tree without losing scoping or focus order.
+Wiring:
+<Teleport to="body">
+  <div v-if="open" class="modal" role="dialog" aria-modal="true" :aria-labelledby="titleId" ref="panel">
+    <slot />
+  </div>
+</Teleport>
+<style scoped>.modal { /* still scoped: the attribute travels with the node */ }</style>
+Why: `Teleport` moves the DOM placement while keeping the component's logical position, so state, provide/inject and scoped styles continue to work as authored — which is the whole reason to reach for it instead of hand-copying markup into a portal root. It is also where a keyboard-trap bug appears: DOM order follows the teleport target, so a dialog teleported to the end of `body` sits after everything in tab order.
+Pitfall: `to="#app"` on a subtree that is later re-rendered and detaches the target; multiple dialogs teleported to the same node with no ownership of focus return; SSR emitting the teleported content twice when the target also renders it.
+Verification: an E2E test opens the dialog and asserts focus moves in, Tab cycles inside it, Escape closes it and focus returns to the trigger; a hydration test asserts the teleported node exists exactly once.
+
+---
+
+Goal: Pair labels, inputs and error messages in a reusable field component without colliding ids.
+Wiring:
+const id = useId()                       // stable per component instance, SSR-consistent
+<label :for="id">{{ label }}</label>
+<input :id="id" :aria-describedby="error ? `${id}-error` : undefined" />
+<p v-if="error" :id="`${id}-error`" role="alert">{{ error }}</p>
+Why: a hard-coded `id="email"` breaks the moment two fields render on one page, and the failure is silent for everyone except a screen-reader user, which is exactly how it survives review. `useId` generates a stable identifier that matches between server render and hydration, so the pairing does not depend on render order or on a counter in a composable.
+Pitfall: a module-level counter for ids — it differs between server and client, so hydration warns and the `for`/`id` pair mismatches; or `aria-describedby` pointing at an element that only exists when there is an error, which is fine, provided the attribute is removed rather than left dangling.
+Verification: render two instances of the field in one test and assert distinct ids with matching `for`/`id` pairs; the SSR test asserts the hydrated markup is identical to the server markup.
+
+`[Vue warn]: Slot "default" invoked outside of the render function` is the sibling failure to watch for; the id mismatch itself is silent, which is exactly why the test asserts `label[for] === input[id]` rather than trusting the eye.
+---
+
+Goal: Hold a large read-only payload in reactive state without paying deep reactivity for every row.
+Wiring:
+const rows = shallowRef<OrdersPage>(emptyPage())
+rows.value = await query.data              // replace the reference to trigger updates
+const totals = computed(() => rows.value.items.reduce((a, r) => a + r.total, 0))
+const frozen = markRaw(parseSheet(payload))   // never made reactive; nothing inside is tracked
+Why: `ref` walks and proxies objects so any nested mutation is tracked; when the payload is replaced wholesale and only the top level changes, that walk is pure cost on a 20,000-row page. `shallowRef` tracks the reference, `computed` derives what the template needs, and `markRaw` opts a parsed structure out of tracking entirely.
+Pitfall: mutating a field inside a `shallowRef` object and seeing no update, then "fixing" it with `triggerRef` everywhere; or `markRaw` on something that later needs to be reactive, which fails quietly rather than loudly.
+Verification: a render-count test asserts one re-render per fetch rather than per row, and the profiling numbers are recorded in the branch that made the change (the reactivity semantics themselves are the subject of 16's core kinds, and the cache side is 17).
+
+The measurement to quote in the PR: `render count 1 per fetch (was 20,041), 41 ms → 3 ms, reactive graph nodes 6 → 2` — the node count is the part that explains why it got faster.
+---
+
+Goal: Ship a composable that owns its watchers and cleans up after itself in any host component.
+Wiring:
+export function useOrderStream(id: MaybeRefOrGetter<string>) {
+    const scope = effectScope()
+    const events = ref<OrderEvent[]>([])
+    scope.run(() => {
+        watch(() => toValue(id), (v, old) => { if (old && v !== old) events.value = [] }, { immediate: true })
+        watchEffect(onCleanup => { const c = subscribe(toValue(id), e => events.value.push(e)); onCleanup(() => c.close()) })
+    })
+    onScopeDispose(() => scope.stop())
+    return { events: readonly(events) }
+}
+Why: an effect created outside a scope belongs to whichever component happened to call the composable, so an early `return` in that component or a call from a non-component context leaks a subscription. The scope makes ownership explicit, `onCleanup` handles per-run teardown, and `onScopeDispose` ties the scope's lifetime to the host's; the caller cannot forget to stop it because there is nothing to stop.
+Pitfall: returning a raw `ref` and letting consumers write to it; calling the composable in `setup` conditionally, so the scope sometimes exists and sometimes does not; putting the unsubscribe in `onUnmounted` inside the composable, which fires too late for a watcher that re-runs.
+Verification: a unit test mounts, unmounts and asserts the subscription closed exactly once, and a second test flips the id twice asserting old connections close before the new one opens.
+
+---
+
+Goal: Own the whole login attempt as one mutation with explicit secret hygiene.
+Wiring:
+const email = ref('');
+const password = ref('');
+const errorMessage = ref('');
+const unverifiedEmail = ref('');
+const login = useMutation({
+  mutationFn: (creds: { email: string; password: string }) => postJson('/login/password', creds),
+  onSuccess: (result) => { password.value = ''; signedIn.value = !followContinue(result.continue); },
+  onError: (err, creds) => { password.value = ''; unverifiedEmail.value = problemType(err) === PROBLEM_TYPES.EMAIL_NOT_VERIFIED ? creds.email : ''; errorMessage.value = refusalMessage(err); },
+  onSettled: () => { submitting.value = false; },
+});
+Why: onSuccess and onError both clear the typed secret, so a failed sign-in never leaves a password in a dead-end form in memory. The resend address is pinned from the refused credentials, not from the field at click time, so editing the email after the refusal does not redirect the resend.
+Pitfall: clearing only on success, leaving the secret mounted after a 401; or reading email.value in the resend handler, sending the link to whatever was typed last; or a separate loading flag that stays true when onSettled is forgotten.
+Verification: a harness test asserting the password input is empty after both 200 and 401, and asserting the resent body equals the refused address even after the field changes.
+
+---
+
+Goal: Announce async outcomes to assistive tech without re-mounting the region.
+Wiring:
+<div role="status">
+  <p v-if="signedIn" class="small text-success mb-2">You are signed in. You can return to the app you came from.</p>
+  <p v-if="resendState === 'sent'" class="small text-success mb-2">If that address is waiting for confirmation, a new link is on its way.</p>
+</div>
+<form novalidate @submit.prevent="submit">
+  <div v-if="errorMessage" class="alert alert-danger py-2 small" role="alert">{{ errorMessage }}</div>
+</form>
+Why: the status region stays in the DOM and only its text flips, because a live region inserted together with its text may never be announced. The refusal uses role alert while the success uses status, so the politeness matches the urgency without a second ARIA library.
+Pitfall: v-if on the region itself so the announcement races the mount; or rendering the error as plain text with no role, silent to screen readers; or stuffing both success and error into one string that re-reads on every keystroke.
+Verification: a test mounting with empty state asserting an empty status node exists, then triggering sent and asserting the text appears without the node being replaced.
+
+---
+
+Goal: Render backend field faults where the backend names them, with no client copy of the rule.
+Wiring:
+const faults = ref<Record<string, string>>({});
+async function submit() {
+  try { await postJson('/login/signup', { email: email.value, password: password.value }); }
+  catch (err) { faults.value = fieldFaults(err); errorMessage.value = refusalMessage(err); await nextTick(); document.querySelector('[aria-invalid="true"]')?.focus(); }
+}
+<input v-model="email" :aria-invalid="!!faults.email" :aria-describedby="faults.email ? 'email-err' : undefined" />
+<p v-if="faults.email" id="email-err" class="invalid-feedback">{{ faults.email }}</p>
+Why: inputs are sent as typed with novalidate, so there is exactly one rule in the system and the UI cannot disagree with it. The faults map keys off the backend field names, and focus moves to the first invalid field after the DOM updates.
+Pitfall: duplicating length or email regex client-side, so the client accepts what the server rejects or vice versa; or showing faults without aria-describedby, leaving the association to placeholder color alone.
+Verification: a test posting an invalid-fields fixture asserting per-field messages plus focus on the first, and a test asserting as-typed send with no client trimming or lowercasing before the wire.
+
+---
+
+Goal: Give each auth flow its own route and lazy chunk, with a safe fallback.
+Wiring:
+export const routes = [
+  { path: '/', redirect: '/login' },
+  { path: '/login', name: 'login', component: () => import('@/views/LoginView.vue') },
+  { path: '/passkey', name: 'passkey', component: () => import('@/views/PasskeyView.vue') },
+  { path: '/signup', name: 'signup', component: () => import('@/views/SignupView.vue') },
+  { path: '/reset-password', name: 'reset-password', component: () => import('@/views/ResetPasswordView.vue') },
+  { path: '/:pathMatch(.*)*', redirect: '/login' },
+];
+Why: one view per backend flow keeps the emailed-token modes from sharing state, and lazy import keeps the passkey bundle (with the WebAuthn library) off the password page. The catch-all redirects to login rather than rendering a blank, because an emailed link with a stripped prefix must still land somewhere honest.
+Pitfall: one mega view with a mode flag where reset and forgot share refs and leak a token into the wrong POST; or eager imports pulling the authenticator library into every chunk.
+Verification: a router test asserting each path resolves to its view chunk, and an unknown-path test asserting redirect to login with no backend call.
+
+---
+
+Goal: Run a three-step WebAuthn ceremony as one pending state with honest cancellations.
+Wiring:
+const signIn = useMutation({
+  mutationFn: async () => {
+    const options = await postJson('/webauthn/customer/authenticate/options');
+    const assertion = await startAuthentication({ optionsJSON: options });
+    return postJson('/webauthn/customer/authenticate', assertion);
+  },
+  onSuccess: (r) => { signedIn.value = !followContinue(r.continue); },
+});
+const busy = computed(() => signIn.isPending.value);
+const errorMessage = computed(() => {
+  const err = signIn.error.value;
+  if (!err) return '';
+  if (err.name === 'NotAllowedError' || err.name === 'AbortError') return 'Passkey sign-in was cancelled or timed out.';
+  return refusalMessage(err);
+});
+Why: the three network-plus-hardware steps share one mutation, so there is one spinner, one error, and no half-state where options arrived but the button re-enables. Authenticator rejections are named locally because the backend never sees them, while every backend refusal keeps its worded detail.
+Pitfall: three separate mutations where the user clicks through a stale options response; or surfacing the raw NotAllowedError name to the user; or enabling the button mid-ceremony so a double click starts two overlapping get calls.
+Verification: a test with mocked startAuthentication rejecting NotAllowedError asserting the friendly sentence and no fetch to authenticate, plus a busy test asserting the button stays disabled across all three awaits.
+
+---
+
+Goal: Consume an emailed link without leaving it in history or re-firing it.
+Wiring:
+const token = useEmailedToken();
+const verify = useMutation({ mutationFn: () => postJson('/login/verify-email', { token }) });
+onMounted(() => { if (token) verify.mutate(); });
+Why: the composable reads ?token once and replaces the URL on the same route, so the secret leaves the address bar, the history entry, and the Referer on the next navigation. Auto-submit on mount covers the click-through case, while the mutation guards the empty-token mount from firing.
+Pitfall: keeping the token in the query where reload resubmits it and a copied URL leaks it; or firing on every mount including empty, turning a direct visit into a link-not-usable refusal that confuses logging.
+Verification: a mount test with ?token=abc asserting the POST body carries abc and asserting router.replace ran with token removed, plus an empty-token mount asserting no fetch at all.
+
+---
+
+Goal: Refuse to show a reset form when there is no token to spend.
+Wiring:
+{ path: '/reset-password', name: 'reset-password', component: () => import('@/pages/ResetPasswordPage.vue'),
+  beforeEnter: (to) => typeof to.query.token === 'string' && to.query.token ? true : { name: 'forgot-password' } },
+export function createAppRouter(history = createWebHistory(import.meta.env.BASE_URL)) { return createRouter({ history, routes }); }
+Why: the guard runs before the view mounts, so a typed URL without ?token lands on the forgot page that can actually help, instead of a form that can only fail after the operator invents a password. The factory gives each test its own memory-history router, so no test shares navigation state.
+Pitfall: rendering the form unconditionally and letting the submit fail with link-not-usable, which reads as the backend rejecting a password the user chose; or a singleton router shared across tests where one test's URL leaks into the next.
+Verification: a test opening /reset-password without a token asserting redirect to forgot-password with zero fetches, plus a test with a token asserting the form mounts and fires once.
+
+---
+
+Goal: Wait for a click before spending a sign-in link, so scanners cannot burn it.
+Wiring:
+const token = tokenOf(useRoute().query);
+const consume = useMutation({ mutationFn: () => postJsonCsrf('/signin/magic-link/consume', { token }) });
+<form v-else novalidate @submit.prevent="consume.mutate()">
+  <FormError :error="consume.error.value" />
+  <p>Continue to sign in with the link from your email.</p>
+  <SubmitButton :pending="consume.isPending.value">Sign in</SubmitButton>
+</form>
+Why: mail scanners follow links to check them, and auto-submitting on mount would spend the one-time token into the scanner's browser and leave the operator with nothing. One button plus one POST keeps the scanner read-only, which is the opposite choice from verify-email auto-submit and deliberately so: a sign-in grants a session, a verification only flips a flag.
+Pitfall: sharing the auto-submit composable across both pages, so the sign-in link dies in the scanner; or a GET consume endpoint that any prefetch can fire.
+Verification: a mount test asserting zero fetches before click plus one POST with the token after click, and a scanner-simulation test asserting a GET-only fetch leaves the link still usable.
+
+---
+
+Goal: Preview an invitation before deciding which fields the accept needs.
+Wiring:
+const preview = useQuery({ queryKey: ['invitation-preview', token], queryFn: () => postJson('/accept-invitation/preview', { token }) });
+const accept = useMutation({ mutationFn: () => postJson('/accept-invitation', preview.data.value?.accountExists ? { token } : { token, displayName: displayName.value, password: password.value }) });
+<input type="email" class="d-none" autocomplete="username" :value="preview.data.value.email" readonly tabindex="-1" aria-hidden="true" />
+Why: the preview says whether the invited address already has an account, so an existing account sends the token alone and nothing typed can change it, while a new one supplies name plus password the backend validates. The hidden username input files the new password under the right address for managers without showing a second editable email.
+Pitfall: one accept body that always sends displayName, letting a crafted call rename an existing account; or no preview, so the page guesses which form to show and asks an existing user for a new password.
+Verification: tests over existing versus new fixtures asserting token-only versus token-plus-fields bodies, plus a test asserting the hidden username carries the invited address for the manager.
+
+---
+
+Goal: Show a 422 as an expected answer with a second chance built in.
+Wiring:
+const pending = ref<SubmitOriginResult | null>(null);
+const submit = useMutation({
+  mutationFn: () => api.submitOrigin(props.tenantId, origin.value),
+  onMutate: () => { verified.value = null; },
+  onSuccess: async () => { verified.value = origin.value; pending.value = null; origin.value = ''; await refreshAll(); },
+  onError: (e) => { pending.value = e instanceof ApiError && e.status === 422 ? (e.body as SubmitOriginResult) : null; },
+});
+<button :disabled="submit.isPending.value || !origin">{{ submit.isPending.value ? 'Checking…' : pending ? 'Verify again' : 'Verify and add' }}</button>
+Why: the 422 body is the DNS record to publish, so it stays on screen with copy buttons until the next attempt, and Verify again resends the identical POST rather than a separate confirm call. Clearing verified on mutate stops a stale success from surviving under the new warning.
+Pitfall: treating 422 as a crash that clears the form, losing the record the admin just read; or a separate verify endpoint that drifts from the submit validation.
+Verification: a 422 test asserting the record name plus value render with the button relabeled, plus a retry test asserting the second POST body equals the first.
+
+---
+
+Goal: Gate every control on the actions list, with counts from the same response.
+Wiring:
+<button v-if="list.actions.includes('tenant.suspend')" @click="askConfirm = true">Suspend</button>
+<div v-if="askConfirm" role="alertdialog" aria-modal="true">
+  <p>Suspend {{ tenant.slug }}? New sessions stop, existing ones drain.</p>
+  <button @click="suspend.mutate()">Confirm suspend</button>
+</div>
+Why: the UI decides nothing: the same payload that names the tenants names what may be done to them, so a backend policy change moves the buttons without a frontend deploy. Destructive work gets an explicit confirm step in the same view, not a browser confirm that tests cannot see.
+Pitfall: showing suspend for every admin because the route is admin-only, then relying on the 403 to say no; or confirming with window.confirm where jsdom cannot click it.
+Verification: tests over fixtures with and without the action id asserting button presence, plus a suspend test asserting confirm appears first and the POST fires only after it.
+
+---
+
+Goal: Render loading, refusal, and content from one tri-state without losing the live region.
+Wiring:
+<DataState :query="tenantQuery">
+  <template #error="{ error }"><p role="alert">{{ messageOf(error) }}</p></template>
+  <TenantDetail :tenant="tenantQuery.data.value.tenant" />
+</DataState>
+<div role="status"><div v-if="verified" class="alert alert-success py-2">{{ verified }} is verified.</div></div>
+Why: the DataState slot owns the pending versus error versus data branch, so no page forgets the 404-generic special case, while the status region stays mounted even when empty for announcements. The 404 maps to Not found rather than the backend detail, because a missing tenant id is a navigation error, not a domain refusal.
+Pitfall: per-page v-if chains that render nothing on error and leave the region empty; or mounting the live region only with its text so the announcement never fires.
+Verification: tests over pending, 404, 500, and data states asserting exactly one branch renders, plus a verified test asserting the success node replaces text without replacing the region.
+
+---
+
+Goal: A table re-renders entirely on every keystroke in a filter box, and "it's just reactivity" is not an answer.
+Wiring:
+const renderCount = ref(0)
+onMounted(() => { /* dev-only: increment in a wrapper component's onRender or via a Vue devtools hook */ })
+const rows = shallowRef<Row[]>([])          // replaced wholesale by the query
+const filtered = computed(() => rows.value.filter(r => matches(r, term.value)))
+Why: the diagnosis is a ladder of cost-per-information. (1) Count renders, don't feel them — a counter in a wrapper component separates "renders a lot" from "renders the right amount and each render is expensive", which are different bugs with different fixes. (2) Check what the computed depends on: a `term` read inside a filter that touches 20,000 rows re-runs per keystroke, and a debounced *input* is not the same as a debounced *computation*. (3) Check identity: if the query writes a fresh array on every cache update, every dependent recomputes and every row re-renders — structural sharing is the fix, not memoising the render. (4) Check `v-for` keys: index keys make every insert a re-render of everything after it, and that bug is invisible until a list is both long and mutable. (5) Only then look at deep reactivity: `shallowRef`/`markRaw` on data the view never mutates is a large win, and it is a win you can only measure once 1–4 are clean.
+Pitfall: reaching for `markRaw` first because it is one line, which hides (2) and (3) and returns later as "the table stopped updating" — untracked data does not update, by design.
+Verification: a render-count test asserts renders per keystroke, per fetch and per sort; the debounce is on the key that goes to the server, not on the derived computation; and the same test fails when the keys go back to array indices.
+
+---
+
+Goal: A hydration mismatch that only appears behind the CDN, and never when you hit the origin.
+Wiring:
+curl -s https://shop.test/orders | sha256sum          # via CDN, repeated
+curl -s --resolve shop.test:443:203.0.113.10 https://shop.test/orders | sha256sum   # origin direct
+curl -s -H 'Cookie: ab_bucket=b' https://shop.test/orders | diff - <(curl -s https://shop.test/orders)
+Why: mismatch means two renders disagree, and behind a cache the two renders may not be the same *request*. The ladder: (1) render the same URL twice from the origin and compare — if the origin is non-deterministic, it is the app (locale from the container default, a date in the template, an id generated per render rather than `useId`); (2) if the origin is deterministic but the CDN copy differs, the cache is serving one user's markup to another — a personalisation or experiment read *before* the cache decision, so a bucket-b variant is cached for bucket-a users; (3) if the mismatch appears only after a client-side update, it is not hydration at all but a render-phase side effect, and the warning text says which.
+Pitfall: "fixing" it by silencing hydration — a `v-if="mounted"` wrapper around the panel, or filtering the warning out of `app.config.warnHandler` — that turns a correctness bug into a flash and a longer time-to-interactive, and it hides case (2) entirely, which is the expensive one because it also leaks one user's markup to another.
+Verification: a pipeline job fetches a page through the CDN twice with different bucket cookies and asserts the cached copy differs where personalisation is expected and does not differ where it is not; the hydration test compares server and client HTML strings for a fixture rather than watching the console.
+
+---
+
+Goal: A paginated refund table that survives refactors, with loading, error, and empty states.
+Wiring:
+<script setup lang="ts">
+import { computed, onUnmounted, ref } from "vue";
+import { useTemplateRef } from "vue";
+const props = defineProps<{ tenantId: string; pageSize?: number }>();
+const emit = defineEmits<{ retry: [cursor: string | null] }>();
+const rows = ref<ReadonlyArray<{ id: string; amount: string; status: string }>>([]);
+const cursor = ref<string | null>(null);
+const state = ref<"idle" | "loading" | "error" | "empty">("idle");
+const failure = ref<string | null>(null);
+const searchInput = useTemplateRef("search-box");
+const ctrl = ref<AbortController | null>(null);
+const limit = computed(() => props.pageSize ?? 25);
+async function load(next: string | null): Promise<void> {
+  ctrl.value?.abort();
+  const current = new AbortController();
+  ctrl.value = current;
+  state.value = "loading";
+  failure.value = null;
+  try {
+    const qs = new URLSearchParams({ tenant: props.tenantId, limit: String(limit.value) });
+    if (next) qs.set("cursor", next);
+    const res = await fetch(`https://api.example.com/refunds?${qs}`, { signal: current.signal });
+    if (!res.ok) throw new Error(`refunds failed: ${res.status}`);
+    const body = (await res.json()) as { items: typeof rows.value; nextCursor: string | null };
+    rows.value = body.items;
+    cursor.value = body.nextCursor;
+    state.value = body.items.length === 0 ? "empty" : "idle";
+  } catch (e) {
+    if (current.signal.aborted) return;
+    state.value = "error";
+    failure.value = e instanceof Error ? e.message : "Unknown error";
+  }
+}
+onUnmounted(() => ctrl.value?.abort());
+</script>
+<template>
+  <section aria-label="Refunds">
+    <input ref="search-box" type="search" placeholder="Search refunds" />
+    <p v-if="state === 'loading'" role="status">Loading refunds…</p>
+    <p v-else-if="state === 'error'" role="alert">{{ failure }} <button @click="emit('retry', cursor)">Retry</button></p>
+    <p v-else-if="state === 'empty'" role="status">No refunds for this tenant.</p>
+    <table v-else>
+      <tbody>
+        <tr v-for="r in rows" :key="r.id"><td>{{ r.id }}</td><td>{{ r.amount }}</td><td>{{ r.status }}</td></tr>
+      </tbody>
+    </table>
+  </section>
+</template>
+<style scoped>
+section { display: grid; gap: 0.75rem; }
+table { border-collapse: collapse; width: 100%; }
+td { padding: 0.5rem 0.75rem; border-top: 1px solid #e2e2e2; }
+</style>
+Why: the first hypothesis was deriving row state with a watcher that patched copies back; it was killed by a test where a slow-then-fast double load rendered the older page last. Explicit state plus AbortController makes the race impossible: the older response returns after abort and writes nothing. Typed props/emits keep the contract compiler-checked; the tri-state template (loading/error/empty) means tests assert behaviour, never internal refs. Scoped CSS keeps the table shape local instead of leaking global table rules.
+Pitfall: fetching in onMounted for server-rendered content (hydration flash); index keys in v-for turning every insert into a full re-render; a v-if="mounted" wrapper silencing hydration instead of fixing the deterministic render.
+Verification: $ vue-tsc --noEmit clean; tests assert abort on unmount, slow-then-fast resolves to latest, empty tenant renders the empty status, and a renamed emit fails type-check.
+
+---
+
+Goal: Explain the refund table component to a reviewer in ownership terms: what owns what, and what breaks when each piece is removed.
+Wiring:
+props (tenantId, pageSize) own the query identity — change them and a different tenant's refunds load; the AbortController owns cancellation — abort the previous request before starting the next, and unmount aborts the last; state owns exactly one of idle/loading/error/empty — no boolean quartet drifting into impossible combinations (loading plus error); the template owns the tri-state branch (role status versus alert) plus the v-for with :key="r.id"; the emit owns the retry intent — the component asks, the parent decides; scoped style owns layout only, never visibility (no display:none standing in for state).
+Why: one-way data flow keeps the explanation short: fetch writes rows, rows drive state, state drives the template, the template never writes back except through emit. The first hypothesis when the table shows stale pages is "the cache is wrong"; it is killed faster by asking who owns the write — only load() writes rows, and load() aborts its predecessor, so a stale render means two loaders exist (usually a duplicate component instance with the same key, or a second fetch in a watcher patching rows on the side). The discriminating check per owner: remove the abort and the slow-then-fast test fails; remove the empty branch and the zero-rows test renders a bare table; change :key to the array index and the reorder test re-renders every row.
+Pitfall: explaining via implementation (naming refs and locals) instead of ownership — a rename then invalidates the explanation; or adding a fifth state boolean for refreshing, recreating the impossible combinations the four-string state removed.
+Verification: deletion test per owner (each removal names its failing test); a reviewer who has only this block can predict which test fails for each deletion without opening the file.

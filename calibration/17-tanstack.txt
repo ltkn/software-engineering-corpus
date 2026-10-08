@@ -293,3 +293,310 @@ Symptom: Type errors on every v4 call site for the rename, and at runtime the on
 Legacy: A Pinia store that copies the query result and treats itself as the source of truth.
 Replacement: keep the query authoritative; Pinia holds UI-local state only.
 Symptom: Invalidation fans out to two copies inconsistently and the UI renders a phantom list that never reconciles with the cache.
+
+---
+
+Goal: Fail a query with a typed error the UI can branch on, instead of `unknown` at every call site.
+Wiring:
+class ApiError extends Error {
+    constructor(readonly code: 'unauthorized'|'not_found'|'rate_limited'|'validation'|'server',
+                readonly status: number, readonly requestId?: string) { super(code) }
+}
+async function fetchOrder(id: string): Promise<Order> {
+    const res = await http.get(`/orders/${id}`)
+    if (!res.ok) throw new ApiError(mapStatus(res.status), res.status, res.headers.get('request-id'))
+    return orderSchema.parse(await res.json())          // unknown-first, then parsed (15)
+}
+const { error } = useQuery({ queryKey: orderKeys.detail(id), queryFn: ({ signal }) => fetchOrder(id, signal) })
+const code = computed(() => error.value instanceof ApiError ? error.value.code : 'unknown')
+Why: v5 types the error as `Error | null`, so every consumer either narrows or casts. Narrowing once, at the query function boundary, means the UI branches on a domain code rather than on message text, and the request id rides along so a screenshot becomes a log lookup.
+Pitfall: throwing strings or plain objects from the fetch layer, which turns `instanceof` into a folklore ritual; or catching inside the query function so the query reports success with empty data and the error state is never rendered.
+Verification: a test with a stubbed 401 asserts the rendered state and that the code is `unauthorized`, and a type-level assertion pins `error` to the narrowed union (15's expect-type habit).
+
+`AssertionError: expected 'unauthorized' to be 'unknown' — received code from ApiError { code: 'unknown', status: undefined }` — the failure that says the fetch layer threw a string, which is the exact mistake this block exists to prevent.
+---
+
+Goal: Shape a response for the view without re-fetching or double-rendering.
+Wiring:
+const { data } = useQuery({
+    ...orderListOptions(tenantId),
+    select: (page) => ({ rows: page.items.map(toRow), count: page.total }),
+    structuralSharing: false,            // only when the derived shape must be referentially fresh
+})
+Why: `select` runs on the cached value, so the network shape stays cacheable while the view gets what it needs — and it runs again on each cache update, which is where the cost hides. Structural sharing keeps unchanged branches referentially equal, so a `computed` or a table memo survives a background refetch instead of re-rendering the whole list.
+Pitfall: returning a fresh object from `select` on a large list while keeping structural sharing on, which fights itself; putting the derivation in a `computed` over raw data and paying it on every render instead of once per cache update; using `select` to filter by tenant and forgetting that the *cache* still holds the whole page (the filter belongs to the key and to the query).
+Verification: a render-count test asserts the table renders once per real data change, not once per background refetch; a test asserts the selected shape is what the component consumes, and the key includes everything the data depends on.
+
+---
+
+Goal: Warm the next screen without duplicating in-flight requests or writing to the wrong cache slot.
+Wiring:
+function prefetchOrder(id: string) {
+    queryClient.prefetchQuery(orderOptions(id)).catch(() => {})   // failure is a miss, not an error state
+}
+onPointerEnter(() => prefetchOrder(row.id))
+function refreshAllOrders() { queryClient.invalidateQueries({ queryKey: orderKeys.all(tenantId), exact: false }) }
+const fresh = await queryClient.fetchQuery(orderOptions(id))      // imperative read, no component involved
+Why: `prefetchQuery` and `fetchQuery` go through the same deduplication and staleness rules as a mounted query, so a hover prefetch cannot stampede, and its failure is invisible to the UI until a component actually reads the cache. Invalidation by key prefix is the only safe bulk refresh, which is why the key is a factory with the tenant in it.
+Pitfall: prefetching with a key built at the call site instead of from the factory, so the cache fills with an orphan entry the component never reads; swallowing errors in a global handler so a prefetch failure pages like a user-visible error; invalidating with `refetchType: 'all'` on a screen with ten infinite queries and paying for all of them.
+Verification: a network-assertion test asserts one request per hover burst per id; a test asserts the prefetched entry is what the mounted query reads without a second request; the key factory is the only place keys are constructed, enforced by lint or review.
+
+---
+
+Goal: Own table state explicitly when sorting, filtering and paging are server-side.
+Wiring:
+const sorting = ref<SortingState>([{ id: 'created_at', desc: true }])
+const pagination = ref<PaginationState>({ pageIndex: 0, pageSize: 25 })
+const table = useVueTable({
+    get data() { return query.data.value?.items ?? [] },
+    get columns() { return columns },
+    get sorting() { return sorting.value },
+    onSortingChange: updater => { sorting.value = applyUpdater(updater, sorting.value); pagination.value.pageIndex = 0 },
+    manualSorting: true, manualPagination: true, manualFiltering: true,
+})
+const query = useInfiniteQuery({
+    queryKey: orderKeys.list(tenantId, toRaw(sorting.value)),
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+    initialPageParam: undefined as string | undefined,
+})
+Why: with `manual*` on, TanStack Table stops pretending it owns the data and becomes a view-model over the server contract; the state that changes the request lives in one place and feeds the query key, so a sort change is a new key, a new cache slot, and page zero — which is what the server's cursor semantics actually allow.
+Pitfall: leaving `manualSorting` off with server data, so a click re-sorts one page and calls it sorted; or keying the query on a reactive proxy so every keystroke in a filter box forks a new cache entry (debounce the key input, not the request).
+Verification: a test asserts a sort change resets to page zero and issues exactly one request with the sort in the key; a test with the fake server asserts the pages concatenate into the same order the server produced (the invariant is 18's, the server-side evidence is 12's).
+
+---
+
+Goal: Detect a contract change at the boundary rather than in a rendered screen.
+Wiring:
+const shapeTest = `
+{ "results": "#array", "total": "#number", "nextCursor": "#string?",
+  "results[].": { "id": "#string", "total": { "cents": "#number", "currency": "#string" } } }`
+test('order page keeps its wire shape', async () => {
+    const page = await fetchOrders(tenant)
+    expect(page).toMatchShapeOf(shapeTest)      // or a zod/valibot schema parse (15)
+})
+Why: the frontend's types are generated or inferred, so a server change that keeps the type valid but changes the meaning — `total` moving from cents to a money object, a cursor becoming nullable — passes compilation and breaks rendering. A shape test at the boundary is the cheapest place to see it, and it fails for the right reason in the pipeline where it happened.
+Pitfall: snapshotting a whole response with timestamps and ids in it, so every run diffs and the snapshot is blindly updated — which is how the drift got through last time.
+Verification: the shape test runs against a stub server *and* against the staging contract suite; the same fixture feeds the backend's contract test, so one drift fails both sides (contract practice in 14, suite discipline in 18).
+
+---
+
+Goal: Keep auth writes as mutations only, with no query cache for one-time state.
+Wiring:
+const login = useMutation({
+  mutationFn: (creds: { email: string; password: string }) => postJson('/login/password', creds),
+  onSuccess: (r) => { password.value = ''; followContinue(r.continue); },
+  onError: (err, creds) => { password.value = ''; offerResendFor(err, creds.email); },
+  onSettled: () => { submitting.value = false; },
+});
+Why: emailed tokens, passwords, and passkey ceremonies are single-use and backend-owned, so caching them as queries would keep a consumed token alive in memory and re-render it on focus. Mutations give exactly one pending, one error, and no background refetch, which is the correct cache behavior for a flow that must not replay.
+Misconfiguration: a useQuery keyed by email for the login result, so window refocus re-fires the password POST; or an optimistic update that shows signed-in before the continue URL arrives.
+Verification: a test asserting no query keys exist for login flows, and a focus test asserting zero refires after success.
+
+---
+
+Goal: Model a resend as a sticky state machine, not as a boolean.
+Wiring:
+const state = ref('idle');
+const resend = useMutation({
+  mutationFn: () => postJson('/login/resend-verification', { email: getEmail() }),
+  onMutate: () => { state.value = 'sending'; },
+  onSuccess: () => { state.value = 'sent'; },
+  onError: (err) => { state.value = 'idle'; showRefusal(refusalMessage(err)); },
+});
+Why: sent sticks until the next login refusal resets it, so the success sentence survives a re-render and the button cannot double-fire while in flight. The 202 empty body for any address means the wording must never claim an account exists, which the state name enforces by having no address in it.
+Misconfiguration: a single sent flag that a second click clears mid-flight, or deriving sent from mutation.isSuccess where a remount loses it; or wording the success as an account-exists claim that enumerates users.
+Verification: a test double-clicking while sending asserting one fetch, and a test asserting the sent sentence is enumeration-neutral even for an unknown fixture.
+
+---
+
+Goal: Never retry a mutation that spends a one-time token.
+Wiring:
+const verify = useMutation({
+  mutationFn: () => postJson('/login/verify-email', { token }),
+  retry: false,
+});
+const client = new QueryClient({ defaultOptions: { mutations: { retry: false }, queries: { retry: (n, e) => e.status >= 500 && n < 2 } } });
+Why: a retried verify-email POST would present the same token twice, turning a slow network into a consumed-token refusal on the retry. Queries may retry 5xx twice, but mutations carrying tokens, passwords, or WebAuthn assertions run exactly once per user click.
+Misconfiguration: a global retry 3 that replays a consumed magic link and shows link-not-usable for a success; or retrying 429, which turns a cooldown into a ban.
+Verification: a test with a 500 on first verify asserting exactly one fetch, and a test asserting a 429 triggers the cooldown sentence with no automatic replay.
+
+---
+
+Goal: Treat navigation after auth as a side effect, not as cached data.
+Wiring:
+onSuccess: (result) => { signedIn.value = !followContinue(result.continue); }
+function followContinue(url) { if (!url || !url.startsWith('https://')) return false; navigation.leaveFor(url); return true; }
+Why: the continue URL is the saved authorize request the backend owns, usable exactly once to hand the session back to the app. Keeping it out of the query cache stops it from being replayed on remount, and the https-only check runs at the single sink instead of at every caller.
+Misconfiguration: storing continue in a query key and navigating in a watcher, so Back re-navigates to a spent URL; or branching navigation on wording instead of presence, breaking when the backend rewords the detail.
+Verification: a success test asserting leaveFor called once with the https URL, and a javascript: continue test asserting no navigation with signed-in fallback shown.
+
+---
+
+Goal: Drive page tests through the real mutation pipeline with scripted fetch.
+Wiring:
+function scriptBackend(table) { globalThis.fetch = async (input, init) => { const key = init.method + ' ' + new URL(input, 'https://app.example.test').pathname; return reply(table[key]); }; }
+test('wrong password clears secret and shows detail', async () => {
+  scriptBackend({ 'POST /login/password': problem(401, 'wrong-credentials', 'That did not match.') });
+  await mountAt('/login'); await fillAndSubmit(); await flushPromises();
+  expect(sent().body).toEqual({ email: 'a@example.com', password: 's3cret' });
+  expect(page.text()).toContain('That did not match.');
+});
+Why: fetch is the only seam, so the test sees the exact method, path, headers, and body the page sent plus the exact rendered refusal. The problem helper builds typed refusals by slug, which forces the per-type plus unknown-type coverage the file requires.
+Misconfiguration: mocking postJson itself, asserting internal calls while the wire drifts; or asserting only success paths so an unknown-type refusal renders blank in production.
+Verification: the harness asserts sent headers include JSON content plus credentials, and every page test ships one unknown-type case asserting the generic fallback renders.
+
+---
+
+Goal: Isolate passkey hardware from the backend contract in tests.
+Wiring:
+vi.mock('@simplewebauthn/browser', () => ({ startAuthentication: vi.fn(), startRegistration: vi.fn() }));
+test('cancel maps to friendly text with no authenticate call', async () => {
+  mockedStart.mockRejectedValueOnce(Object.assign(new Error('cancel'), { name: 'NotAllowedError' }));
+  scriptBackend({ 'POST /webauthn/customer/authenticate/options': { status: 200, json: {} } });
+  await triggerPasskey(); await flushPromises();
+  expect(fetchPaths()).toEqual(['POST /webauthn/customer/authenticate/options']);
+});
+Why: the hardware call never runs in jsdom, so the mock draws the line between what the page owns (options fetch, friendly mapping, followContinue) and what the browser owns. Asserting the fetch list proves the cancelled ceremony never reaches authenticate, which is the property that keeps a user cancel from burning a challenge.
+Misconfiguration: an integration test that really calls startAuthentication and flakes without hardware; or asserting only the happy path so AbortError shows a raw name in production.
+Verification: cancel and abort cases both assert friendly text with one fetch, and the success case asserts both fetches plus navigation in order.
+
+---
+
+Goal: Cache a one-time preview without ever re-reading it into a different answer.
+Wiring:
+const preview = useQuery({
+  queryKey: ['invitation-preview', token],
+  queryFn: () => postJson('/accept-invitation/preview', { token }),
+});
+const client = new QueryClient({ defaultOptions: { queries: { retry: (f, e) => !(e instanceof ApiError && e.status < 500) && f < 2, refetchOnWindowFocus: false, refetchOnReconnect: false, staleTime: Infinity }, mutations: { retry: false } } });
+Why: the preview describes a link that the accept will burn, so re-reading after accept would answer already-used and replace the success message. Infinite stale plus no focus or reconnect refetch freezes the first answer for the life of the page, while 4xx never retries because a refusal cannot change on replay.
+Misconfiguration: default refetchOnWindowFocus true, so tabbing away after accept flips success back to an error; or retrying the preview on 422, doubling a read that the backend counts.
+Verification: a test accepting then refocusing asserting zero preview refires, plus a 4xx preview test asserting exactly one fetch.
+
+---
+
+Goal: Send the smallest accept the preview allows.
+Wiring:
+mutationFn: () => postJson('/accept-invitation', preview.data.value?.accountExists ? { token } : { token, displayName: displayName.value, password: password.value })
+Why: the branch reads from cached preview data, not from a second fetch, so there is no race where the account is created between preview and accept and the wrong body goes out. An existing account is untouched by construction, which is the invariant that makes the invitation safe to forward.
+Misconfiguration: always sending name plus password, overwriting an existing display name on a replayed link; or re-fetching preview inside the mutation where a slow network sends a stale shape.
+Verification: tests over both preview fixtures asserting exact bodies, plus a test flipping accountExists mid-flight asserting the first-seen value still decides the body.
+
+---
+
+Goal: Prove the CSRF header without hand-rolling it in every test.
+Wiring:
+export function fakeBackend(replies) {
+  const calls = [];
+  const fetchMock = async (path, init) => {
+    if (path === '/signin/csrf') return new Response(JSON.stringify(CSRF), { status: 200 });
+    calls.push({ path, body: init?.body ? JSON.parse(String(init.body)) : undefined, headers: init?.headers });
+    const reply = replies[path]?.shift();
+    return new Response(reply.body === undefined ? null : JSON.stringify(reply.body), { status: reply.status });
+  };
+  return { calls };
+}
+export async function mountAt(url) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  const router = createAppRouter(createMemoryHistory());
+  await router.push(url); await router.isReady();
+  return mount(App, { global: { plugins: [router, [VueQueryPlugin, { queryClient }]] } });
+}
+Why: the CSRF fetch is answered automatically, so each test declares only the business calls while still asserting the token header arrived on writes. A fresh client per test plus no retry keeps one test's cache and one flaky 500 from leaking into the next.
+Misconfiguration: asserting only bodies and missing a dropped CSRF header that 403s in production; or sharing one QueryClient across files where a preview cached in test one satisfies test two without a fetch.
+Verification: a sign-in test asserting the recorded headers contain the CSRF pair on writes and none on emailed-link posts, plus a cache test asserting two mounts issue two preview fetches.
+
+---
+
+Goal: Key admin lists by their parents and refresh everything after any write.
+Wiring:
+const tenants = useQuery({ queryKey: computed(() => ['apps', appId.value, 'tenants']), queryFn: () => api.tenants(appId.value) });
+const create = useMutation({ mutationFn: (form) => api.createTenant(appId.value, form), onSuccess: async () => { await refreshAll(); } });
+export function refreshAll(): Promise<void> { return queryClient.invalidateQueries(); }
+Why: the computed key scopes the cache per app, so switching apps cannot show the previous list while the new one loads. Refresh-all fits admin data because one write touches several screens at once, which per-key invalidation would have to enumerate and would miss the next time a count is added.
+Misconfiguration: a static ['tenants'] key shared across apps, leaking tenants between apps on fast navigation; or invalidating only the list key so the header count stays stale until a manual reload.
+Verification: a test switching appId asserting two distinct fetches, plus a create test asserting both list and detail refire after one mutation.
+
+---
+
+Goal: Re-read on focus for admin data, with no retry on refusals.
+Wiring:
+export const queryClient = new QueryClient({ defaultOptions: { queries: { retry: (f, e) => !(e instanceof ApiError && e.status < 500) && f < 2, refetchOnWindowFocus: true } } });
+Why: another admin may change a tenant while this tab sits open, so coming back re-reads the page, which is the opposite of the invitation preview that must never re-read after accept. Retrying 4xx still never helps, so only network or 5xx retries twice.
+Misconfiguration: copying the preview client's refetch false into admin, so a suspend by a colleague never appears; or retrying 403, turning a permission refusal into three identical audit rows.
+Verification: a focus test asserting one refetch on window focus, plus a 403 test asserting exactly one fetch with no retry.
+
+---
+
+Goal: Skip auth state on public pages to avoid a sign-in race.
+Wiring:
+export function useMe(opts?: { enabled?: boolean }) { return useQuery({ queryKey: ['me'], queryFn: () => api.me(), enabled: opts?.enabled ?? true, staleTime: 60_000 }); }
+In AppLayout: const publicPage = route.meta.public === true; const me = useMe({ enabled: !publicPage });
+Why: the shell gate waits on GET /admin/me, but the signed-out page itself is public, so fetching me there would redirect away from the page that explains the redirect. Disabling the query on public routes removes the double-sign-in race without a second guard.
+Misconfiguration: always-enabled me that fires on the signed-out page and bounces before the message renders; or a manual fetch flag outside the query that desyncs from the router.
+Verification: a test opening /signed-out asserting zero calls to /admin/me, plus a test opening /apps asserting exactly one.
+
+---
+
+Goal: After logout, the next user sees the previous user's data — and it is not a caching bug in the library.
+Wiring:
+const orderKeys = ['orders', tenantId, { status, cursor }] as const
+// at sign-out:
+await queryClient.clear()                        // every cache entry dies with the session
+// at sign-in, assert the shape of what you wrote:
+queryClient.getQueryCache().getAll().forEach(q => console.log(JSON.stringify(q.queryKey)))
+Why: the diagnosis is a key inspection, not a `staleTime` debate, and the four candidate causes are separable in one minute: the key is missing the tenant or user segment (dump the keys — this is the answer most of the time); the cache outlives the session because nothing clears it (`gcTime` bounds memory, not identity, and is not the control here); a mutation's optimistic write put a foreign object under a correct key (the same dump shows it); or one component builds its key at the call site instead of through the factory, so two users share a slot that only *looks* tenant-scoped. Each has a different fix and the dump distinguishes them without guessing.
+Pitfall: turning caching off "until we understand it", which fixes the leak and costs the refetch behaviour the app depends on, and then never turning it back on — a correctness fix that becomes an outage cause six months later under a load nobody re-measured.
+Verification: a test signs in as user A, then user B, and asserts B's first render contains no A-scoped data while the cache dump contains no key without a tenant segment; the key factory is the only place keys are constructed, enforced by lint or review, and `clear()` on sign-out is asserted rather than trusted.
+
+---
+
+Goal: A refetch storm every time the window regains focus, worse inside an embedded iframe.
+Wiring:
+const qc = new QueryClient({
+    defaultOptions: { queries: { staleTime: 30_000, refetchOnWindowFocus: !window.top !== window }, retry: 2 },
+})
+const { data } = useQuery({ ...orderListOptions(tenant), select: page => page.items.map(toRow) })
+Why: the storm has three independent causes and the network waterfall separates them. (1) `refetchOnWindowFocus` with `staleTime: 0` means every data is stale on every focus, which is correct for a laptop and pathological for an app embedded in a host that steals focus constantly — so the flag is conditioned on the embedding, not disabled globally. (2) Retry amplification: a failing endpoint with default retries turns ten components into thirty requests per focus event, visible as a burst with identical URLs and exponential spacing. (3) The one that is not a request problem at all: a `select` returning a fresh array on every call, which re-renders consumers whenever the cache settles, so the *renders* storm and someone reaches for a network setting to fix a render problem. The waterfall tells you which storm you are in before you change anything.
+Pitfall: setting `staleTime: Infinity` globally to stop the noise, which converts a focus storm into "the app shows yesterday's numbers", the failure mode users report as a data bug rather than a performance one.
+Verification: a test with a fake clock and a focus event asserts zero requests within `staleTime` and exactly one after it; a failing-endpoint test asserts the request count is bounded by `retry × mounted queries`; a render-count test asserts one render per cache update with `select` in place (the derivation semantics are this file's, the invalidation discipline is the key factory's).
+
+---
+
+Goal: An infinite refund list with stable keys, abort, and slice subscriptions.
+Wiring:
+import { useInfiniteQuery, useQueryClient } from "@tanstack/vue-query";
+export const refundKeys = {
+  all: ["refunds"] as const,
+  pages: (tenant: string, limit: number) => [...refundKeys.all, tenant, limit] as const,
+};
+type RefundRow = { id: string; amount: string; status: string };
+type RefundPage = { items: ReadonlyArray<RefundRow>; nextCursor: string | null };
+async function fetchRefundPage(tenant: string, cursor: string | null, limit: number, signal: AbortSignal): Promise<RefundPage> {
+  const qs = new URLSearchParams({ tenant, limit: String(limit) });
+  if (cursor) qs.set("cursor", cursor);
+  const res = await fetch(`https://api.example.com/refunds?${qs}`, { signal });
+  if (res.status === 401) throw new Error("unauthenticated");
+  if (!res.ok) throw new Error(`refunds failed: ${res.status}`);
+  return (await res.json()) as RefundPage;
+}
+export function useRefundPages(tenant: string, limit = 25) {
+  return useInfiniteQuery({
+    queryKey: refundKeys.pages(tenant, limit),
+    queryFn: ({ pageParam, signal }) => fetchRefundPage(tenant, (pageParam as string | null) ?? null, limit, signal),
+    initialPageParam: null as string | null,
+    getNextPageParam: last => last.nextCursor,
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
+    retry: 2,
+    refetchOnWindowFocus: false,
+    select: data => data.pages.flatMap(p => p.items),
+  });
+}
+export function useInvalidateRefunds() {
+  const qc = useQueryClient();
+  return (tenant: string, limit = 25) => qc.invalidateQueries({ queryKey: refundKeys.pages(tenant, limit) });
+}
+Why: the first hypothesis was inline key literals per component; it was killed by a cache dump showing two slots for the same tenant where an invalidation cleared only one. The factory makes identity structural and greppable; the signal plumbs cancellation so unmounts and refetches cannot write stale pages; select subscribes consumers to the flattened rows so unrelated cache updates keep referential stability. staleTime 30s bounds refetch chatter while gcTime 5min survives a background return; refetchOnWindowFocus stays off for this embedded surface where focus events are constant. A sanity check before shipping: dump the keys for two tenants and assert no key lacks the tenant segment.
+Pitfall: cacheTime (v4) instead of gcTime (v5), which type-checks nowhere and silently keeps the default; select returning a fresh object per call, re-rendering every consumer on each settle; a global staleTime Infinity that serves yesterday's refunds as today's.
+Verification: key-equality test (same inputs, identical keys); unmount-mid-fetch asserts abortion; fake-clock focus test asserts zero requests within staleTime; sign-in-as-B test asserts no A-scoped rows while the key dump contains no tenant-less entry. Failing evidence before the fix was two cache slots ["refunds", "acme-1"] and ["refunds", "acme-1", 25] holding divergent pages after one invalidation.

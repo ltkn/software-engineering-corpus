@@ -25,6 +25,8 @@ Verification: cardinality budget test on label sets; route-template (not raw-pat
 
 Signal needed: USE metrics per resource (pools, queues, disks, brokers).
 Schema: utilization (percent saturation), saturation (queue depth/wait time), errors (timeout/exhaustion counts) for Hikari pools, Kafka consumer lag, disk volumes, connection counts.
+`{"@timestamp":"2026-10-07T02:14:05.412Z","log.level":"WARN","service.name":"orders-api","process.thread.name":"virtual-41","logger":"com.zaxxer.hikari.pool.HikariPool","message":"Connection is not available, request timed out after 30000ms (total=10, active=10, idle=0, waiting=41)"}`
+Saturation arriving as a user-facing timeout three layers later: the pool log is the cause, the SLO burn is the symptom, and the pair is only readable because both carry `service.name` and a trace id.
 Incident reading: saturation rising while utilization looks fine names the queue as the bottleneck before latency alarms fire.
 Anti-pattern: CPU-only dashboards declaring "all green" during a pool-exhaustion outage.
 Verification: saturation alert per resource with runbook; pool-exhaustion drill fires the right alert, not a generic page.
@@ -65,6 +67,12 @@ Verification: error-trace completeness test (every error id traceable); cost-per
 
 Signal needed: exemplars linking metrics to traces.
 Schema: histogram buckets carrying exemplar trace ids for slow observations.
+`http_server_request_duration_seconds_bucket{otel_scope_name="orders-api",http_route="/v1/orders/{id}",le="0.25"} 412 # {trace_id="4bf92f3577b34da6a3ce929d0e0e4736",span_id="00f067aa0ba902b7"} 0.248331`
+The exposition line is the feature: sample the bucket, get a trace id you can open, no extra sampling budget.
+receivers: { otlp: { protocols: { http: { endpoint: "0.0.0.0:4318" } } } }
+processors: { memory_limiter: { limit_mib: 1024 }, batch: { send_batch_size: 8192 } }
+exporters: { otlphttp: { endpoint: "https://telemetry.test:4318" } }
+The collector's own config is telemetry infrastructure and gets reviewed like it: an unset memory limiter is how a trace pipeline takes down the node it runs on.
 Incident reading: click the p99 bucket, land on the exact slow trace — metric-to-trace in one hop instead of time-range guessing.
 Anti-pattern: metrics and traces as parallel universes joined by timestamps and hope.
 Verification: exemplar presence test on histogram metrics; drill measures metric-to-trace time under a minute.
@@ -81,6 +89,17 @@ Verification: SLI-to-incident mapping review (each past incident would have burn
 
 Signal needed: error-budget policy gating deploys.
 Schema: burn-rate alerts (fast burn pages, slow burn tickets) wired into the deploy pipeline; freeze on fast burn.
+- alert: OrdersApiAvailabilityFastBurn
+  expr: (sum(rate(slo:http_requests_good{service="orders-api"}[5m])) / sum(rate(slo:http_requests_total{service="orders-api"}[5m]))) < 0.99856
+  for: 5m
+  labels: {severity: page, slo: orders-api-availability, burn_rate: "14.4x", window: "1h/5m"}
+  annotations: {runbook: "https://runbooks.test/orders-api-availability", request_page: "oncall-platform"}
+The `burn_rate` and `window` labels are what let one routing table separate page from ticket without four copies of the same expression.
+management.tracing.sampling.probability=0.05
+management.otlp.tracing.endpoint=https://otel-collector.test:4318/v1/traces
+logging.pattern.level=%5p [${baggage.tenant:unknown},%X{traceId:-},%X{spanId:-}]
+management.opentelemetry.resource-attributes.service.name=orders-api
+The properties that decide whether the three signals join up at all: one sampler setting, one export endpoint, one log pattern carrying the ids, one resource attribute naming the service.
 Why: deploys during active incidents compound; the pipeline must know the service is already bleeding.
 Anti-pattern: deploy train running through a SEV with nobody connecting the two systems.
 Verification: simulated-burn drill asserts the freeze triggers; deploy log shows the gate decision per release.
@@ -207,3 +226,66 @@ Schema or config fragment: tenant_id travels in the server-timing/trace attribut
 How it reads in an incident: every log line carries the same tenant field as the span attribute, so a drill query filters by tenant once and hits both signals.
 Anti-pattern: tenant id in W3C baggage — baggage propagates to every outbound call including third parties, leaking tenancy where it should never reach.
 Verification: a test that boots the gateway and spans two outbound calls asserts no tenant key appears in the W3C baggage header.
+
+---
+
+Signal needed: A trace that was sampled out still has to explain a latency spike, and the metric alone cannot name a request.
+Schema:
+histogram buckets (seconds): 0.010 0.025 0.050 0.100 0.250 0.500 1.000 2.500
+exemplars: enabled on histogram buckets, attaching trace_id to one observation per bucket per interval
+cardinality ledger (labels): service, endpoint (templated), method, status_class, outcome  -> 5 labels, no tenant, no user, no order id
+sample rate: head-based 1% baseline, 100% for errors and for any request exceeding the SLO threshold, tail-sampled on the gateway
+Why: exemplars are how a dashboard point becomes a trace without raising the sample rate for everything, and bucket edges that straddle the SLO threshold are what make "we breached" measurable rather than interpolated. The cardinality ledger exists because a label is a multiplication: tenant with thousands of values on a five-label histogram is how a metrics backend starts dropping ingests and dashboards go sparse at exactly the wrong moment.
+Anti-pattern: a `tenant_id` label on every metric "for now"; buckets copied from a library default that stop at 1s while the SLO is 2.5s; a high sample rate everywhere, which is a pay-per-GB decision disguised as an observability one.
+Verification: exemplars resolve to a real trace for a request chosen from the dashboard's slowest bucket; the metrics backend reports the series count per metric against the ledger and alerts on growth; a test asserts a new label requires an entry in the ledger file.
+
+---
+
+Signal needed: Saturation that shows up as a latency symptom three layers away, seen before the SLO burns.
+Schema:
+USE per resource, reported together:
+  cpu:        utilisation, run queue length, nr_throttled deltas, pressure stall information
+  memory:     working set, majfault, oom_kill counter, swap use
+  disk:       busy time, io latency distribution, queue depth
+  pool:       in-use, max, wait time distribution, acquisition timeout count
+  queue:      consumer lag, oldest-message age, per-partition skew
+paired with: RED per endpoint, so the pair answers both "is the user hurting" and "which resource is short"
+Why: RED watches the symptom, USE watches the cause, and the incident is cheap when both are on one screen and expensive when an on-call has to infer one from the other. Pressure stall information and run-queue length detect contention that average CPU utilisation hides, which is why a node can look idle while requests crawl.
+Anti-pattern: utilisation averages over a node rather than per container or per pool; "0% CPU" read as "no problem" while the process waits on a connection pool or a page; saturation without a budget, so nobody knows what number is bad until it is paging.
+Verification: each saturation metric has a stated budget and a derived alert, and the drill is a capacity squeeze (pool max lowered, or a cpu limit halved) confirming saturation signals move before the SLO burn does.
+
+---
+
+Signal needed: A deploy that made things worse has to be visible in the same view as the degradation, without anyone remembering to note the time.
+Schema:
+event stream: { time, service, version, git_sha, environment, actor, change_type: deploy|config|flag|schema|scale }
+markers: attached to traces and to metric annotations, so a dashboard shows change marks over the SLO burn graph
+SLO burn: multi-window burn rate per service, evaluated against the objective, with the recent change list joined to the burn window
+Why: the first question in an incident is what changed, and it is answered by a query, not by memory — a change event without a marker in the same view arrives too late to be useful. Flag flips and migrations belong in the same stream as deploys, because in practice they are the changes that surprise people, and config drifts from the pipeline that produced the last good build.
+Anti-pattern: deploy markers emitted only by one pipeline, so a manual `kubectl rollout restart` and a flag flip are invisible; a change stream with no actor, which turns the postmortem into a guess; correlating by hand in a spreadsheet and calling it observability.
+Verification: a drill makes a deliberate bad config change with no deploy and confirms it appears in the change stream and on the burn graph within the alert window; the drill's timeline is reconstructed from the signals alone, and the first tool opened during a real incident is checked against this expectation rather than against the diagram.
+
+---
+
+Signal needed: Container-level resource pressure that pages the owner rather than the platform team, and a queue consumer that must survive a rollout.
+Schema:
+metrics: container_cpu_cfs_throttled_periods_total / container_cpu_cfs_periods_total, container_memory_working_set_bytes vs limit, container_fs_usage_bytes vs size limit, kube_pod_container_status_restarts_total
+events: kubectl get events filtered for BackOff, OOMKilling, Evicted, FailedScheduling, ReadinessGatesNotReady — with the owning team attached from an owner annotation
+annotations: team/owner, slo/objective, oncall/route on every workload, read by tooling rather than written in a wiki
+Why: throttling, eviction and restart-loops arrive as cluster events long before they arrive as user-visible errors, and the owner annotation is what lets an alert route to the team that can act instead of to whoever is awake. A queue consumer's readiness is a signal in its own right: a pod that reports ready while it cannot reach the broker produces a silent, growing lag instead of an obvious failure (the workload-side reading is 21).
+Anti-pattern: cluster events scraped into a dashboard nobody reads, with no owner and no threshold, so the platform team becomes a human log-shipping service; disk usage measured on the node while the pressure is an ephemeral-storage limit on one container.
+Verification: an alert fires on a rising throttling ratio with the owner attached, and a simulated OOMKill plus a readiness-gate failure both route in under the stated window with the owner named, without a human in the loop.
+
+---
+
+Signal needed: level discipline so warn pages a human soon, error means a request failed, and attacker traffic never spends the error budget.
+Schema:
+level in {debug, info, warn, error} plus outcome on every business refusal; debug off in production; 4xx refusals are info-with-outcome, never error.
+logfmt (journald, local tail):
+ts=2026-10-08T09:14:02Z level=info service=orders-api route="POST /refunds" tenant=acme-1 outcome=forbidden ms=3 requestId=req_9f2
+JSON (collector, same event):
+{"ts":"2026-10-08T09:14:02Z","level":"info","service":"orders-api","route":"POST /refunds","tenant":"acme-1","outcome":"forbidden","ms":3,"requestId":"req_9f2"}
+{"ts":"2026-10-08T09:14:05Z","level":"warn","service":"orders-api","pool":"cortex_app","active":10,"idle":0,"waiting":41,"requestId":"req_9f2"}
+Incident reading: the warn line is the cause and any error line is the symptom, joined on requestId — a 403 ownership refusal stays info because the system worked (it refused), while the pool-saturation warn needs a human before it becomes errors. Business-error codes ride in outcome beside the level, so the error-rate alert counts 5xx plus failed outcomes, never 4xx volume that an attacker controls.
+Anti-pattern: log.error on every 404/403, so a credential-stuffing spray becomes a log flood that pages the team — the flood is the DoS completing itself; or debug in the hot path in production, paying double (allocation plus collector cardinality) for lines nobody reads; or one format per service, so the join key changes spelling at the gateway.
+Verification: a fixture 403 produces exactly one info line carrying outcome=forbidden and zero error lines; prod sampling asserts debug lines at zero; the alert routes on error plus warn-rate, and a spray drill (10k forged 403s) pages nobody while a pool-exhaustion drill pages once with the owner attached.

@@ -95,6 +95,7 @@ CREATE INDEX users_timeline_cover ON users (tenant_id, created_at, id) INCLUDE (
 Reading: INCLUDE carries email in the leaf without widening the key; visibility-map freshness decides whether heap fetches vanish.
 Pitfall: covering everything (INCLUDE *) bloating the index past the table it accelerates.
 Verification: EXPLAIN shows Index Only Scan with heap fetches near zero after VACUUM; size comparison recorded.
+`EXPLAIN (ANALYZE, BUFFERS, SETTINGS)` is the invocation that shows all of it; `EXPLAIN ANALYZE` alone hides the buffer and setting deltas that make the plan explicable.
 
 ---
 
@@ -510,3 +511,276 @@ Symptom: page 400 costs 900ms with a Seq Scan discarding 10k rows, and the gap w
 Legacy: `md5` password entries in pg_hba.conf still honored by older drivers.
 Replacement: scram-sha-256 everywhere; rewrite stored hashes at next login.
 Symptom: PG 18 deprecation warnings in the server log followed by silent authentication failures when a driver finally drops md5.
+
+---
+
+Task: Query and index a document field inside a JSONB column without a full scan and without a trigger-maintained shadow table.
+SQL:
+SELECT o.id, x.value->>'sku' AS sku, (x.value->>'qty')::int AS qty
+FROM orders o
+CROSS JOIN LATERAL jsonb_to_recordset(o.payload -> 'lines') AS x(sku text, qty int)
+WHERE o.tenant_id = $1
+  AND o.payload @> '{"status":"open"}'
+  AND jsonb_path_exists(o.payload, '$.lines[*] ? (@.sku == $s)', jsonb_build_object('s', $2));
+
+CREATE INDEX ON orders USING gin ((payload -> 'status'));
+CREATE INDEX ON orders ((jsonb_path_query_array(payload, '$.lines[*].sku'))) ;
+Reading: `@>` is containment and is the operator a GIN index answers; `jsonb_to_recordset` turns an array into rows so the shape stays in the query instead of in an ORM unwrapper; the expression indexes match the exact expressions written above, which is why the expressions are written once, in one place.
+Pitfall: `payload->'lines'->0->>'sku' = $2` — no index, and a document whose first line is not the one being asked about returns the wrong answer with total confidence.
+Verification: EXPLAIN shows the GIN or expression index in use with row estimates near the actual count; a test with a two-line document asserts the query finds the second line.
+
+---
+
+Task: Rename a column on a 200-million-row table with no downtime window and no dual-write rebellion.
+SQL:
+BEGIN; ALTER TABLE orders ADD COLUMN delivery_eta timestamptz; COMMIT;
+BEGIN; ALTER TABLE orders ADD CONSTRAINT chk_eta CHECK (delivery_eta IS NULL OR delivery_eta > created_at) NOT VALID; COMMIT;
+ALTER TABLE orders VALIDATE CONSTRAINT chk_eta;
+-- deployments: writes to both, reads from old
+BEGIN; ALTER TABLE orders RENAME COLUMN ship_eta TO ship_eta_old; COMMIT;
+-- deployments: writes to new only, reads from new
+BEGIN; ALTER TABLE orders DROP COLUMN ship_eta_old; COMMIT;
+Reading: expand, migrate, contract. Every step is a separate transaction so a deploy can be rolled back to the previous shape, and `NOT VALID` then `VALIDATE` splits the cheap lock from the long scan, so the scan happens while nothing is waiting on a lock.
+Pitfall: one migration that renames and validates in a single transaction, which holds an access-exclusive lock long enough that the deploy window becomes a queue; and the "temporary" dual-read path that is still in the codebase a year later because the contract step was never scheduled.
+Verification: each step replays against a production snapshot; the old and new code versions are exercised against every intermediate schema by the deploy test, and the contract migration exists as a scheduled ticket rather than as a comment.
+
+---
+
+Task: Serve a hot read-only query from an index-only scan, then explain why it degraded after the table got busy.
+SQL:
+CREATE INDEX idx_orders_tenant_created ON orders (tenant_id, created_at) INCLUDE (status, total);
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT status, total FROM orders WHERE tenant_id = $1 AND created_at > now() - interval '7 days';
+Reading: an index-only scan answers from the index but must confirm visibility from the visibility map, so a page that has been modified since the last vacuum is fetched from the heap anyway. The plan flips from "Index Only Scan" to "Index Scan" with heap fetches climbing in EXPLAIN BUFFERS, and the shape of the query has not changed at all — only the update pattern has.
+Index Only Scan using idx_orders_tenant_created on orders  (cost=0.42..88.4 rows=184) (actual time=0.081..2.11 rows=184 loops=1)
+  Index Cond: ((tenant_id = '9b1...'::uuid) AND (created_at > (now() - '7 days'::interval)))
+  Heap Fetches: 21433
+Buffers: shared hit=1982 read=14412
+The query did not change; `Heap Fetches` did. After a tuned autovacuum run on that table range the same plan reports `Heap Fetches: 0` and the `read=` count collapses to hits.
+Pitfall: treating the plan change as a planner regression and adding another index, when the actual signal is dead-tuple accumulation on a hot page range and autovacuum is not keeping up; covering the index made the win possible and made the dependency on vacuum visible.
+Verification: heap-fetches in the plan output near zero after tuning autovacuum for the table, latency restored with no new index, and a monitoring assertion on dead-tuple ratio per hot table rather than on database size alone (the failure-transcript version of this loop is 02).
+
+`ALTER TABLE orders SET (autovacuum_vacuum_scale_factor = 0.02, autovacuum_vacuum_cost_limit = 2000);` — the fix is a per-table storage parameter, not a new index, and the before/after `Heap Fetches` count is the evidence that it worked.
+---
+
+Task: Read a balance and its ledger rows in one request without seeing a half-applied transfer.
+SQL:
+-- default READ COMMITTED, two statements:
+SELECT balance FROM accounts WHERE id = $1;              -- 100
+SELECT sum(amount) FROM ledger WHERE account_id = $1;    -- 90, because a transfer committed in between
+Reading: under READ COMMITTED each *statement* gets its own snapshot, so the second statement can see a commit the first did not. That is read skew: both numbers are correct and the pair never existed. It is not a bug in the query, and it is not solved by a retry.
+Pitfall: summing money in the application from separately consistent reads, then "fixing" it with a `SELECT … FOR UPDATE` that serializes the hot account, or with REPEATABLE READ everywhere, which trades the anomaly for serialization failures that the caller must be able to retry.
+Verification: the invariant (balance equals ledger sum) is enforced where it can be — one statement, or a REPEATABLE READ transaction that takes the anomaly as a retryable condition; a test that commits a transfer between the two reads proves the fix holds, with the isolation level named in the test name.
+
+---
+
+Task: Drain a job table with many workers without making them fight.
+SQL:
+UPDATE jobs SET status = 'running', worker = $1, started_at = now()
+WHERE id = (
+  SELECT id FROM jobs WHERE status = 'queued' ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED
+)
+RETURNING id, payload;
+Reading: `SKIP LOCKED` lets each worker take the next unlocked row instead of queueing behind the row another worker holds, which turns a lock convoy into parallel claiming. Doing the claim and the mark in one statement removes the window where two workers both believe they own the row, and `RETURNING` avoids the second round trip.
+Pitfall: `SELECT … FOR UPDATE` without `SKIP LOCKED` on a queue, where every worker piles onto the same head row, and the throughput collapses as workers are added; and `NOWAIT` chosen for impatience, which turns contention into errors the caller must handle anyway.
+Verification: a test with N concurrent drainers over M rows asserts every row claimed exactly once and no duplicates; the metric that matters is rows per second against worker count, which should be flat-to-rising, not falling.
+
+---
+
+Task: Change one historical segment of a row that carries a period constraint, without touching the rest of its history.
+SQL:
+UPDATE rooms WITH PERIOD FOR PERIOD booking_period,
+               PERIOD (bookfrom, bookto)
+SET rate = rate * 1.1
+WHERE room_id = $1 AND id = $2;
+Reading: `WITHOUT OVERLAPS` on the period keeps the schedule consistent at the storage layer, and `WITH PERIOD` tells the update which slice of the row's validity it is rewriting, so the database splits the row rather than the application inserting an "amendment" row and hoping readers do the arithmetic.
+Pitfall: modelling validity as two nullable timestamps maintained by triggers, then reconciling overlaps in a nightly job — the constraint becomes a report, and the report has exceptions in it by design.
+Verification: a test attempting an overlapping booking gets a constraint violation, and the period update leaves the unaffected segments byte-identical; the version-gated note applies: this is 18 syntax, checked against the target release before it is relied on (17 and earlier fall back to an exclusion constraint with `tstzrange`).
+`ERROR:  conflicting key value violates exclusion constraint "rooms_book_room_id_booking_period_excl"`
+`DETAIL:  Key (room_id, booking_period)=(7, [2026-10-12, 2026-10-14)) conflicts with existing key (room_id, booking_period)=(7, [2026-10-13, 2026-10-15)).`
+Read the constraint name out of the error and the application's error mapping has something honest to say to the front desk; paraphrasing it into "invalid dates" is how a double booking becomes a support ticket.
+
+---
+
+Task: Normalize emails in exactly one place, in SQL.
+SQL:
+CREATE OR REPLACE FUNCTION core.normalize_email(p_email text)
+RETURNS text LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+SET search_path = pg_catalog
+AS $$
+  SELECT lower(normalize(trim(p_email), NFKC) COLLATE "C")
+$$;
+SELECT id FROM core.users WHERE email_normalized = core.normalize_email($1);
+Reading: the function is the rule behind the generated email_normalized columns, so every lookup and every stored value comes from the same expression. IMMUTABLE plus PARALLEL SAFE keeps it index-friendly, and pinning search_path to pg_catalog closes the search_path hijack that a SECURITY DEFINER-adjacent function would otherwise carry.
+Pitfall: trim plus lower in Java, which skips NFKC so a full-width look-alike compares as a different address, and which lowercases non-ASCII that COLLATE C leaves alone, so an address with capital E-acute can never be found.
+Verification: a guard test pinning the function text to both generated columns so they cannot drift, plus a fixture with surrounding spaces and full-width characters asserting the same normalized form from SQL and from the repository helper that calls the function.
+
+---
+
+Task: Isolate tenants with forced RLS that denies when the session var is missing.
+SQL:
+ALTER TABLE app_customers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_customers FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON app_customers USING (tenant_id = app_current_tenant()) WITH CHECK (tenant_id = app_current_tenant());
+CREATE OR REPLACE FUNCTION app_current_tenant() RETURNS uuid LANGUAGE sql STABLE PARALLEL SAFE SET search_path = pg_catalog AS $$ SELECT nullif(current_setting('app.tenant_id', true), '')::uuid $$;
+Reading: FORCE keeps the table owner under the policy, so a stray admin connection cannot sail through. The helper returns NULL when the var is unset, and NULL equals nothing, so a missing binding denies rather than leaking. One request sets app.tenant_id on checkout from a ScopedValue, and the empty-string sentinel fails the cast path closed.
+Pitfall: a policy without FORCE where the owner bypasses RLS, or current_setting without missing_ok so an unbound connection errors instead of denying, which the caller then rescues into an unauthenticated retry.
+Verification: EXPLAIN shows the policy predicate on every plan, and a test with no session var asserting zero rows rather than an error; the no-RLS table list is asserted by a migration guard test.
+
+---
+
+Task: Expose a privileged read through a co-located SECURITY DEFINER finder.
+SQL:
+CREATE OR REPLACE FUNCTION core.find_user_by_email_normalized(p_email text)
+RETURNS TABLE (id uuid, status text, email_normalized text)
+LANGUAGE sql STABLE PARALLEL SAFE
+SET search_path = pg_catalog, core
+SECURITY DEFINER
+AS $$ SELECT u.id, u.status, u.email_normalized FROM core.users u WHERE u.email_normalized = p_email $$;
+ALTER FUNCTION core.find_user_by_email_normalized(text) OWNER TO cortex_func_owner;
+REVOKE ALL ON FUNCTION core.find_user_by_email_normalized(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION core.find_user_by_email_normalized(text) TO cortex_app;
+Reading: the function lives next to its table, pins search_path away from public, runs as the func_owner that owns the table, and grants execute only to the app role, so the app role reads accounts without direct table access. Short, input-validated, no dynamic SQL.
+Pitfall: search_path containing public, letting a tenant-created function shadow a lookup; or granting the table itself to the app role for convenience, which silently re-opens the direct read the finder was built to close.
+Verification: a harness check asserting owner is cortex_func_owner and search_path is exactly pg_catalog, core, plus a test as cortex_app asserting direct SELECT on core.users fails while the finder succeeds.
+
+---
+
+Task: Read an account plus its password hash in one statement so timing does not name accounts.
+SQL:
+SELECT u.id, u.status, p.hash AS password_hash
+FROM core.find_user_by_email_normalized(core.normalize_email($1)) u
+LEFT JOIN core.user_passwords p ON p.user_id = u.id;
+Reading: the LEFT JOIN returns a row whether or not a password exists, so the Argon2id check runs the same work on a random-hash fallback for unknown addresses and passwordless accounts. The email comparison happens inside SQL with normalize_email, so the Java side never holds a second copy of the rule.
+Pitfall: two round trips where the second runs only for existing accounts, measurable as a slower wrong-password for real addresses; or lowercasing in Java before the query, diverging from the generated column on non-ASCII input.
+Verification: a timing test asserting unknown versus known addresses take the same Argon2id path, and a fixture asserting a suspended account still returns its hash shape so the caller can decide without a second query.
+
+---
+
+Task: Page an audit log by keyset on (occurred_at, id) with an opaque cursor.
+SQL:
+SELECT id, occurred_at, event_code FROM core.audit_events
+WHERE tenant_id = $1 AND (occurred_at, id) < ($2, $3)
+ORDER BY occurred_at DESC, id DESC LIMIT $4;
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT id FROM core.audit_events WHERE tenant_id = $1 ORDER BY occurred_at DESC, id DESC LIMIT 50;
+Reading: equality on tenant_id plus a row-comparison on the sort key resolves to one bounded index range scan on (tenant_id, occurred_at DESC, id DESC). The client cursor is base64url of version plus parts, decoded strictly and bounded to 512 bytes, and a forged cursor only moves the start position because RLS still filters.
+Pitfall: OFFSET paging where page 400 scans and discards 20k rows, visible as rising Buffers and Execution Time with depth; or exposing offset numbers the client can edit to jump tenants.
+Verification: Index Scan using audit_events_tenant_time on EXPLAIN with Execution Time 2.1 ms and Buffers shared hit 14, plus a concatenation test asserting stitched pages equal the full ordered query with no gaps.
+
+---
+
+Task: Consume a one-time mailbox token atomically so replay is a no-op.
+SQL:
+UPDATE core.magic_links SET consumed_at = now()
+WHERE token_hash = $1 AND consumed_at IS NULL AND expires_at > now()
+RETURNING user_id;
+Reading: the predicate plus RETURNING makes issue and burn one statement, so two concurrent presents cannot both succeed. The stored value is SHA-256 of version-prefixed token plus pepper, never the raw token, and a zero-row result is indistinguishable across invalid, expired, consumed, or wrong-browser cases.
+Pitfall: SELECT then UPDATE in application code, where a replay inside the race window burns twice; or storing the raw token so a read replica leak becomes a login.
+Verification: a concurrent-present test asserting exactly one RETURNING row, and a test asserting expired and consumed fixtures both return zero rows with the same caller-visible outcome.
+
+---
+
+Task: The plan says index scan, production says slow. Diagnose the case where the plan you measured is not the plan that runs.
+SQL:
+PREPARE orders_page(int, text) AS SELECT * FROM orders WHERE tenant_id = $1 AND status = $2;
+EXPLAIN (ANALYZE) EXECUTE orders_page(7, 'open');   -- real params: custom plan
+EXPLAIN (EXECUTE) PREPARE orders_page(int, text);  -- the generic plan the cache may prefer (PG 12+)
+SELECT queryid, calls, mean_exec_time, stddev_exec_time,
+       regexp_match(query, 'status = [^ ]+') AS pred
+FROM pg_stat_statements WHERE query ILIKE '%orders%status%';
+SELECT attname, n_distinct, correlation FROM pg_stats WHERE tablename = 'orders' AND attname IN ('tenant_id','status');
+Reading: three hypotheses in cost order, each with its own disproof. (1) The index is missing or unused — check `pg_indexes` and the plan; if the plan you take by hand is good, this hypothesis is dead. (2) Statistics lie — `pg_stats` shows `n_distinct` far from reality or a strong correlation the planner cannot see; `ANALYZE` and re-plan, and if nothing changes, it is dead too. (3) The prepared statement has moved to a *generic* plan: after five executions the planner may prefer a plan that works for all parameter values, which is the wrong plan for the one tenant holding 60% of the rows. The generic plan is what `EXPLAIN (EXECUTE) PREPARE` prints; the custom plan is what `EXPLAIN (ANALYZE) EXECUTE` prints with the skewed parameters, and the spread in `stddev_exec_time` is the fingerprint of two plans living in one query id.
+Pitfall: "adding an index" to a plan-cache problem — the index gets used by the ad-hoc session that tested it and ignored by the cached generic plan, so the fix appears to work in staging and do nothing in production.
+Verification: the fix (plan selection reconsidered: forced generic/custom behaviour, statistics target on the offending column, or splitting the query so the parameter is not the skewed one) shows up as `stddev_exec_time` collapsing on that query id, and a test runs both the skewed and the ordinary tenant's parameters through the same prepared statement path.
+
+---
+
+Task: A bulk delete finished, the table grew, and everything got slower. Diagnose vacuum debt without making it worse.
+SQL:
+SELECT relname, n_live_tup, n_dead_tup, last_autovacuum, last_autoanalyze
+FROM pg_stat_user_tables WHERE relname = 'orders';
+SELECT pid, state, xact_start, backend_xmin, left(query, 60) AS q
+FROM pg_stat_activity WHERE backend_xmin IS NOT NULL ORDER BY xact_start;
+SELECT phase, heap_blks_total, heap_blks_scanned FROM pg_stat_progress_vacuum;
+Reading: dead tuples explain the slowdown arithmetically — an index scan that walks hundreds of dead entry versions costs the same as a bigger table, so "the table is smaller and slower" is not a paradox. The next question is why vacuum did not clean it, and the answer is usually a horizon: the second query finds a session with `backend_xmin` set and an `idle in transaction` state that has been open since the import began, which pins the oldest xmin and makes every vacuum run *skip* the very rows that were deleted. The wrong fix is `VACUUM FULL` on a hot table: it takes an access-exclusive lock, so the symptom you are trying to remove is replaced by a queue.
+Pitfall: treating bloat as an index problem and reindexing, which rewrites the same dead tuples and locks the table while doing it; or killing the long transaction without noting that its owner is a report notebook that will reconnect in ten minutes.
+Verification: `n_dead_tup` falls and stays down, `Heap Fetches` in the affected plans returns to near zero, `pg_stat_progress_vacuum` is monitored rather than guessed during the cleanup, and `idle_in_transaction_session_timeout` is set per role so the class of cause cannot recur (the same loop, told as a transcript, is 02).
+
+---
+
+Task: Approve a refund through a hardened function, never through direct table writes.
+SQL:
+CREATE OR REPLACE FUNCTION app.approve_refund(p_tenant uuid, p_order uuid, p_amount bigint, p_key text)
+RETURNS app.refund_outcome
+LANGUAGE plpgsql STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $func$
+DECLARE
+  v_status text;
+  v_fraud boolean;
+  v_existing app.refund_outcome;
+BEGIN
+  IF p_key IS NULL OR btrim(p_key) = '' THEN
+    RAISE EXCEPTION 'idempotency key required' USING ERRCODE = '22000';
+  END IF;
+  SELECT NULLIF(o.status, NULL), o.fraud_flag INTO v_status, v_fraud
+  FROM app.orders o WHERE o.tenant_id = p_tenant AND o.id = p_order;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'order not owned by tenant' USING ERRCODE = '42501';
+  END IF;
+  IF v_fraud THEN
+    RAISE EXCEPTION 'fraud hold, manual review required' USING ERRCODE = 'P0001';
+  END IF;
+  IF v_status IS DISTINCT FROM 'paid' THEN
+    RAISE EXCEPTION 'only paid orders are refundable, got %', v_status USING ERRCODE = '22000';
+  END IF;
+  SELECT r.outcome INTO v_existing FROM app.refunds r
+  WHERE r.tenant_id = p_tenant AND r.idempotency_key = p_key;
+  IF FOUND THEN RETURN v_existing; END IF;
+  INSERT INTO app.refunds(tenant_id, order_id, amount_minor, idempotency_key, outcome)
+  VALUES (p_tenant, p_order, p_amount, p_key, 'needs_review')
+  ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
+  RETURNING outcome INTO v_existing;
+  RETURN v_existing;
+END;
+$func$;
+ALTER FUNCTION app.approve_refund(uuid, uuid, bigint, text) OWNER TO app_func_owner;
+REVOKE ALL ON FUNCTION app.approve_refund(uuid, uuid, bigint, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION app.approve_refund(uuid, uuid, bigint, text) TO app_role;
+Reading: SECURITY DEFINER plus a pinned search_path lets the function touch rows the caller cannot write directly, while the tenant predicate inside keeps every path scoped; the idempotency lookup before the insert plus ON CONFLICT makes retries return the first outcome instead of double-refunding. The first hypothesis was a direct UPDATE from the service; it was killed by a test where a swapped tenant id updated another tenant's row before RLS was enabled on the new table. A sanity check before believing: call with a foreign order id and assert 42501, then with a duplicate key and assert the same outcome returns without a second row.
+Pitfall: LEAKPROOF or VOLATILE mislabeled functions inlining tenant checks away; search_path left to the caller so a shadowed table hijacks the write; application-level check-then-insert racing under retry storms.
+Verification: cross-tenant call raises ERROR: order not owned by tenant (SQLSTATE 42501); double-submit returns one row; EXPLAIN shows index scans on (tenant_id, id) and (tenant_id, idempotency_key).
+
+---
+
+Task: Predict which plan each refund lookup takes before running EXPLAIN.
+SQL:
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, outcome FROM app.refunds WHERE tenant_id = $1 AND idempotency_key = $2;
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, outcome FROM app.refunds WHERE tenant_id = $1 AND created_at > $2 ORDER BY created_at, id LIMIT 25;
+Reading: the first query names two equality columns that match the unique index on (tenant_id, idempotency_key) exactly, so the predicted plan is an index scan returning one row with buffers hit near zero — selectivity comes from the key, not the table size. The second query predicts differently: equality on tenant_id plus a range on (created_at, id) resolves to one bounded range scan on the (tenant_id, created_at, id) index, with the id tiebreak keeping duplicate timestamps stable. The case that flips both predictions is the skewed tenant holding 90 percent of rows: the planner prices the range scan against the tenant's fraction, not the table's, and past the skew threshold the same SQL prefers a bitmap heap scan — same text, different plan, which is why the prediction names the tenant shape beside the SQL. A prepared statement adds one more branch: the generic plan chosen after five executions may keep the small-tenant plan for the large tenant, so predict-then-verify runs both parameter shapes through the prepared path, not just the ad-hoc one.
+Pitfall: adding a covering index that EXPLAIN never chooses because the query filters a created_at range while the index leads with tenant_id (the wasted afternoon in 02); or reading BUFFERS hit ratios without the tenant fraction, declaring the plan healthy on the small tenant while the large one bitmaps.
+Verification: pg_stat_statements shows per-shape mean times beside call counts; a test asserts the equality lookup yields an Index Scan node and the skewed-tenant range yields the predicted node type, and both shapes are exercised through the prepared-statement path the service actually uses.
+Index Scan using refunds_tenant_key on app.refunds (actual rows=1, Buffers: shared hit=4)
+Bitmap Heap Scan on app.refunds with Recheck Cond: (tenant_id = 'acme-large-1') and Rows Removed by Filter tracked per tenant fraction
+
+---
+
+Task: Carry the refund write path to MySQL and SQLite — name what breaks, not just what renames.
+SQL:
+-- Postgres 18 (this file's home, kept for contrast):
+-- RLS: CREATE POLICY tenant_isolation ON app.refunds USING (tenant_id = app.current_tenant_id());
+-- Upsert: INSERT INTO app.refunds ... ON CONFLICT (tenant_id, idempotency_key) DO NOTHING RETURNING outcome;
+-- Ids: gen_random_uuid() / timestamptz stored in UTC.
+-- MySQL shape (no CREATE POLICY, no RETURNING, no search_path):
+CREATE VIEW app.refunds_mine AS SELECT * FROM app.refunds WHERE tenant_id = CAST(@app_tenant AS CHAR(36));
+INSERT IGNORE INTO app.refunds(tenant_id, order_id, amount_minor, idempotency_key, outcome) VALUES (...);
+-- then SELECT ROW_COUNT() to distinguish inserted vs ignored, and SELECT outcome in a second statement.
+-- SQLite shape (ON CONFLICT and RETURNING both available, no policies, no in-DB functions):
+-- same ON CONFLICT (tenant_id, idempotency_key) DO NOTHING RETURNING outcome works; ids generated in the application as TEXT; timestamps stored as TEXT ISO-8601 in a fixed UTC format so comparisons stay lexicographic.
+Reading: the judgment call is per construct, and the question that had to be asked first is which constructs even exist elsewhere. Row-level policies exist nowhere else: both dialects move the tenant predicate into every query plus a scoped view, revoke direct table grants from the app role, and add the cross-tenant test that RLS used to make redundant — the enforcement moves from the database to code review, which is a downgrade stated plainly, not a translation. The upsert splits three ways: SQLite keeps the Postgres text nearly verbatim; MySQL needs two statements (INSERT IGNORE has no RETURNING, so the outcome requires a follow-up SELECT, and ROW_COUNT tells inserted from ignored). Identity and time follow the same pattern: gen_random_uuid becomes the application's UUID generator on SQLite and MySQL's UUID string (version-1 form, not v4 — never compare them as versions); timestamptz becomes an explicit UTC contract, with MySQL TIMESTAMP converting on session timezone (so pin the session timezone or prefer DATETIME with application-side UTC) and SQLite TEXT with one fixed format. SECURITY DEFINER plus search_path pinning has no counterpart: MySQL's DEFINER model differs (no search_path to pin, so qualify every table as schema.table) and SQLite has no in-database functions at all, so the approve function moves into the service beside the ownership check it used to share the database with.
+Pitfall: ON DUPLICATE KEY UPDATE treated as identical to ON CONFLICT DO NOTHING (different match semantics — unique-key match versus the named constraint — so the double-submit case is re-tested per dialect, never assumed); storing local datetimes as TEXT in mixed formats, which sorts wrong silently; comparing a v1 UUID string against a v4 one as versions.
+Verification: the double-submit test runs per dialect asserting one row and the same returned outcome; the cross-tenant test asserts denial through the view plus grants (not through a policy); the timestamp test round-trips a DST-boundary instant and asserts the same UTC value back on all three.

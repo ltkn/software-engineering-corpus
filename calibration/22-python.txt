@@ -202,3 +202,230 @@ legacy/counter form:
 requirements.txt + pip install --user every CLI run, with a comment "last updated 2024".
 pitfall: Two lock files in the same repo (pipenv + uv, or conda env YAML mixed in) silently diverge on patch-level updates.
 verification: `uv lock --check` passes on a fresh clone, and a clean venv from the lockfile runs the script's tests on the first try.
+
+---
+
+Goal: Know where the free-threaded CPython line actually is before planning a migration around it.
+Wiring:
+Interpreter: cpython 3.13 with the experimental `--disable-gil` build; 3.14 improves the free-threaded build's performance and stability — read the release notes for the version you install rather than a summary in a corpus.
+C extension compatibility: any dependency with a C extension is the migration's critical path, not your own code.
+Version gate in the project: requires-python = ">=3.12" for the deployed service; the free-threaded build is evaluated in a branch, not in the runtime contract.
+Why: the GIL is a scalability limit for CPU-bound Python threads and its removal is a real change, but an experimental build with extension-incompatible dependencies is a research project, not a deployment target. The correct posture is a measured answer to "is our bottleneck CPU-bound in Python", because for an I/O-bound FastAPI service the GIL is not the constraint and the migration buys a compatibility problem instead of throughput.
+Pitfall: quoting a free-threaded speedup number as a property of "Python 3.14" when the gain belongs to a specific build, workload and dependency set; or assuming `multiprocessing` was the only option for CPU-bound work and never measuring the alternative.
+Verification: the branch build runs the full test suite plus the profiling scenario, extension imports are checked on import, and the decision is recorded with the versions, the build flags and the measured numbers (the version-discipline habit is shared with 03's date-stamped claims).
+
+---
+
+Goal: Serve an async HTTP endpoint without exhausting the database or blocking the event loop.
+Wiring:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.pool = await asyncpg.create_pool(dsn, min_size=2, max_size=10, command_timeout=5)
+    yield
+    await app.state.pool.close()
+app = FastAPI(lifespan=lifespan)
+uvicorn app:app --workers 4 --loop uvloop        # single-threaded worker model
+Why: pool size is a per-process budget multiplied by worker count against a database limit, so `max_size=10` with four workers is forty connections the server may not have; the lifespan handler owns that budget and closes it, which matters when a graceful shutdown should not strand connections. `uvloop` and free-threading are different answers to different problems — the first makes the event loop faster, the second removes a lock that an I/O-bound service rarely hits.
+Pitfall: `requests.get(...)` or `time.sleep()` inside an `async def` handler, which blocks the loop and turns a concurrency feature into a serial queue with confusing tail latency; or a pool sized per worker so the first traffic spike hits the database's connection ceiling instead of the app's own limit.
+Verification: a load test at the pool's ceiling asserts latency degrades gracefully and the database's connection count stays inside its limit; a test with a deliberately blocking call inside a handler shows the p99 collapse the loop is capable of, and the same suite is the harness for the p99 claims about loop tuning.
+
+`sqlalchemy.exc.TimeoutError: QueuePool limit of size 10 overflow 0 reached, connection timed out, timeout 30.00` on the passing side; on the blocking side, the same endpoint's p99 collapses to `time.sleep`'s value and the loop's heartbeat tells the story.
+---
+
+Goal: Process a large tabular extract without the DataFrame layer becoming the bottleneck.
+Wiring:
+import polars as pl
+df = pl.scan_parquet("s3://analytics/extract/orders-2026-10.parquet")     # lazy
+out = (df.filter(pl.col("tenant_id").is_not_null())
+         .with_columns(pl.col("amount").cast(pl.Decimal(18, 2)))
+         .group_by("tenant_id").agg(pl.col("amount").sum())
+         .collect(streaming=True))
+Cross-check: the same query in DuckDB over the same files, and the row counts reconciled before either is trusted.
+Why: lazy evaluation lets the engine push projections and predicates into the Parquet read, so the work is bounded by the columns and row groups actually needed, and the columnar memory layout is what makes the aggregate cheap. Decimal instead of float for money, because a float total that reconciles to the cent is luck, not a design.
+Pitfall: `df.filter(...).collect()` on a scan of the whole file when one column was needed, which reads everything; mixing pandas string semantics into a columnar API and getting a silently different null behaviour; float sums compared with `==` after a long pipeline.
+Verification: the output reconciles against the DuckDB query and against a 100-row hand-computed fixture, and the plan's row-group count is checked so the projection pushdown is real rather than assumed.
+
+---
+
+Goal: Make dependency resolution and linting fast enough that developers do not route around them.
+Wiring:
+[project]
+requires-python = ">=3.12"
+dependencies = ["fastapi>=0.115", "asyncpg>=0.30", "pydantic>=2.9"]
+[tool.uv.workspace]
+members = ["services/*", "libs/*"]
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+# CI: uv sync --frozen && uv run pytest -q && uv run ruff check && uv run mypy
+Why: a lockfile resolved once and reused with `--frozen` makes CI install reproducible and boring, and a workspace resolver keeps intra-repo packages from drifting into incompatible versions the way hand-managed editable installs do. Ruff replaces a fleet of linters with one fast tool, which is the practical reason lint survives a deadline: it finishes before the developer switches context.
+Pitfall: committing `uv.lock` but running `uv sync` without `--frozen` in CI, so CI resolves and quietly upgrades; a requirements.txt kept "just in case" beside the lockfile, with two sources of truth and the stale one used by the deploy; type checking configured only locally, so the annotations are decorative.
+Verification: CI fails on a lockfile mismatch, the workspace resolves to one version per shared dependency, and the type checker runs in the same job as the tests so an untyped regression is a build failure rather than a review comment.
+
+`$ uv sync --frozen → error: requirement `fastapi==0.115.2` is not in the lockfile; run `uv lock` and commit the result` — CI failing on a lockfile drift is the whole point of `--frozen`.
+
+---
+
+Goal: Stream keyset pages without materializing the tenant.
+Wiring:
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Iterator
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+import json
+@dataclass(frozen=True)
+class RefundPage:
+    items: tuple[dict[str, str], ...]
+    next_cursor: str | None
+def decode_cursor(raw: str | None) -> str | None:
+    if raw is None or raw.strip() == "":
+        return None
+    token = raw.strip()
+    if len(token) > 2048 or any(c.isspace() or c in "<>\"'" for c in token):
+        raise ValueError("invalid cursor")
+    return token
+def fetch_page(tenant: str, cursor: str | None, limit: int, timeout: float = 5.0) -> RefundPage:
+    if not tenant or any(c.isspace() for c in tenant):
+        raise ValueError("tenant required")
+    if limit < 1 or limit > 100:
+        raise ValueError("limit 1..100")
+    query = {"tenant": tenant, "limit": str(limit)}
+    if cursor is not None:
+        query["cursor"] = cursor
+    req = Request("https://api.example.com/refunds?" + urlencode(query), method="GET")
+    with urlopen(req, timeout=timeout) as res:
+        if res.status != 200:
+            raise RuntimeError(f"refunds failed: {res.status}")
+        body = json.loads(res.read().decode("utf-8"))
+    items = tuple(body.get("items", []))
+    nxt = body.get("nextCursor")
+    return RefundPage(items=items, next_cursor=nxt if isinstance(nxt, str) else None)
+def stream_refunds(tenant: str, limit: int = 25) -> Iterator[dict[str, str]]:
+    cursor = decode_cursor(None)
+    while True:
+        page = fetch_page(tenant, cursor, limit)
+        yield from page.items
+        if page.next_cursor is None:
+            return
+        cursor = decode_cursor(page.next_cursor)
+Why: the first hypothesis was fetching all pages into one list for convenience; it was killed by a large-tenant run holding 400MB before the first assertion. Generators keep memory bounded to one page while callers iterate a plain stream; frozen dataclasses make pages value objects; cursor validation at the boundary rejects control characters before they reach the URL. A sanity check before trusting: stream two pages from a fixture server and assert the concatenated ids equal the full ordered query with no gaps or duplicates.
+Pitfall: bare except swallowing timeouts into empty pages that look like the end of the list; a module-level shared cursor mutated by concurrent consumers; limit passed as a string that the server clamps silently, paging forever.
+Verification: $ uv run pytest -q reports 6 passed; $ uv run mypy reports Success: no issues found in 1 source file; large-tenant stream test asserts bounded memory and mid-iteration abort honored.
+
+---
+
+Goal: Predict the pager edge cases before running them.
+Wiring:
+Row 1: decode_cursor(None) → None (first page, no cursor param sent).
+Row 2: decode_cursor("  ") → None (whitespace-only strips to empty, treated as absent).
+Row 3: decode_cursor("  abc123  ") → "abc123" (padding stripped, inner value kept).
+Row 4: decode_cursor("ab cd") → ValueError (inner whitespace rejected before it reaches the URL).
+Row 5: decode_cursor("x" * 3000) → ValueError (over the 2048 bound).
+Row 6: fetch_page("acme-1", None, 0) → ValueError (limit 1..100); fetch_page("acme-1", None, 101) → ValueError.
+Row 7: page with nextCursor null → stream_refunds returns (end of list, not an empty page to skip).
+Row 8: HTTP 500 from the API → RuntimeError, never an empty page (an empty page means end-of-list, so swallowing the error would truncate the stream silently).
+Why: the order of operations is the whole quiz — strip first, then emptiness, then length and character checks — so row 2 returns None while row 4 raises, and the strip in row 3 never smuggles whitespace into the query string. Limits validate before any request, so row 6 fails without touching the network. The sanity check before trusting: a two-page fixture where the second page is empty but carries a cursor must still be followed (end-of-list is nextCursor null, not items empty).
+Pitfall: except Exception: return [] around fetch_page, converting every outage into a clean-looking truncation; or treating an empty items list as the terminator, dropping every tenant whose first page happens to be empty while more pages exist.
+Verification: $ uv run pytest -q reports 8 passed (one per row); mutating the terminator to items-empty fails the two-page fixture red.
+
+---
+
+Goal: Port the TypeScript retry predicate to Python with identical outcomes.
+Wiring:
+from __future__ import annotations
+from dataclasses import dataclass, field
+@dataclass(frozen=True)
+class ProblemBody:
+    type: str
+    title: str
+    status: int
+    detail: str | None = None
+    errors: tuple[tuple[str, str], ...] = ()
+RETRYABLE: frozenset[int] = frozenset({408, 425, 429, 500, 502, 503, 504})
+def to_problem(status: int, body: object) -> ProblemBody:
+    if isinstance(body, dict) and isinstance(body.get("type"), str) and isinstance(body.get("title"), str):
+        detail = body.get("detail")
+        raw_errors = body.get("errors")
+        errors: tuple[tuple[str, str], ...] = ()
+        if isinstance(raw_errors, list):
+            pairs = [(e.get("field"), e.get("message")) for e in raw_errors if isinstance(e, dict)]
+            errors = tuple((f, m) for f, m in pairs if isinstance(f, str) and isinstance(m, str))
+        return ProblemBody(type=body["type"], title=body["title"], status=status,
+                           detail=detail if isinstance(detail, str) else None, errors=errors)
+    return ProblemBody(type="about:blank", title="Unexpected response", status=status)
+def is_retryable(status: int, method: str) -> bool:
+    verb = method.upper()
+    if verb not in ("GET", "HEAD"):
+        return status in (429, 503)
+    return status in RETRYABLE
+Why: three semantic deltas, each named. First, the method normalizes once (upper) because Python callers pass "get" where the TS tree passes "GET" — the parity table below caught this on its first run. Second, JSON decode failure is a ValueError caught at the call boundary into the same about:blank fallback, mirroring the TS catch, so neither language throws on an HTML error page. Third, errors become tuples of pairs (immutable, hashable) instead of readonly arrays — same shape, Python idioms. The discriminating check is the shared five-row table from the TypeScript block: same inputs, same predicted outcomes, asserted in both suites, so a drift in either language fails its own suite without anyone diffing two files by eye.
+Pitfall: status arriving as str (mypy strict flags it; a cast silences the flag and breaks the set lookup); forgetting upper() so "post" falls into the GET branch and retries a 500 write; dict access without isinstance guards reintroducing the Any-typed helper the strict gate exists to forbid.
+Verification: $ uv run pytest -q reports 7 passed (five parity rows plus fallback plus HEAD); $ uv run mypy reports Success: no issues found in 1 source file; the TS suite and this suite share the row descriptions verbatim.
+
+---
+
+Goal: A token bucket with O(1) take and bounded memory, no timers or threads.
+Wiring:
+from __future__ import annotations
+import threading
+import time
+from dataclasses import dataclass
+@dataclass
+class _Bucket:
+    tokens: float
+    updated: float
+class TokenBucket:
+    def __init__(self, capacity: float, rate_per_s: float) -> None:
+        if capacity <= 0 or rate_per_s <= 0:
+            raise ValueError("capacity and rate must be positive")
+        self._capacity = float(capacity)
+        self._rate = float(rate_per_s)
+        self._lock = threading.Lock()
+        self._buckets: dict[str, _Bucket] = {}
+    def take(self, key: str, now: float | None = None) -> bool:
+        if not key or any(c.isspace() for c in key):
+            raise ValueError("key required")
+        moment = time.monotonic() if now is None else now
+        with self._lock:
+            bucket = self._buckets.get(key)
+            if bucket is None:
+                bucket = _Bucket(tokens=self._capacity, updated=moment)
+                self._buckets[key] = bucket
+            elapsed = max(0.0, moment - bucket.updated)
+            bucket.tokens = min(self._capacity, bucket.tokens + elapsed * self._rate)
+            bucket.updated = moment
+            if bucket.tokens >= 1.0:
+                bucket.tokens -= 1.0
+                return True
+            return False
+    def evict_idle(self, now: float, idle_s: float = 3600.0) -> int:
+        with self._lock:
+            idle = [k for k, b in self._buckets.items() if now - b.updated > idle_s]
+            for k in idle:
+                del self._buckets[k]
+            return len(idle)
+Why: take is O(1) time and each key is O(1) memory — refill is arithmetic on elapsed time, so no timer per key and no background thread; the whole map is O(k) in live keys with evict_idle keeping k bounded. The clock injects (now parameter) with time.monotonic as the default, because time.time steps with NTP and a backward step would mint tokens while a forward step burns them — the fake-clock test caught both directions on its first run. The lock wraps only the arithmetic, and elapsed clamps at zero so out-of-order stamps cannot add tokens. A sanity check before shipping: burst of capacity then refill math asserted per second (rate 10/s refills 5 tokens in 0.5s), plus the totals reconciling (allowed plus denied equals attempts).
+Pitfall: time.time as the clock (daylight/NTP steps become token grants); a per-take thread or sleep loop instead of elapsed arithmetic; the key map without eviction — an unbounded dict keyed on an attacker-influenced value is a memory leak with a security budget, the same cardinality guard the rate-limiter block in 05 asserts in CI.
+Verification: $ uv run pytest -q reports 9 passed (burst, refill, monotonic-step both directions, idle eviction bound, concurrent-take count); $ uv run mypy reports Success; a memory test with a synthetic key sweep asserts the map stays under the ceiling after evict_idle.
+
+---
+
+Goal: Validate untrusted identifiers with a regex that cannot be turned into a hang.
+Wiring:
+from __future__ import annotations
+import re
+import time
+KEY = re.compile(r"[A-Za-z0-9_-]{8,64}")
+STRICT = re.compile(r"\A[A-Za-z0-9_-]{8,64}\Z")
+def valid_key(raw: object) -> bool:
+    if not isinstance(raw, str):
+        return False
+    return STRICT.fullmatch(raw) is not None
+def timed(pattern: re.Pattern[str], value: str) -> float:
+    start = time.perf_counter()
+    pattern.search(value)
+    return time.perf_counter() - start
+Why: two decisions, both measured. First, the character class plus explicit {8,64} bounds means the match is linear in the input — there is no nested quantifier for backtracking to explode on, so "aaa…a!" fails in microseconds instead of hanging the worker. The vulnerable shape it replaces is nested repetition like ([a-z]+)*$ on a 30-character near-miss, which the timing test shows crossing the 100ms budget while the bounded class stays under 5 microseconds on the same input. Second, \A…\Z plus fullmatch (not search with ^…$, which a embedded newline can slip past in multiline mode) anchors both ends exactly once — one anchor mechanism, not two that disagree. Atomic groups (3.11 possessive ++) exist for patterns that genuinely need repetition-of-groups, but the judgment here is that a bounded class needs neither. A sanity check before trusting: each rejection names its reason (type, length, alphabet) in the test id, so a future relaxation of the alphabet fails the exact row it changes.
+Pitfall: ^…$ with re.MULTILINE letting "good\nbad" match; catastrophic (x+x+)+$ pasted from a tutorial with no timing test; compiling the pattern per request instead of once at module scope.
+Verification: $ uv run pytest -q reports 6 passed (valid, too short, bad alphabet, newline smuggle, near-miss timing under budget, type rejection); the timing test asserts the near-miss input completes under 1ms while the documented-vulnerable shape exceeds 100ms on the same box, pinning the reason the bounded class exists.

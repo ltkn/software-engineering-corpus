@@ -272,3 +272,90 @@ Minimal example: the agent's PR includes four new tests; each must fail against 
 Why this technique: agent-written tests can be tautological; a red-green proof on the parent commit catches assertions that cannot fail.
 Anti-pattern: merging agent tests that pass on the broken code because the assertion restates the bug.
 Verification: CI runs the new tests against the parent commit as a gate; a golden-task replay ports the check to the agent harness.
+
+---
+
+What to test: whether a generated suite can actually fail, before trusting it as evidence that a change is safe.
+Example: run a mutation tool over the authorization package only — negate the ownership predicate, flip the comparison on the coupon cap, change the rounding direction — and require every mutant to be killed by the suite that was just written.
+Why this technique: an agent-produced suite is good at asserting what the code does and weak at asserting what the code must not do, so coverage looks excellent while the assertions are tautologies ("assert the method was called", "assert the mapper returned non-null"). Mutation score is the metric that notices, because it changes the behaviour and asks whether anything cares.
+Anti-pattern: a repo-wide mutation run in the pipeline, which takes hours and gets disabled; or reporting mutation score as a target number, which is immediately gamed by assertions that kill mutants and test nothing.
+Verification: mutation score is reported per package in a nightly job with a floor for security-relevant packages only, and the surviving mutants are triaged as test gaps or as equivalent code, in writing, not in someone's head.
+
+`mutation score: 0.71 (43/61 killed) — survivors: OrderService.java:88 (return true), CouponPolicy.java:141 (> instead of >=)` — the survivors are the ticket list, and the second one is why the cap test is worth writing first.
+---
+
+What to test: the invariants that hold for every input, on the seam where the whole data path meets.
+Example: for any tenant, any filter, any page size, concatenating pages from the keyset endpoint equals one full ordered query — same rows, same order, no duplicates, no gaps; and for any (principal, resource) pair, allow(principal, resource) equals deny's complement with no third value.
+Why this technique: a property test finds the page boundary where two rows share a `created_at`, because it looks for the tie that breaks the ordering, and that tie is exactly the case a hand-written test does not think to write. The invariant form also states the requirement in one sentence, which is why these tests survive refactors that unit tests do not.
+Anti-pattern: generating random data with no shrinking configured, so a failure prints a 400-row fixture nobody can read; or property-testing business rules that the test reimplements, which compares the code against itself.
+Verification: the property runs against a real container database with a seeded corpus plus generated data, with the seed recorded so a failure reproduces, and shrinking enabled so the counterexample is the two rows that share a timestamp.
+
+---
+
+What to test: the determinism of the suite before quarantining anything that fails.
+Example: a test that fails one run in forty. Bisect by removing sources of nondeterminism one at a time in this order — wall-clock now, then random seeds, then port and container reuse, then parallel execution, then test order — and only then look at the code under test.
+Why this discipline: flake is nearly always an unowned shared resource: a fixed port, a shared seed, a container reused across classes, an assertion on `now()`, or a fixture seeded by a sibling test. Attacking the code first produces a plausible fix and a flake that returns in a month, which is how a suite loses its credibility by degrees.
+Anti-pattern: `@Retry` on the flaky test — it converts a signal into a coin flip with extra steps — and quarantine without an expiry, which is where flakes go to be permanently invisible.
+Verification: quarantine entries carry an owner, an expiry of two sprints and the reproduction command; a CI check fails when an expired quarantine is still in the file, and the re-run-to-confirm count is reported per test so "fixed" means fifty green consecutive runs, not one.
+
+`Quarantine: PaymentRetryTest — owner payments-team, expires 2026-11-03, repro: ./gradlew test --tests PaymentRetryTest --tests PaymentRetryTest --tests PaymentRetryTest --repeat 20 --seed 4417` — a quarantine without a repro command is a way of not looking at the test.
+---
+
+What to test: whether the system meets its SLOs under a load shape that resembles a real day, with the pass bar written before the run.
+Example: a mixed scenario — 70% list, 20% detail, 8% checkout — ramped to 1.5× the last peak, held for twenty minutes, with p99 per endpoint against the SLO, error rate against the budget, and saturation signals on the connection pool and the topic lag.
+Why this technique: an SLO-shaped pass bar makes the result a decision instead of a graph. Load tests written as "how many requests can it take" always answer with a number nobody budgeted for, and the number moves with the dataset anyway.
+Anti-pattern: a constant-arrival loader that hides bursts, a test dataset of 100 rows on a table of 200 million, and a pass bar invented after the run because the graph looked nice.
+Verification: the pass bar lives in the scenario file, the run fails on any breached SLO or saturation budget, the dataset is production-shaped, and the run is scheduled against a staging environment whose configuration is verified against production rather than assumed.
+
+---
+
+What to test: that the recovery path works when the process dies at the worst moment, not when a dependency returns an error.
+Example: `kill -9` the relay process while it holds a batch read from the outbox but has not yet committed the published marker — twenty times, then reconcile: every domain event delivered at least once, every duplicate idempotent at the sink, and no outbox row lost or stuck.
+Why this technique: an exception path lets the code clean up; a kill does not, so the only question that matters is what the persisted state says on restart. This is the cheapest rehearsal of the incident that would otherwise be a surprise at 3 a.m., and it is the only test that proves at-least-once plus idempotent sink actually equals effective once.
+Anti-pattern: killing the process between two operations that were never in a transaction, then declaring the pattern proven; or running the drill once and never again, so a later refactor of the commit order quietly invalidates it.
+Verification: counts reconciled automatically from source rows to sink rows, the drill is a scheduled job with the numbers recorded, and the same drill at the queue level is repeated for the Kafka path (relay mechanics in 13, the pattern's rationale in 19).
+
+---
+
+What to test: that the calculation engine stays framework-free, by build rather than by review.
+Example: noClasses().that().resideInAPackage("..engine..").should().dependOnClassesThat().resideInAnyPackage("org.springframework..", "jakarta..", "com.fasterxml.jackson..", "..api..", "..parsers..", "..export..", "..config..", "..fx..");
+Why this technique: the rules lift into a host service only if they depend on nothing the host owns, so the boundary is a compile-time invariant rather than a comment. The test imports the production packages once and checks three rules: no Spring or Jakarta, no Jackson, no web, parser, export, config, or FX packages.
+Anti-pattern: a @Service annotation slipping into the matching rules for one helper method, passing review because it still works; or a Jackson annotation on a domain event for one export that couples every calculator to the wire format.
+Verification: the ArchitectureTest runs in the standard suite and fails on a deliberate Spring import in engine plus on a Jackson annotation in domain; the failure names the offending class and package.
+
+---
+
+What to test: calculator behaviour from fixtures, not from mocks of itself.
+Example: given buys 100 at 200.00 and 100 at 220.00 then a sale of 100 at 250.00, the Section104Test asserts pool average 210.00 and gain 4000.00; the option-exercise pipeline test asserts exercise rolls cost into the underlying lot rather than realizing a standalone gain; the TaxCalculationServiceTest asserts single-pool aggregation across assets with virtual-thread-safe stateless orchestration.
+Why this technique: the numbers are the contract with the tax authority, so the test pins worked figures the recompute gate can rerun instead of asserting call counts. Fixtures use real-shape broker rows plus dated FX rows, so a parser change that drops a fee breaks the gain rather than passing in isolation.
+Anti-pattern: mocking the pool to return the average the test then asserts, which proves the wiring but not the arithmetic; or one golden-file test for the whole year that cannot name which rule broke.
+Verification: each calculator has its own test class with per-rule fixtures, a red-green check that the test fails when the rule is removed, and streaming-parser tests over sample XML and JSON asserting the same domain events the calculators consume.
+
+---
+
+What to test: ownership as a readable matrix, with the test body showing the whole assertion.
+Example:
+import java.util.UUID;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import static org.assertj.core.api.Assertions.assertThat;
+class RefundOwnershipTest {
+    private final RefundService service = new RefundService(new FakeRefunds(), new FakeOrders());
+    @ParameterizedTest(name = "{0} {1} -> {2}")
+    @CsvSource({
+        "owner,        paid,    200",
+        "stranger,     paid,    403",
+        "anonymous,    paid,    401",
+        "owner,        draft,   409",
+        "owner,        paid_fraud, 403"
+    })
+    void decides(String principal, String orderState, int expectedStatus) {
+        UUID tenant = UUID.fromString("0194f3c2-7a1e-7a1e-7a1e-7a1e7a1e7a1e");
+        UUID order = UUID.fromString("0194f3c2-7a1e-7a1e-7a1e-7a1e7a1e7a1f");
+        int actual = service.httpStatus(principal, tenant, order, orderState);
+        assertThat(actual).as("%s on %s", principal, orderState).isEqualTo(expectedStatus);
+    }
+}
+Why this level: the matrix turns the authorization policy into an executable specification — five principals times five states in one method, each cell naming the exact status. A reviewer extends the matrix instead of debating prose; a new route copies the matrix shape or the review fails. The test reads as arrange (fixed tenant and order ids), act (one httpStatus call), assert (named status) with no mocks of the policy itself.
+Anti-pattern: one happy-path test ("owner can read own profile") leaving stranger, cross-tenant, and anonymous paths untested; or mocking the service to return the status the test then asserts, which proves the wiring but not the rule.
+Verification: the suite runs in milliseconds with no Spring context; removing the ownership check fails red with expected: <403> but was: <200> on the stranger row, then green after the fix; uncovered-matrix lint fails the build when a new action lacks its row.

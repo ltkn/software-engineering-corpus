@@ -62,6 +62,7 @@ Investigation: Read controller (serializes lines), repository (findByTenantId, n
 Plan: 1. Add fetch-join repository method. 2. Swap the call site. 3. Assert query count in test.
 Decisions: Fetch join over EntityGraph because the query is hand-written JPQL already; pagination stays keyset on the order table, lines joined only for the page's ids to avoid cartesian multiplication.
 Verification: Query count 51 to 2; Hibernate statistics assertion added to the integration test so regressions fail loudly.
+The output that closes the task: `OrderQueryTest > fetches one page in bounded queries FAILED: expected 2 queries, got 43 (order_lines: 40)` — the count is in the assertion, so the regression cannot come back silently.
 Outcome: p95 1.8s to 210ms; contract byte-identical.
 
 ---
@@ -408,3 +409,124 @@ Plan: 1. Mark the vacuous test. 2. Strengthen its assertion. 3. Re-verify the re
 Decisions: The passing-on-broken-code test cannot merge; the fix replaces its assertion with the real invariant, then the red-green pair (fail on parent, pass on branch) is recorded in the PR. Mutation-score spot check replaces blanket mutation runs for speed.
 Verification: All four fail on the parent commit and pass on the branch; PR checklist requires the red-green note.
 Outcome: The suite now has teeth; the vacuous test is gone.
+
+---
+
+Goal: Continue yesterday's work on the invoice reissue flow in a fresh session without re-deriving the design.
+Context: Multi-session change, three of five commits pushed, no description beyond the branch name.
+Investigation: Read the branch's commits and the open diff first, then the scratch note in the change folder, then the failing test list. Diff is the source of truth; the note is a map, not the territory.
+Plan: 1. Re-run the failing tests to confirm the note's claims are still true. 2. Finish the webhook-driven transition. 3. Add the reversibility check on the migration. 4. Write the PR body with the rollback first.
+Decisions: The note says the state machine was left mid-edit and that `REISSUE_PENDING` has no exit transition yet; confirmed against the code, so the note is trustworthy and I did not spend the session re-reading the whole module. Deliberately not doing: the payment-client refactor the note mentions, because it is unrelated to this change set and would hide the interesting diff.
+Verification: Same three tests as yesterday, same failures, then green after step 2; migration replayed against a snapshot in the local container and reversed cleanly.
+Outcome: Handoff note rewritten before ending the session — decisions, current state of the change set, next step, open questions — no raw logs and no secrets in it, since durable conventions belong in the repo's instruction file rather than in the note.
+
+---
+
+Goal: Two agents working the same repository in parallel: one on the Kafka relay, one on the schema change.
+Context: Single checkout, shared build directory, both tasks touching generated sources.
+Investigation: `git status` shows both agents' edits interleaved in one working tree, and the second agent's test run consumed the first agent's half-written migration.
+Plan: 1. Stop and unstage nothing in the shared tree. 2. Give each task its own worktree from the same base commit. 3. Re-run each task's checks in its own tree. 4. Rebase the schema change first, because the relay depends on the new subject naming.
+Decisions: A merge conflict between the two agent branches is treated as a decision point, not as a chore: the shared generated file means the two tasks were not independent in the first place, and that fact is worth surfacing rather than silently resolving. Never share a mutable working tree between agents — the alternative cost was a wasted hour and a wrong test result.
+Verification: Both worktrees green independently; the combined tree green after the ordered rebase; the conflict resolution recorded in the PR description with the reason for the ordering.
+Outcome: Slower start, and the first honest signal about task independence the team has had.
+
+---
+
+Goal: Add a regression test for the ownership fix an agent just wrote.
+Context: The fix changes one predicate in the authorization bean; the agent also produced a test that asserts the new behaviour.
+Investigation: Read the test before running it. It calls the endpoint as the owner and asserts 200 — which passed before the fix as well, so it would have stayed green against the broken code.
+Plan: 1. Check the test out against the pre-fix commit and confirm it passes there, proving it is not a regression test. 2. Add the missing case: same tenant, different owner, expects 403. 3. Re-run against pre-fix (red) and post-fix (green). 4. Keep the owner positive case as the companion assertion.
+Decisions: A generated test earns its place by failing before the fix, so red-green is proven and not assumed; the alternative — trusting a green test on a bug that was just fixed — is how tautological assertions reach the suite.
+Verification: `git stash` of the fix turns the new assertion red with a readable failure; unstash turns it green; mutation check by hand (invert the ownership predicate) also kills the test.
+Outcome: Two assertions in one test method pair, plus the discipline recorded in the repo's test conventions so the next agent meets it in writing.
+
+---
+
+Goal: Ship a contract change that the frontend consumes, without the frontend landing blind.
+Context: `GET /orders/{id}` gains `fulfilment` and renames `shipment_eta` to `delivery.eta`. Vue client with TanStack Query v5 reads both fields.
+Investigation: OpenAPI diff generated from the branch; grep of the frontend for both field names; one consumer outside the frontend (the reporting export) found by searching the org-wide codehost, which the repo-local grep missed.
+Plan: 1. Land the additive half first (new nested object, populated). 2. Post the contract diff and wait for the frontend slice before removing anything. 3. Remove the old field in a follow-up with a sunset header. 4. Update the reporting export in the same PR as its own change, not hidden inside the backend PR.
+Decisions: The contract-diff gate runs before the frontend slice rather than after the backend merge, because a removal discovered post-merge becomes an outage review instead of a diff comment. Declining to fold the reporting export into this change set: different owner, different review, and it would have made the rollback coarser.
+Verification: Contract test asserts both old and new fields present during the window; response-shape test in the frontend fails when the field is removed early, which is the intended signal.
+Outcome: Two-step landing, no flag, rollback is a single revert per step.
+
+---
+
+Goal: Estimate the work to move the audit log onto append-only storage.
+Context: Product asked "how long until this is done"; the storage engine, the retention policy and the erasure obligation are all unresolved.
+Investigation: Read the current schema and the deletion path; found that two features read the audit table expecting mutable rows and one support screen edits notes in place.
+Plan: 1. Answer with the shape of the work and the two unknowns that gate it, not a date. 2. Propose a spike to settle the append-only engine choice, timeboxed. 3. Name what would change the estimate: whether in-place edits are a feature or a bug.
+Decisions: Declining to estimate here is the correct output; the honest version is "a date needs the engine decision and a ruling on the edit screens, and I can have the spike findings by Thursday". A number produced now would be a guess wearing a spreadsheet, and it would be held to.
+Verification: Spike produces a comparison of append-only options with the write-amplification numbers, plus a list of the two call sites that assume mutability.
+Outcome: No estimate shipped, two questions opened, and the schedule question defused until the answers exist.
+
+---
+
+Goal: Ship the export feature when three things are unknown: whether exports are per-tenant or per-user, whether a handle may be re-read, and who owns the CSV retention clock.
+Context: A two-week slice, an unfinished spec, a backend engineer and one reviewer. The obvious first move is to start with the table, because the table is the part everyone knows how to argue about.
+Investigation: The unknowns were named before design, and ranked by what they'd invalidate: the per-user question changes the aggregate's identity, so it is the expensive one; the re-read question changes the storage shape; the retention question changes a job configuration. The cheap move was to ask the expensive question first — one message with three numbered questions — and the tempting move was to model the table and discover the answers later. The answer to the first question removed a whole branch of work: exports are per-user, and there is already a user-scoped queue that nobody remembered, so the new table would have been a second home for the same data.
+Decisions: Reuse the queue, add a handle table with ownership and a single-read default, write the retention owner into the migration's comment because that is where the next person will look, and leave the CSV retention clock as an open question with a named owner rather than a guessed 30 days.
+Outcome: One day of design, then implementation without a redesign; the two questions that stayed open were shipped as flags with owners rather than resolved by assumption.
+Verification: The handle's ownership test, the single-read test, and a documentation test that fails when a retention-bearing column exists without a named owner.
+
+---
+
+Goal: Make `CartTotalsTest` stop failing weekly.
+Context: Failing for six weeks, one line of assertion, no owner, three theories in the ticket thread. Forty available minutes.
+Investigation: The first twenty minutes were spent reasoning well and getting nowhere: the coupon rounding path was inspected, the currency conversion was defended, a plausible story about half-cent ties was built and re-checked against the code and held up. Then the numbers in the failure were looked at instead of the code: they differed by exactly one unit in the last place on a currency with two decimal digits, and the failing runs were all one shard. The reasoning had been sound and irrelevant, because the question was not "what code could produce this" but "which of these two runs differs", and the cheapest distinguishing action — print the two inputs — had not been taken once in twenty minutes. Worse, `--shuffle` and the seed had been available the whole time and would have localised it to a fixture ordering in ninety seconds.
+Decisions: Fixed by making the expected value a literal and giving the fixture a generated id; the retry that someone added during the six weeks was deleted, because a retry on a deterministic ordering bug converts a signal into a coin flip.
+Outcome: A 90-second fix found after 20 minutes of excellent, misplaced reasoning.
+Verification: 50 shuffled runs green with the seed printed, the retry deleted in the same commit, and a note in the ticket naming the diagnostic that would have found it first — the test suite says which question it is answering, and the reasoning has to be aimed at that question.
+
+---
+
+Goal: Unblock a migration that is holding the deploy pipeline at 03:40, during a change freeze where restarts are allowed and DDL is not.
+Context: `ALTER TABLE` waiting on a lock, the pipeline blocked, the on-call paging the owning team, one engineer awake and able to act.
+Investigation: The guess came first and cost twenty minutes: "it's the nightly batch, kill it". Killing the batch would have been a destructive act on someone else's job, taken on the basis of a plausible story. The single query that answers the question — `select pid, state, wait_event_type, wait_event, query from pg_stat_activity where wait_event_type = 'Lock'` — takes four seconds and says who holds the lock, in what state, and since when. It named an idle-in-transaction session from a report notebook, not the batch, and the correct act was `pg_terminate_backend` on one pid, which is reversible in consequence and narrow in scope. The reasoning error was not a failure of knowledge but of order: an expensive, risky action was proposed before a free, safe, decisive observation was made.
+Decisions: Terminate the idle session, add `idle_in_transaction_session_timeout` to the analytics role so the class cannot recur, and note in the runbook that the lock-holder query comes before the lock-killer decision, in that order, always.
+Outcome: Pipeline unblocked in four minutes once the observation was made; nothing destroyed.
+Verification: A staging drill that reproduces the wait and asserts the runbook's first action is the query, plus a test asserting the role-level timeout is present in the provisioning config.
+
+---
+
+Goal: Add rate limiting to `POST /login` with a tenant-aware key, without locking legitimate users out of their own office.
+Context: A Spring Boot 4.1 service behind a Gateway, 30 tenants, one of which is a 400-person office behind one NAT address. Session budget: a day.
+Investigation: (1) Read the requirement again: "rate limit login" is ambiguous between brute-force defence and capacity defence, and those have different keys — the first is per account plus per source, the second is per principal, and the office scenario is exactly where they conflict. (2) Asked, got answered: brute force is the threat, so the key is (account, source prefix) with a soft per-source cap. (3) Wrote the failing tests first: a 41st attempt returns 429 with `Retry-After`, and 400 users from one address across different accounts are not throttled as one. Both red. (4) Dead end one: reached for a bucket keyed on `X-Forwarded-For` alone, which is client-supplied and therefore free to spoof; killed by a probe that rotated the header and got a fresh bucket every time. (5) Dead end two: switched the key to the authenticated principal, which is useless on a login endpoint because the principal does not exist yet — a mistake that only looks silly in hindsight, since the endpoint's whole job is to create that identity. (6) The real fix used the connection address from the proxy protocol plus a normalised prefix (`/56` for v6), a bucket per account, a shared bucket per prefix with a higher cap, and a counter that increments on *attempt* not on failure, so a spray of wrong passwords is what costs. (7) The second-order question, asked before merging: what happens on the 401-vs-423 question — is a locked account a 403 or a 429 — because the answer changes what a client does next and what an attacker learns. Decided 429 with a `Retry-After` and no distinction between "wrong password" and "locked", so the endpoint stops being an oracle. (8) Then, and only then, the tuning: rates chosen from the observed attempt distribution rather than a round number, with the p99.9 attempt count per account recorded as the reason in the config. (9) Wrote the load check: a spray of 500 attempts across 200 accounts from one address leaves every legitimate account able to log in. (10) Red, then green. (11) Added the metric with the key's cardinality asserted, because a rate limiter keyed on an unbounded value is a memory leak with a security budget. (12) Stopped: the remaining unknown — what to do with accounts that legitimately share an address, like a family and a small office — was handed to product as a question with a default (soft cap plus alert) rather than invented at midnight.
+Decisions: Key on (account, normalised source); attempt-counted; 429 with `Retry-After` and no oracle; cardinality guard in CI; the ambiguity about shared addresses escalated with a default instead of resolved by guess.
+Outcome: Brute-force spray costs the attacker a per-account wall; the 400-person office logs in at 09:00 without a ticket; the limiter's own cost is bounded and observable.
+Verification: Red-first tests for the 41st attempt and the office scenario, the spoofed-header probe as a permanent test, a cardinality ceiling assertion after a synthetic sweep, and a dashboard with 429 rate per account so a too-tight cap is a page rather than a support queue.
+
+---
+
+Goal: Decide whether to add an index to the reporting query that "everyone complains about".
+Context: Two hours, staging access, a production read replica, a strong opinion from the person experiencing the slowness.
+Investigation: The plan was fast to produce and the index was fast to write, and both were wrong together: the report the team was complaining about is called from a code path that staging exercises and production does not, because production serves that screen from a cached projection built by a nightly job. Evidence that ended the work: `pg_stat_statements` on the primary showed the query's call count over thirty days as a rounding error, while the projection's rebuild was the real cost, and nobody had looked at the call count because the complaint was about latency, not volume. The reasoning error was answering the question as asked — "how do I make this query fast" — instead of the question that mattered, which was "is this the query that is slow for the people who are slow". The trap is that the wrong work looks diligent: an index is measurable, reviewable, and defensible, and it can be entirely about a query nobody runs.
+Decisions: Drop the candidate index, add a coverage note to the projection job's runbook, and add call count beside mean time in the top-queries report, so the next optimization starts from "how often" beside "how slow".
+Outcome: No index shipped; the actual slow thing (the rebuild) got an owner and a window.
+Verification: The top-queries report includes call count and total time, not mean time alone; a test asserts the candidate index is not present, with a comment naming this investigation, so nobody re-adds it in a month.
+
+---
+
+Goal: Backport the refund-ownership hotfix to the release branch without carrying the migration.
+Context: Main carries fix plus regression test plus a Flyway migration in one commit; the release branch already has the migration under a different version number. CI required, rollout window tonight.
+Investigation: git log --oneline -3 shows the hotfix commit touching RefundService.java, RefundOwnershipTest.java, and V221__refunds.sql; git show --stat confirms the migration is the third file; git status on the release worktree is clean.
+Plan: 1. Cherry-pick with -x for traceability. 2. Exclude the migration file from the pick. 3. Resolve the DTO conflict explicitly. 4. Run the targeted tests plus the rollback drill. 5. Open the backport PR with what/why/tested and the rollback first.
+Decisions: The conflict below is a decision, not a chore: main renamed the DTO field to outcome while release still reads status, so silently taking either side breaks one branch's readers. Adapt the fix to the release DTO (status) and note the divergence in the PR rather than renaming the release field under a hotfix. Rollback is reverting the single backport commit, stated first on the PR because auth changes roll back before they roll forward. A merge conflict between the branches is recorded with the reason for the ordering, never silently resolved.
+Verification: git cherry-pick -x output plus conflict markers reviewed line by line; git diff --check clean; RefundOwnershipTest green on the release branch (5 tests); the migration-exclusion asserted by the release Flyway validate passing with no duplicate version.
+Outcome: Single-commit backport PR with the -x reference line; release deploys in the window; main/release DTO divergence tracked as follow-up work, not hidden in the hotfix.
+$ git cherry-pick -x 9f3c1a2
+Auto-merging src/main/java/com/acme/orders/RefundService.java
+CONFLICT (content): Merge conflict in src/main/java/com/acme/orders/RefundService.java
+$ git status --short
+UU src/main/java/com/acme/orders/RefundService.java
+A  src/test/java/com/acme/orders/RefundOwnershipTest.java
+
+---
+
+Goal: Unblock the frontend slice after the contract-diff gate rejects a required cursor.
+Context: Vertical slice in flight (migration plus backend plus contract done, frontend plus tests next); the gate runs before the frontend slice. Backend added cursor as required; the TanStack hook still sends offset params and the generated test stayed green.
+Investigation: The gate diff names the break: required: [cursor] added to GET /refunds while useRefundPages builds offset URLs, so every old client becomes a 400. The generated test stayed green because it asserts only the new cursor path and never replays a v1 request — read the test before running it, confirmed it passes against both shapes, so it proves nothing about compatibility. Contract tests per version exist for v1; none ran in this branch.
+Plan: 1. Stop the frontend slice. 2. Amend the backend: cursor optional with server default, additive-first. 3. Prove the generated test fails pre-fix (replay a v1 request, assert 400). 4. Update the hook and query key. 5. Re-run the gate plus both version suites.
+Decisions: Fix-forward on the backend, not the frontend: the contract break is the bug, forcing every client to change is scope growth wearing a migration costume. Compatibility check first — additive fields without versions, media-type version only for breaking shapes, sunset header with a date if v1 ever goes away. The conflict between "move fast" and "don't break clients" is resolved by the gate, not by whoever shouts first, and the generated test earns its place by failing before the fix.
+Verification: Contract-diff gate green; v1 replay test red before the amendment (400) and green after (200 with default paging); v1 and v2 suites green; git diff --stat shows the backend amendment plus the hook plus both tests, no unrelated files.
+Outcome: Cursor optional, frontend slice unblocked, the tautological test replaced by a version-pair that actually guards the contract.

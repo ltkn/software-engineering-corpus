@@ -319,6 +319,9 @@ Modern form: prefer ReentrantLock over synchronized on virtual-thread hot paths;
 Why: a pinned virtual thread occupies its carrier exclusively, collapsing the many-to-few ratio back toward one-to-one.
 Counter-pattern: synchronized LRU cache on every request of a virtual-thread service (from 02's canonical incident).
 Check: JFR virtual-thread-pinned events at zero in load tests; pinning alert in production telemetry.
+`jfr print --events jdk.VirtualThreadPinned app.jfr` is the honest form of the claim:
+`jdk.VirtualThreadPinned  duration=1.92s  eventThread="virtual-41"  stack="com.example.orders.RiskCache.lookup(RiskCache.java:64)"`
+One event with a `synchronized` frame in it explains a p99 that no pool or queue metric shows; `jdk.tracePinnedThreads=full` names the same monitor in the log when JFR is not attached.
 
 ---
 
@@ -343,6 +346,7 @@ try (var scope = StructuredTaskScope.open()) {
 Why: sibling tasks share one lifetime and one failure policy; join-or-throw replaces manual latch plus error aggregation.
 Counter-pattern: raw exeuctor plus CountDownLatch with hand-rolled exception collection that drops half the failures.
 Check: child-failure test asserts the scope throws with all failures visible; preview-flag documented in the build file.
+The build must also carry the two notes the compiler emits — `Note: Some input files use preview features of Java SE 25.` and `Note: Recompile with -Xlint:preview for details.` — because a preview API in a build log that shows no preview flag means someone compiled it somewhere it will not survive.
 
 ---
 
@@ -389,6 +393,7 @@ Check: GC logs plus pause histograms decide; switch only on measured pause viola
 Concept: JFR plus async-profiler as the diagnostic pair. Tooling practice.
 Modern form: continuous JFR (allocation, lock, I/O events) in production at low overhead; async-profiler wall/cpu/flame sampling for deep dives.
 Why: JFR sees JVM internals (TLAB, safepoints, pinned threads); profilers see where wall time goes; together they separate "slow code" from "waiting code".
+`jcmd 1 JFR.start name=wall settings=profile duration=60s` then `jfr print --events jdk.GCPause,jdk.JavaMonitorEnter,jdk.VirtualThreadPinned wall.jfr` — the three event types that separate "the JVM stopped the world" from "my lock is contended" from "a virtual thread pinned a carrier", which is a distinction a flame graph alone will not make for you.
 Counter-pattern: heap-dump-first debugging for a latency problem, answering a memory question nobody asked.
 Check: incident runbook names both tools with the exact event sets; overhead budget asserted under 2%.
 
@@ -567,3 +572,320 @@ Symptom: Subtraction breaks across a DST shift and the handoff window is flagged
 Legacy: `new Thread` per request handler in 2010-era HTTP servers.
 Replacement: `newVirtualThreadPerTaskExecutor` (JDK 21+) or a bounded reactive stack; thread-per-task on virtual threads keeps blocking I/O code idiomatic.
 Symptom: Thread pools exhaust under I/O fan-out and the service needs reactive rewrites to survive load it would otherwise handle.
+
+---
+
+Concept: SequencedCollection, SequencedSet and SequencedMap give every ordered collection a named first, last and reversed view. API guarantee (JDK 21+, ordinary vocabulary by 25).
+Modern form:
+var recent = new LinkedHashSet<String>();
+recent.add("a"); recent.add("b");
+String newest = recent.getLast();          // no iterator gymnastics
+for (var it = recent.reversed().iterator(); it.hasNext(); ) audit(it.next());
+var lru = new LinkedHashMap<K, V>(64, 0.75f, true) {
+    @Override protected boolean removeEldestEntry(Map.Entry<K,V> e) { return size() > MAX; }
+};
+Why: the operations were always conceptually there; the interfaces made them part of the contract, so `getFirst`, `getLast`, `addFirst`, `addLast`, `reversed` and the sequenced views of `keySet`, `values` and `entrySet` are portable across `ArrayList`, `ArrayDeque`, `LinkedHashMap` and friends.
+Counter-pattern: `list.get(list.size() - 1)` on a collection typed as `Collection`, plus hand-written reverse loops, plus a custom `EvictingQueue` when the LRU is fifteen lines in a `LinkedHashMap` subclass.
+Check: `var c = new ArrayDeque<Integer>();` compiles against `SequencedCollection<Integer>`; a null-on-empty expectation is wrong — `getFirst` on an empty collection throws `NoSuchElementException`, which is the documented behavior, so `isEmpty` guards go before the call, not after it.
+
+---
+
+Concept: A JVM-level deserialization filter is the boundary check that runs before any object is constructed. API guarantee (JEP 290 lineage, `SerialFilterFactory` since 9).
+Modern form:
+var builder = SerialFilterFactory.current().toBuilder();
+builder.allowClass(PaymentEvent.class, OrderLine.class, java.math.BigDecimal.class);
+builder.allowPrimitiveInterfaces();
+SerialFilterFactory.setFilter(builder.build());
+Why: `ObjectInputStream.readObject` executes the graph's own logic before the caller can inspect it, so a check written in application code runs after the side effects that matter. The filter rejects by pattern before construction, and a global default means a boundary cannot forget it.
+Counter-pattern: `resolveClass` overrides copied per service, each with a slightly different allow-list, or — worse — a deny-list of known-bad gadget classes, which is a race against whatever is on the classpath this quarter.
+Check: a test feeds a `SignedObject` or a Commons-Collections-style lazy map to the boundary and asserts the filter rejects it, and the CI rule bans raw `readObject` on any path that crosses a trust boundary (mechanism and the attack class: 06; the payload's fingerprint: 31).
+
+---
+
+Concept: A local date-time is a wall-clock statement; an instant is a point. Arithmetic across a DST boundary belongs to the instant, and the gap must be tested rather than trusted. Implementation behavior with a documented rule: a local time in the spring-forward gap resolves after the gap.
+Modern form:
+var gap = ZonedDateTime.of(LocalDate.of(2026, 3, 29), LocalTime.of(2, 30), ZoneId.of("Europe/Berlin"));
+// 02:30 does not exist that day; the result is 03:30 with offset +02:00
+var next = ZonedDateTime.now(ZoneId.of("Europe/Berlin")).plusDays(1);   // calendar day, not 24 hours
+Why: scheduling nightly work at "02:30 local" asks for a moment that occurs twice in autumn and never in spring. `plusDays` on a `ZonedDateTime` adds a calendar day and keeps the local time, which is what a human means by "tomorrow at the same time"; `Instant.plus(24, HOURS)` adds exactly 86400 seconds, which is what a machine means and is not the same thing.
+Counter-pattern: `LocalDateTime.now()` in a service that runs in two regions, and cron defaults that silently skip or double-run the job; `Duration.ofDays(1)` used to mean "the next calendar day".
+Check: a test that pins the clock to the gap and to the fold (`Clock.fixed`) asserts the resolved instant both times, and the nightly job's schedule is expressed with an explicit zone, asserted by a unit test rather than reviewed by eye.
+
+---
+
+Concept: Text has a charset, and the platform default is a deployment detail. Explicit charset use is an API-discipline convention with compile-time help in 25.
+Modern form:
+String body = Files.readString(path, StandardCharsets.UTF_8);
+Files.writeString(out, csv, StandardCharsets.UTF_8, CREATE, TRUNCATE_EXISTING);
+var in = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+Why: `readString(Path)` without a charset uses the default, and `file.encoding`/`native.encoding` can differ between the developer's laptop, the container base image and the CI runner. The failure is a mojibake name in production that renders fine on every machine in the build pipeline — and it is the same class of bug as reading a byte stream as a char stream with the wrong width.
+Counter-pattern: `new String(bytes)` and `s.getBytes()` in round-trip code; a base image change flipping the default and breaking a CSV export nobody re-tested.
+Check: a round-trip test asserting the bytes are identical for a fixture with non-ASCII names, run with `-Dfile.encoding=US-ASCII` on the CI matrix, plus a lint or review rule banning no-charset overloads on I/O paths.
+
+---
+
+Concept: Continuous JFR plus a targeted recording is the production diagnosis pair; a thread dump is a photograph, a recording is a film. Implementation behavior; JEP 509 CPU-time sampling is experimental and Linux-only as of 25, so it is opted into deliberately.
+Modern form:
+jcmd 1 JFR.start name=hot settings=profile duration=60s path-to-gc-roots=true
+jcmd 1 JFR.dump name=hot filename=/tmp/hot.jfr
+jfr summary /tmp/hot.jfr
+jfr print --events jdk.VirtualThreadPinned,jdk.JavaMonitorEnter /tmp/hot.jfr
+Why: `profile` adds allocation and method-sample events that a default recording omits, and events like `jdk.VirtualThreadPinned` and `jdk.JavaMonitorEnter` name the pinning and contention that a flame graph only hints at. Startup flags enable the recording continuously with a bounded disk budget so the incident does not depend on someone remembering to start it.
+Counter-pattern: reaching for `jstack` in a container that has no JDK tools installed, or leaving `profile` settings on every pod with an unbounded repository until the disk fills, or reading one wall-clock sample as a trend.
+Check: the startup command contains the continuous-recording flags with rotation, an incident drill dumps a file and opens it, and the overhead budget is measured on the staging load shape rather than quoted from a blog post.
+
+---
+
+Concept: Virtual threads are cheap to block and expensive to pin, and pinning is observable rather than suspected. Implementation behavior; observable through JFR.
+Modern form:
+try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+    futures.add(executor.submit(() -> gateway.fetch(id)));     // blocking I/O fan-out is the point
+}
+// bounded work: a semaphore around the executor, not a pool sized to a thread count
+Why: a platform-thread pool exists to amortize thread cost, which disappears here; what remains scarce is the resource behind the call — a connection pool, a downstream quota. Closing the executor blocks until submitted tasks finish, which makes the shutdown path explicit instead of a leak. Holding a monitor across a blocking call pins the carrier, and a large fan-out with pinned carriers is a slow queue with no error.
+Counter-pattern: an `Executors.newFixedThreadPool(200)` renamed to "virtual" because `Thread.ofVirtual` was used to build it, or `synchronized` blocks around a blocking HTTP call, or unbounded fan-out with no semaphore and no downstream limit.
+Check: `jdk.VirtualThreadPinned` events in a 60-second recording under load read as zero for the hot path; the semaphore bound is asserted by a test that counts concurrent downstream calls; the executor is closed, not abandoned.
+
+---
+
+Concept: Per-request identity lives in a ScopedValue binding, not in a ThreadLocal field. API guarantee, ScopedValue final in 25.
+Modern form:
+public final class TenantContext {
+    public static final ScopedValue<TenantContext> CURRENT = ScopedValue.newInstance();
+    private Mode mode = Mode.UNRESOLVED;
+    private UUID tenantId;
+    public static TenantContext current() { return CURRENT.get(); }
+    public static boolean isBound() { return CURRENT.isBound(); }
+}
+TenantContext ctx = new TenantContext();
+ctx.setMode(Mode.CUSTOMER);
+String out = ScopedValue.where(TenantContext.CURRENT, ctx).call(() -> service.handle());
+Why: the binding is lexically scoped and inherited by child virtual threads, so a request cannot leak into the next one on a pooled carrier, and an unbound read fails fast instead of reading stale state. The carrier stays mutable on purpose where layered filters fill fields in, but the binding itself is replaced, never mutated in place.
+Counter-pattern: a static ThreadLocal cleared in a finally block that is skipped on an async hop, so the next request on the thread sees the previous tenant; or a singleton holder set at filter entry and read in the repository.
+Check: a test calling the repository outside any binding asserts default-deny, and a test binding two tenants on two virtual threads asserts neither sees the other.
+
+---
+
+Concept: Async hand-off re-binds a fresh carrier from a snapshot taken on the submitting thread. Convention with implementation-behavior consequences for virtual threads.
+Modern form:
+public Runnable decorate(Runnable task) {
+    TenantContextSnapshot snap = TenantContext.isBound() ? TenantContextSnapshot.of(TenantContext.current()) : TenantContextSnapshot.empty();
+    boolean wasAdmin = AdminContext.isAdmin();
+    return () -> {
+        TenantContext fresh = new TenantContext();
+        fresh.restore(snap);
+        ScopedValue.Carrier c = ScopedValue.where(TenantContext.CURRENT, fresh);
+        Runnable scoped = wasAdmin ? c.where(AdminContext.CURRENT, Boolean.TRUE).run(task) : c.run(task);
+        scoped.run();
+    };
+}
+Why: the snapshot must be taken synchronously inside the bound scope, because the submitter scope may unwind before the worker runs. Each task gets a fresh mutable carrier so concurrent tasks do not step on each other's writes, and admin is re-bound only when the submitter was admin, otherwise a worker would observe isBound and wrongly treat itself as a re-entrant no-op.
+Counter-pattern: sharing the submitter instance across tasks, or capturing TenantContext.current() lazily inside the worker where it is already unbound; or binding admin false unconditionally and silently downgrading to the primary pool.
+Check: an @Async test asserting the worker sees the tenant id and the admin flag of the submitter, plus a parallel-fork test asserting two tasks mutating their copies do not interfere.
+
+---
+
+Concept: A closed set of outcomes is a sealed interface with record members, matched exhaustively. Language guarantee, exhaustiveness checked by javac 25.
+Modern form:
+public sealed interface Decision permits Decision.Allowed, Decision.Denied {
+    record Allowed() implements Decision {}
+    record Denied(String reason, long retryAfterMs) implements Decision {}
+}
+Decision d = limiter.check(key);
+if (d instanceof Decision.Denied denied) {
+    return problem(429, denied.reason(), denied.retryAfterMs());
+}
+Why: the compiler proves every branch is handled, so adding a third outcome breaks the build instead of falling through a default. Records carry the denial payload without an exception, which keeps the hot path allocation-free enough and the policy swappable behind the interface.
+Counter-pattern: a boolean plus an out-param reason string, or an enum with a nullable detail field where half the cases ignore it; or catching a generic exception to mean denied.
+Check: javac fails when a switch over Decision lacks a case; a unit test asserts every Denied carries a non-empty reason and a positive retry window.
+
+---
+
+Concept: Tunables for pools and clients are immutable records bound by @ConfigurationProperties. API guarantee for binding, convention for immutability.
+Modern form:
+@ConfigurationProperties("cortex.db")
+public record CortexDbProperties(Pool app, Pool admin, Pool oauth2, Pool session) {
+    public record Pool(String url, String username, String password, int maximumPoolSize, int minimumIdle) {}
+}
+Why: the record makes the configuration surface explicit and unchangeable after binding, so a pool size cannot be mutated halfway through a test. Nested records keep per-pool values together instead of a flat prefix soup, and Boot validates the shape at startup rather than at first checkout.
+Counter-pattern: @Value strings scattered across three config classes with different defaults, so staging and prod disagree on timeouts; or a mutable @Component holding pool sizes with setters called from a test that leaks into the next one.
+Check: the context fails fast on a missing url in a slice test, and a properties-binding test asserts defaults for pool sizes without opening a connection.
+
+---
+
+Concept: Keyset pages ask for one row more than they return, and the extra row decides the cursor. Heuristic turned into a tested invariant.
+Modern form:
+public record Page<T>(List<T> items, String next) {
+    public static final int MAX_SIZE = 200;
+    public static int fetchSize(int size) {
+        if (size < 1 || size > MAX_SIZE) throw new IllegalArgumentException("page size must be between 1 and " + MAX_SIZE);
+        return size + 1;
+    }
+    public static <T> Page<T> of(List<T> fetched, int size, java.util.function.Function<T, String> cursorOf) {
+        if (fetched.size() <= size) return new Page<>(fetched, null);
+        List<T> items = fetched.subList(0, size);
+        return new Page<>(items, cursorOf.apply(items.getLast()));
+    }
+}
+SELECT id, created_at FROM audit_log WHERE tenant_id = $1 AND (occurred_at, id) < ($2, $3) ORDER BY occurred_at DESC, id DESC LIMIT $4;
+Why: the plus-one row means the last page never hands out a cursor to an empty page, and the (occurred_at, id) tiebreak keeps duplicate timestamps stable. MAX_SIZE bounds one request whatever the client asks, which is the same overflow policy as the API rate limit.
+Counter-pattern: OFFSET with a page number from the client, scanning and discarding 10k rows by page 400; or a next token that is a row offset the client can edit to skip ahead.
+Check: a concatenation test asserting pages stitched together equal the full ordered query with no gaps or duplicates, and a test asserting size 0 and size 201 both throw before any SQL runs.
+
+---
+
+Concept: Cursors are opaque, unsigned, and strictly decoded, because RLS already authorizes every row. Convention, enforced by review and test.
+Modern form:
+public static String encode(Object... parts) {
+    StringBuilder raw = new StringBuilder("1");
+    for (Object p : parts) raw.append("|").append(String.valueOf(p));
+    return Base64.getUrlEncoder().withoutPadding().encodeToString(raw.toString().getBytes(StandardCharsets.UTF_8));
+}
+public static <K> K decode(String cursor, int parts, Function<List<String>, K> parse) {
+    if (cursor.isEmpty() || cursor.length() > 512) throw new InvalidCursorException();
+    String raw = new String(Base64.getUrlDecoder().decode(cursor), StandardCharsets.UTF_8);
+    List<String> split = List.of(raw.split("\\|", -1));
+    if (split.size() != parts + 1 || !split.getFirst().equals("1")) throw new InvalidCursorException();
+    return parse.apply(split.subList(1, split.size()));
+}
+Why: a forged cursor only moves the starting position, because the query re-applies tenant filters and RLS, so signing adds cost without security. Strictness still matters: bounded length, exact version, exact part count, caller-owned parsing, anything else mapped to 400 so a probe cannot smuggle a second predicate through the token.
+Counter-pattern: a JSON cursor the client can edit to change sort order, or a signed cursor whose verification runs after the query; or lenient Base64 decoding that accepts newlines and padding variants and then fails deep in the mapper.
+Check: a forged cursor test asserts 200 with tenant-scoped rows only, and a fuzz test over truncated, overlong, and wrong-version tokens asserts InvalidCursorException on every input.
+
+---
+
+Concept: A p99 that no pool, queue or dependency metric explains is a diagnosis ladder, not a mystery. Failure-transcript shape is 02; the ladder is here.
+Modern form: Work the elimination order, cheapest and safest first: (1) is the time inside the process at all — a span from the client and one from the server separate network from code; (2) is it scheduling — `jcmd 1 Thread.dump_to_file -format=json dump.json` plus JFR `jdk.VirtualThreadPinned`, `jdk.JavaMonitorEnter`, `jdk.GCPhasePause`; (3) is it contention — the monitor-enter events name the lock and the frame; (4) is it allocation — `jdk.ObjectAllocationInNewTLAB` at a rate that explains the pauses. Each rung has a measurement that would disprove it, which is what makes it a ladder rather than a list of suspicions.
+Why: the metrics that teams watch are aggregate and average-friendly; pinning, monitor inflation and safepoint stalls are *shaped* problems, so an unchanged p50 with a doubled p99 is normal and the aggregate dashboards are structurally blind to it. The ladder works because it is ordered by cost per unit of information: two spans and one JFR recording settle what a week of speculation will not.
+Counter-pattern: raising pool sizes and timeouts until the symptom moves, then declaring the cause found. A symptom that moves under a knob change is not an explained symptom — it is a masked one, and the next load shape brings it back with a worse ratio.
+Check: the diagnosis names the event type or the frame that produced the delay; a performance test that reproduces the pinned-thread event fails when the `synchronized` block returns, so the fix is covered rather than remembered.
+
+---
+
+Concept: Exhaustive `switch` over a sealed type is a reasoning tool, not a style rule — the compiler enumerates the hypotheses you had not thought about.
+Modern form: `ApiError` permits `NotFound`, `Conflict`, `Forbidden`, `RateLimited`; `status(ApiError e)` is an exhaustive expression with a branch per case. Adding a permitted type breaks every mapping in the build, which turns "did we handle the new error everywhere" from a review question into a compile error, and the error list *is* the checklist.
+Why: the failure mode it removes is the silent default. `default -> 500` compiles forever and quietly maps a new 429 to a 500, which changes client retry behaviour, which changes load under incident, which changes the incident. Exhaustiveness makes the addition site pay the cost, immediately, in the file that added the type — the cheapest possible moment to notice.
+Counter-pattern: sealed interfaces with a wildcard branch everywhere, which keeps the syntax and throws away the reasoning; or an enum with an integer status field maintained by a `Map` that no compiler checks and no test covers, so the map silently lacks the newest entry.
+Check: deleting a branch fails the build (assert this by mutation, not by habit); an architecture test forbids `default ->` in mappings over sealed error types, and the mapping's test enumerates the permits list so a new permit without a test is visible.
+
+---
+
+Concept: A complete refund-decision module holds validation, exhaustiveness, and error mapping in one place. Language guarantee plus convention.
+Modern form:
+import java.util.Objects;
+import java.util.UUID;
+sealed interface RefundOutcome permits RefundOutcome.Approved, RefundOutcome.Denied, RefundOutcome.NeedsReview {
+    record Approved(UUID orderId, long amountMinor, String reason) implements RefundOutcome {
+        Approved {
+            Objects.requireNonNull(orderId, "orderId");
+            if (amountMinor <= 0) throw new IllegalArgumentException("amountMinor must be positive");
+            reason = Objects.requireNonNull(reason, "reason").trim();
+            if (reason.isEmpty()) throw new IllegalArgumentException("reason required");
+        }
+    }
+    record Denied(UUID orderId, String code, String detail) implements RefundOutcome {
+        Denied {
+            Objects.requireNonNull(orderId, "orderId");
+            if (!code.matches("[A-Z_]{4,40}")) throw new IllegalArgumentException("code must be UPPER_SNAKE");
+        }
+    }
+    record NeedsReview(UUID orderId, String queue, int slaHours) implements RefundOutcome {
+        NeedsReview {
+            Objects.requireNonNull(orderId, "orderId");
+            if (slaHours < 1 || slaHours > 72) throw new IllegalArgumentException("slaHours 1..72");
+        }
+    }
+}
+final class RefundPolicy {
+    private final long autoApproveLimitMinor;
+    RefundPolicy(long autoApproveLimitMinor) {
+        if (autoApproveLimitMinor < 0) throw new IllegalArgumentException("limit must be non-negative");
+        this.autoApproveLimitMinor = autoApproveLimitMinor;
+    }
+    RefundOutcome decide(UUID orderId, long amountMinor, boolean fraudFlag, boolean firstOffense) {
+        Objects.requireNonNull(orderId, "orderId");
+        if (fraudFlag) return new RefundOutcome.Denied(orderId, "FRAUD_HOLD", "manual review required");
+        if (amountMinor <= autoApproveLimitMinor && firstOffense)
+            return new RefundOutcome.Approved(orderId, amountMinor, "within auto-approve limit");
+        return switch (Long.signum(amountMinor - autoApproveLimitMinor)) {
+            case -1, 0 -> new RefundOutcome.Approved(orderId, amountMinor, "within auto-approve limit");
+            default -> new RefundOutcome.NeedsReview(orderId, "refunds", 24);
+        };
+    }
+    int status(RefundOutcome o) {
+        return switch (o) {
+            case RefundOutcome.Approved ignored -> 200;
+            case RefundOutcome.Denied ignored -> 403;
+            case RefundOutcome.NeedsReview ignored -> 202;
+        };
+    }
+}
+Why: the first hypothesis was an OFFSET-paged refund list plus a stringly-typed outcome; it was killed by two measurements — the page-400 scan at 900ms and a test where a new outcome compiled while the status map silently kept the old entries. Records put validation in the compact constructor so no caller can build an invalid outcome; the sealed permits list plus the exhaustive switch turns a new outcome into a build break at every mapping; the policy object carries the limit as state instead of a magic constant. A sanity check before believing: construct each outcome with blank and boundary values and assert the exact exception message names the field.
+Counter-pattern: a mutable RefundDto with setters plus a static Map<String, Integer> status table maintained beside the code; or a switch statement with a default that maps every future outcome to 500 and changes retry behaviour under incident.
+Check: unit tests construct boundary values (zero and negative amounts rejected, 72h accepted, 73h rejected); deleting any switch branch fails compilation; architecture test bans default branches over RefundOutcome; test run reports [INFO] Tests run: 9, Failures: 0, Errors: 0.
+
+---
+
+Concept: Spot the bug: a status map that compiles, passes three tests, and lies about the fourth. Language guarantee versus convention.
+Modern form:
+int status(RefundOutcome o) {
+    return switch (o) {
+        case RefundOutcome.Approved ignored -> 200;
+        case RefundOutcome.Denied ignored -> 403;
+        case RefundOutcome.NeedsReview ignored -> 202;
+    };
+}
+Why: spotting it is mechanical, not clever. Enumerate the permits list (Approved, Denied, NeedsReview) against the branches: three and three, no default, so a fourth permit breaks the build at the mapping instead of at 2am. The first hypothesis during the incident was a gateway misconfiguration returning 500s on rate-limited checkouts; it was killed by reading the service log, which showed the 500 originating in this method, not at the edge. The sanity check that ends it: add a fourth permit in a scratch branch and watch this file fail compilation before any test runs.
+Counter-pattern (the bug, as found):
+static final Map<String, Integer> STATUS = Map.of("NotFound", 404, "Conflict", 409, "Forbidden", 403);
+static int status(Object e) {
+    return STATUS.getOrDefault(e.getClass().getSimpleName(), 500);
+}
+Three failures in one shape: the stringly-typed key drifts from the class name on the first rename; the new RateLimited outcome is absent so getOrDefault quietly maps 429 to 500, which turns a retryable throttle into a non-retryable failure and changes load under incident; and no compiler or test names the missing entry, so the three existing tests stay green while production lies.
+Check: a test enumerating the permits list asserts each maps to its contract status; against the buggy form it fails red with expected: <429> but was: <500>; architecture test bans getOrDefault-default maps over sealed error types.
+
+---
+
+Concept: Statutory-order matching as group, sort, then linear sweep — with the complexity stated, not implied. Language guarantee plus measured performance.
+Modern form:
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+record TradePair(String asset, LocalDate day, long qtyMinor, long priceMinor) {}
+interface MatchExecutor {
+    void apply(TradePair acquisition, TradePair disposal, long matchedQty);
+}
+final class OrderMatcher {
+    private final MatchExecutor executor;
+    OrderMatcher(MatchExecutor executor) { this.executor = executor; }
+    void match(String asset, List<TradePair> acquisitions, List<TradePair> disposals) {
+        Map<LocalDate, List<TradePair>> byDay = new LinkedHashMap<>();
+        for (TradePair a : acquisitions) byDay.computeIfAbsent(a.day(), d -> new ArrayList<>()).add(a);
+        List<TradePair> ordered = new ArrayList<>(acquisitions);
+        ordered.sort(Comparator.comparing(TradePair::day).thenComparing(TradePair::priceMinor));
+        for (TradePair d : disposals) {
+            matchSameDay(byDay, d);
+            matchBedAndBreakfast(ordered, d);
+            matchPool(ordered, d);
+        }
+    }
+    private void matchSameDay(Map<LocalDate, List<TradePair>> byDay, TradePair d) {
+        List<TradePair> same = byDay.getOrDefault(d.day(), List.of());
+        for (TradePair a : same) executor.apply(a, d, Math.min(a.qtyMinor(), d.qtyMinor()));
+    }
+    private void matchBedAndBreakfast(List<TradePair> ordered, TradePair d) {
+        for (TradePair a : ordered) {
+            if (!a.day().isAfter(d.day()) || a.day().isAfter(d.day().plusDays(30))) continue;
+            executor.apply(a, d, Math.min(a.qtyMinor(), d.qtyMinor()));
+        }
+    }
+    private void matchPool(List<TradePair> ordered, TradePair d) {
+        for (TradePair a : ordered) executor.apply(a, d, Math.min(a.qtyMinor(), d.qtyMinor()));
+    }
+}
+Why: grouping is O(n), the sort is O(n log n), each sweep is O(n) in the acquisitions, so the whole match is O(n log n) time and O(n) memory — the sort dominates and nothing is quadratic. The first hypothesis was a single pass with no sort; it was killed by a fixture where two same-day lots matched in arrival order instead of price order and the gain differed by 3 cents. The executor interface keeps the ordering rules testable without I/O, and the LinkedHashMap preserves day-insertion order so the sweep is deterministic for equal keys. A sanity check before trusting: the sum of matched quantities plus the pool remainder equals the input quantities exactly.
+Counter-pattern: nested loops per disposal rescanning all acquisitions with a contains check inside (O(n squared) per disposal, minutes at 10k trades); or recomputing the day groups inside the disposal loop instead of once.
+Check: fixture with a same-day lot, a 30-day lot, and a pool lot asserts the exact matched pairs in statutory order; a 10k-trade timing test asserts the sweep stays under the budget the quadratic form exceeds fortyfold; [INFO] Tests run: 7, Failures: 0, Errors: 0.

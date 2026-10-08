@@ -76,6 +76,7 @@ Why: clients abandon pages post-payment; only webhooks reliably observe completi
 Pitfall: fulfilling on client-side success callback, shipping nothing to customers who closed the tab (plus replaying deliveries double-shipping).
 Verification: five-case delivery battery (unsigned, wrong version, replay, tamper, out-of-order); closed-tab drill still fulfills exactly once.
 
+`POST /webhooks/payments` with `Stripe-Signature: t=1759847645,v1=REDACTED` and body `{"type":"payment_intent.canceled","data":{"object":{"id":"pi_3NEXAMPLE","status":"canceled"}}}` — delivered twice, as designed, which is why the handler's answer is an idempotent state transition plus a timestamp-tie-break, not a log line.
 ---
 
 Goal: Refunds, disputes, and chargebacks as first-class flows.
@@ -191,3 +192,156 @@ Symptom: Impossible states — PAID without reserved inventory, REFUNDED without
 Legacy: Raw Stripe REST pinned to a pre-endive API version, ignoring the removal of `payment_method_types`.
 Replacement: SDK-pinned major (`endive`, 2026-09-30), one PaymentIntent per order/session, monthly API releases absorbed by the same SDK pin.
 Symptom: Different surfaces call different API versions, and `payment_method_types` handling diverges between checkout and the fallback flow.
+
+---
+
+Goal: Order creation idempotent across retries and double-clicks.
+Pattern: client-generated idempotency key per checkout attempt carried through order creation; retried requests return the existing order, never a sibling.
+Why: networks retry and customers double-click; without keys every retry is a potential duplicate charge and twin shipment.
+Pitfall: dedupe by (customer, total, minute) heuristics, merging two genuinely separate same-minute orders.
+Verification: retry-storm drill (same key, 50 attempts) yields one order and one authorization; key-absence on creation fails review.
+
+---
+
+Goal: Capture amount reconciled against the checkout snapshot.
+Pattern: authorized total vs final capturable total compared at capture time; drift beyond tolerance (tax recalculation, partial stock loss) re-consents or re-authorizes before capture.
+Why: snapshots promise a total; capture moves the money — silent drift between the two is a dispute factory.
+Pitfall: capturing whatever the current cart computes, charging more than the consented snapshot.
+Verification: drift drill (price/tax change mid-checkout) re-consents; capture-without-reconciliation probe denied.
+
+---
+
+Goal: Partial fulfillment with backorders as explicit states, not silence.
+Pattern: line-level fulfillment states (fulfilled, partial, backordered with ETA, canceled) communicated per line; capture follows shipped value, remainder re-authorized or released.
+Why: multi-line orders rarely ship whole; pretending otherwise strands money and inventory in limbo.
+Pitfall: holding full capture while one line backorders for six weeks, then refunding under dispute pressure.
+Verification: partial-ship test (captured amount matches shipped lines); backorder ETA communicated and updated, not static.
+
+---
+
+Goal: Dropship purchase orders linked to sales orders.
+Pattern: supplier purchase order created from the sales line with the same identity chain; supplier tracking and exceptions flow back to the customer-facing order.
+Why: dropship breaks the warehouse assumption; without linkage the customer order shows "processing" while the supplier never received it.
+Pitfall: email-to-supplier dropshipping with no system linkage, exceptions discovered via customer complaints.
+Verification: supplier-exception drill surfaces on the customer order within the contracted window; unlinked supplier sends fail the audit.
+
+---
+
+Goal: Promotion stacking governed by interaction rules, not accident.
+Pattern: stackability declared per promotion (combinable, exclusive, capped-total-benefit); engine evaluates the declared interaction, best-legal-stack or first-match per documented policy.
+Why: individual promotions are each sane; ungoverned combinations are where the profitable exploit lives.
+Pitfall: two 30%-off campaigns stacking to 51% off plus free shipping, discovered by deal forums before finance.
+Verification: stacking-matrix test (every pair of live promotions); uncapped-combination probe denied by the engine.
+
+---
+
+Goal: Gift cards and store credit as ledger money, not coupon codes.
+Pattern: stored-value accounts with issuance, redemption, partial use, and expiry per jurisdiction; balances as ledger entries, never as discount lines.
+Why: gift money is liability, not marketing spend; coupon-shaped credit corrupts both accounting and the promotion engine.
+Pitfall: gift codes as 100%-off coupons, combinable with promotions and unreconcilable at audit.
+Verification: liability-reconciliation test (outstanding balances tie to the ledger); coupon-stacking probe on stored value denied.
+
+---
+
+Goal: Multi-currency pricing with the FX decision made explicit.
+Pattern: presentment currency per market, FX rate locked at checkout snapshot with the lock timestamp recorded; refunds use the locked rate, not the current one.
+Why: floating FX between display and capture moves money across the border of consent; locked rates make totals promises again.
+Pitfall: charging in home currency at capture-time rates, customers disputing "a different number than shown".
+Verification: rate-move drill (FX shifts 3% mid-checkout) charges the locked total; refund-amount test uses the lock, provably.
+
+---
+
+Goal: Checkout-adjacent abuse contained without punishing customers.
+Pattern: velocity and device-risk signals on login, coupon-probing, and gift-card redemption endpoints; step-up or throttle on anomaly, silent pass on normal.
+Why: credential stuffing and card testing probe exactly these endpoints; uniform CAPTCHAs tax every real customer for the attackers' behavior.
+Pitfall: CAPTCHA on every checkout after one card-testing incident, conversion dropping while testing moves to the gift endpoint.
+Verification: stuffing drill (credential list) contained without customer-visible friction; friction-rate dashboard reviewed with conversion.
+
+---
+
+Goal: Channel price lists as overlays on one pricing truth.
+Pattern: market/channel price lists (currency, rounding, local promotions) layered over the canonical price; the engine resolves truth plus overlay deterministically.
+Why: markets genuinely differ; forked price tables diverge exactly like forked catalogs.
+Pitfall: per-market price columns edited by hand, Black Friday differing by market with no record of intent.
+Verification: list-coverage test (every market resolves every SKU); divergence audit (unexplained market deltas fail).
+
+---
+
+Goal: Zero-results search recovered, not abandoned.
+Pattern: no-match pages with spelling correction, broader-category fallback, and contact/a-request options; zero-result queries logged as merchandising input.
+Why: failed searches are demand statements; dead ends waste the highest-intent traffic on the site.
+Pitfall: "0 results" dead end, the query never logged, the missing product never ranged.
+Verification: zero-result fixture recovers (correction or fallback shown); query-log review per cycle feeds ranging decisions.
+
+---
+
+Goal: Brand gating against counterfeit with evidence, not vibes.
+Pattern: brand-approval workflow (authorization documents, test buys, listing audits) before and during seller tenure; violations suspend with the evidence packet attached.
+Why: counterfeit destroys buyer trust market-wide; post-hoc takedowns after chargebacks are the most expensive possible enforcement.
+Pitfall: reactive takedowns only, high-risk categories ungated until the first chargeback wave.
+Verification: test-buy failure suspends with evidence; ungated-brand probe denied at listing time.
+
+---
+
+Goal: Dispute representment as a workflow with evidence assembly.
+Pattern: representment packet (order record, tracking delivery proof, terms snapshot at purchase, customer communication log) assembled automatically at dispute open; win/loss recorded per reason code to tune the flow.
+Why: representment windows are short and evidence scattered; manual assembly misses the window by default.
+Pitfall: representment "handled" by whoever sees the email, evidence partial, winnable disputes lost by default.
+Verification: representment-timeliness test (packet complete within the window); reason-code win-rate reviewed per quarter.
+
+---
+
+Goal: Warranty separated from returns by contract, not by mood.
+Pattern: return window (change-of-mind, short) vs warranty period (defect, long) as distinct flows with distinct outcomes (refund vs repair/replace); serial or proof-of-purchase gates warranty.
+Why: conflated flows refund defects that should repair and repair buyer's-remorse that should refund — margin leaks both directions.
+Pitfall: one "returns" flow handling everything, warranty claims refunded at full price two years in.
+Verification: flow-routing test (defect vs remorse take different paths); warranty-without-proof probe denied per policy.
+
+---
+
+Goal: Carrier delivery events driving customer notifications.
+Pattern: carrier tracking webhooks (or polled tracking normalized to events) mapped to customer messages (shipped, out-for-delivery, delivered, exception); exception events open support context automatically.
+Why: "where is my order" is the top support query and the answer already exists in carrier systems.
+Pitfall: notifying only on internal ship events, customers asking about parcels the carrier already shows as delayed.
+Verification: exception drill (carrier delay) notifies before the customer asks; tracking-completeness asserted per multi-parcel order.
+
+---
+
+Goal: Flash-sale backpressure by design, not by outage.
+Pattern: virtual waiting room or queue tokens for predicted-over-capacity drops; queue position communicated; checkout capacity shed load in documented order (browse stays, checkout queues, payment never races).
+Why: known-demand spikes are the one outage class fully preventable by design; first-come-first-served without a queue is a lottery plus a crash.
+Pitfall: "the site was slow for an hour" as the post-mortem for a planned drop, with oversell as the encore.
+Verification: load drill at 2x expected drop traffic queues gracefully; shed-order test (payment path never degraded first).
+
+---
+
+Goal: Merge a guest cart into the authenticated cart on sign-in without losing either side or silently re-pricing the customer.
+Pattern: Both carts are real aggregates with their own identity; sign-in runs an explicit merge that unions lines by SKU and offer, keeps the higher-priority price for a duplicated line, applies the authenticated customer's price list and promotions, and writes a merge record naming both source carts. The loser cart is tombstoned with a pointer, never deleted, so the pre-merge state is still readable during the session (the guest-identity model itself is the neighbouring record's).
+Why: The merge is a business event with a customer-visible consequence — a price that changes on sign-in is a support ticket and, where the price list differs, a legal offer question. Doing it in one place makes it testable; doing it in the frontend makes it a per-channel rumour.
+Pitfall: Merging by "authenticated cart wins", which silently discards a guest line the customer added two minutes ago, or re-running promotion eligibility after the merge without checking minimum-basket rules, so the discount the guest saw disappears at sign-in with no explanation.
+Verification: A test with overlapping and disjoint lines asserts line counts, the chosen unit prices, the applied promotions, and that the merge record identifies both carts; an edge test covers the same SKU added on both sides with different offers, and the PII in the guest cart's saved address follows the erasure path (25).
+
+---
+
+Goal: Take payment for a multi-item order where stock, payment and fulfilment cannot all be one transaction.
+Pattern: Reserve stock with an expiry, create a payment intent against the reserved basket, settle on capture, then release reservations that were never captured. Compensation is explicit per step: release reservation, void or refund payment, and an order state that records which compensations ran — including the compound state "reservation released and payment authorised but not captured", which is the one that needs an operator.
+Why: Each step is idempotent because each will be retried, and because the interesting failures are the half-states: the reservation is short-lived so a long checkout loses stock, and a payment captured after the stock was released promises an item that is already sold to someone else. The state machine is where that collision is decided rather than left to whoever notices.
+Pitfall: Charging before reserving, which sells stock that does not exist under load; a compensation path that releases stock and captures payment in the same retry loop, so a partial failure re-releases stock someone else now holds; and treating a 5xx from the PSP as "failed" rather than "unknown", which is how a double charge happens (the idempotency contract is 14's, the invariant enforcement is 28's).
+Verification: Chaos drill kills the process between each pair of steps and asserts stock, payment and order states reconcile to a legal state with the operator queue empty afterwards; a concurrency test sells the last unit to two checkouts and asserts exactly one capture succeeds.
+
+`orders: state=reserved payment=authorized stock=released compensation=release_reservation reason=payment-unknown-5xx` in the order's own event stream — the state an operator reads at 3 a.m. should name the compensation that ran and the one that still has to.
+---
+
+Goal: Run a promotion engine whose output is explainable line by line, and whose money never disagrees with the ledger.
+Pattern: Rules are ordered and explicit about stacking — which combinators win, which are exclusive, per-line versus basket-level, shipping versus item discount — and each applied rule is recorded on the order as an audit trail: rule id, version, scope, amount, and the basket it was evaluated against. Money is integral minor units with a single rounding function, applied once, at a defined point in the calculation.
+Why: The audit trail is what answers "why was this customer charged this" without re-running the engine and hoping for the same result, and a versioned rule keeps the answer valid after the rule changes. A single rounding point is what makes the sum of line discounts equal the basket discount, which is the invariant the ledger reconciliation depends on.
+Pitfall: Rounding per line and then summing, so the basket total disagrees with the payment by a cent and the reconciliation job grows an exception list; "non-stackable" implemented as evaluation order in a loop, so adding a campaign silently changes which promotion wins for existing customers.
+Verification: Invariance tests assert sum(line discounts) equals basket discount and that the recorded per-rule amounts sum to the total discount, over generated baskets including odd quantities and fractional unit prices; a rule-order test asserts a new campaign cannot change the outcome for an existing basket unless a test says so explicitly (the promotion engine's contract in 26 stays a single testable surface).
+
+---
+
+Goal: Decide the delivery promise at checkout and keep it honest through payment and fulfilment.
+Pattern: Availability is computed from on-hand minus reserved, with backorder and partial-shipment policy as explicit per-line attributes; the checkout response carries the promise per line and for the shipment, with the promise's inputs recorded on the order so a later dispute can be answered with what was known at the time.
+Why: The promise is an offer, and the two failure modes are both expensive: promising a single shipment when stock forces two (the customer reads the later part as lost), and promising a date computed from a stock figure that another checkout has already consumed. Recording the inputs separates "we were wrong" from "we were dishonest", which are different fixes.
+Pitfall: Recomputing availability after payment for the confirmation email, so the email promises something the checkout did not; treating backorder as a boolean on the product when it is a property of the variant, the customer segment and the destination; releasing the promise's stock only on capture, so the promise outlives the reservation.
+Verification: A test with the last unit contested by two checkouts asserts one gets the in-stock promise and the other gets the backorder promise before payment, not after; a reconciliation check compares promised dates against shipped dates per lane and the drift is reviewed as a data-quality issue, not as a fulfilment exception.

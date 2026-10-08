@@ -320,3 +320,60 @@ Decision context: A v1 endpoint ships a field that v2 wants to remove.
 Options: remove and break clients, keep forever, or execute expand-contract: add column in v2, backfill, dual-write, then drop after a declared window.
 Recommendation with conditions: expand-contract. The contract doc carries a deprecation date; the backfill is idempotent; the drop needs a reviewed migration ticket and a rehearsal in staging with a copy of production-shaped data. Removing eagerly is rejected: a panicked revert under traffic is the worst outcome.
 Verification: The deprecated field's write path emits a deprecation log counted per client; drop proceeds only after the count is zero for a full observation window.
+
+---
+
+Decision context: The payments provider has changed its API twice a year and its latency tail drives checkout's p99. The team wants "ports and adapters", and the honest question is which dependency earns one.
+Options: (a) direct SDK calls in the service layer, cheapest and fastest to change while there is one provider; (b) a `PaymentGateway` port with a provider adapter, mapping to the domain's own vocabulary and error codes; (c) an anti-corruption layer with its own model plus a translation stage, because the provider's model contradicts the domain's (their "authorization" is our "reservation" plus a hold); (d) a second provider behind the port "for redundancy", before either exists in production.
+Recommendation with conditions: (b) for payments today — one interface, the domain's error vocabulary, timeouts and idempotency handled at the boundary, and the SDK's types never crossing into the domain. (c) only where the models genuinely disagree, which the audit found in exactly one place: their settlement model. A port without a second implementation is a seam, not an abstraction; it still pays for itself because it is where timeouts, retries, spend caps, output validation and the deterministic fallback all live (see the LLM-behind-a-port record), so the discipline is not speculative.
+Reversibility: Cheap to introduce early on one call path, expensive to retrofit once forty call sites import SDK types. Rated reversible for (b), moderately hard for (c) because the translation model has to be built and kept current.
+Verification: a compile-time rule forbids the provider's types outside the adapter package; the adapter's contract test runs against the provider's sandbox; the fallback path is exercised by a drill, and the seam is documented at the seam rather than in a diagram nobody opens.
+
+---
+
+Decision context: One codebase, four domains that keep coupling through shared tables: orders, billing, inventory, and reporting. Two teams share three tables. The question is a context map, not a framework.
+Options: (a) keep one schema and police it in review; (b) modular monolith with enforced module boundaries and published events inside one deployable, one database with per-module ownership; (c) split into services now, with the current coupling becoming network calls; (d) share-with-ACL, where reporting owns read models built from published events and never queries the write side.
+Recommendation with conditions: (b) plus (d). Ownership per module, published events inside the transaction (outbox rationale below, relay in 13), and reporting reading its own projection rather than somebody else's primary table. Extract later only against evidence, and the evidence list is deliberately unimpressive: independent scaling need, a release cadence actually blocked, or a team-size wall — not "we will need microservices eventually".
+Reversibility: Module boundaries with events are hard to undo once consumers depend on the event contract; a shared table is easy to keep and hard to remove later, which is the asymmetry that should decide the order of work. Reporting's projection is the most reversible piece here and therefore the right first move.
+Verification: the module-verification test fails a cross-boundary internal import; the shared-table list shrinks per quarter and is reported; the reporting projection's lag has an SLO, and an event-contract change fails a compatibility test rather than a dashboard.
+
+---
+
+Decision context: Read-through caching on the catalog read path; three of the last four incidents involving stale prices came from "who invalidates what" being undocumented rather than from a bad TTL.
+Options: (a) TTL only, accept staleness inside the window; (b) invalidate on write from the owning aggregate; (c) version the key by the aggregate's version and let the old entry expire; (d) no cache, buy it back with a covering index and a warm read replica.
+Recommendation with conditions: (c) for prices, because a version-keyed entry cannot be half-stale and needs no cross-node invalidation broadcast — the version is the invalidation. (b) for the derived summaries where versioning the key would fragment the cache uselessly, with invalidation owned by the aggregate that changes, never by the reader. (a) alone only where a few minutes of staleness is documented behaviour. Stampede protection is mandatory on wherever the cache can be cold in bulk: single-flight or a short lock per key with a bounded wait, plus jittered expiry so a fleet does not expire in the same second.
+Reversibility: Key versioning is cheap to add and cheap to remove; the wrong move is (b) retrofitted after the cache is load-bearing for a dependency that cannot absorb the traffic, because then the invalidation path becomes the availability path.
+Verification: a test asserting a price change is visible within the stated window on every read path; a cold-cache drill measuring the thundering-herd amplification with and without single-flight; and a per-cache owner named in the same file as its TTL, so the two are reviewed together.
+
+---
+
+Decision context: Architectural promises in this estate — no tenant id from the client, no unbounded query, no dependency called without a timeout — have been holding by review, and review is not scaling.
+Options: (a) conventions plus a checklist; (b) fitness functions: executable checks in CI that assert the invariant structurally or behaviourally; (c) a platform runtime that makes the wrong thing hard (client, driver or interceptor defaults); (d) a golden-path framework that generates the compliant code.
+Recommendation with conditions: (b) as the enforcement, (c) as the default so compliance is the path of least resistance, and (a) only for what cannot be checked yet, with a named owner and a date. Concretely: an architecture test forbidding `tenantId` read from request input outside the gateway; an EXPLAIN assertion in the repository suite rejecting a plan whose estimated rows exceed the page budget; a startup check failing any outbound client built without a timeout; a diff gate on the OpenAPI contract. Each check states the invariant in its name, because a failing test that reads "layerDependencyViolation" gets deleted and one that reads "tenant must not come from a request parameter" gets fixed.
+What a fitness function prints when it earns its place: `tenant-boundary-test FAILED: com.example.orders.internal.ReportRepository reads request parameter "tenantId" (ReportRepository.java:73)` — the invariant in the test name, the violation in the file and line that caused it.
+Reversibility: Each fitness function is individually cheap to retire when the platform default makes it redundant — that is the sign a check worked. Rated reversible, with the caveat that checks which encode a *decision* stay until the decision changes, and stay visible: an assertion that no query exceeds the page budget encodes the scaling story, not a style preference.
+Verification: every check runs on every pull request, a check is added with the incident or RFC that motivated it, and the quarterly report is not "we have 40 checks" but "these three caught something this quarter and these two were retired because the platform default now covers them".
+
+---
+
+Decision context: Reporting's nightly workload saturates the primary at 02:00 and the team asks for its own service.
+Options: (a) status quo with the job moved to a read replica; (b) a reporting projection inside the monolith, fed by published events, with its own schema; (c) a reporting service with its own store and its own deploy; (d) a query-only API in front of a copy built by logical replication.
+Recommendation with conditions: (b) first. It removes the load and the coupling that actually hurts — reporting reading the write-side tables — without taking on a second deployable, a second pipeline, and a second on-call. Move to (c) when a stated trigger fires: reporting needs a different storage engine than Postgres can serve, or reporting's release cadence demonstrably blocks the monolith's, or its traffic needs an independent scaling profile measured over a quarter. (a) is a partial answer that keeps the schema coupling and adds a replica to babysit, and (d) is the right answer to a different question — cloning for read scaling, not decoupling.
+Reversibility: The projection is the reversible part: it is derived data with a rebuild path, so dropping it and rebuilding from events is a planned operation with a measured duration, not an emergency. Extracting a service is easy to start and hard to finish; the reverse (folding it back in) is a project nobody budgets, so treat the extraction as one-way.
+Verification: replica lag and projection lag have SLOs with alerts; the rebuild drill is timed and rehearsed; the write-side latency and the nightly job's duration are compared before and after, so the decision is graded on the numbers that motivated it rather than on the architecture diagram's tidiness.
+
+---
+
+Decision context: A tax calculation must run inside a host service without inheriting its framework.
+Options: (a) annotate the engine with Spring and Jackson and deploy it as a service; (b) keep engine framework-free with DTO mappers at the boundary and enforce it with ArchUnit; (c) split the engine per tax head into separately deployed services.
+Recommendation with conditions: (b). The engine holds pooled-cost, matching, and apportionment rules that outlive any framework major, while mappers translate validated DTO records to domain events at the edge. Choose (a) only if the engine will never be reused outside one host, which the platform-core embedding already disproves; choose (c) when heads need independent release cadences measured over a year, not before.
+Reversibility: Adding a framework import is a one-line change the test turns red, so the boundary is cheap to keep and cheap to restore. Extracting services later keeps the same engine packages, so the decision to stay a library does not close the service door.
+Verification: ArchitectureTest fails the build on any Spring, Jakarta, Jackson, parser, export, or FX import in engine packages, and the host auto-configuration test asserts the engine loads from the library jar with mappers only at the application layer.
+
+---
+
+Decision context: A price history needed for a gain is longer than the fetched window.
+Options: (a) truncate and price from what arrived; (b) throw a typed over-budget exception and price nothing; (c) page further automatically until complete.
+Recommendation with conditions: (b) with a named HyperliquidHistoryTooLongException the host maps to a refusal. Partial pricing presents an incomplete gain as final, which is worse than no gain, and silent auto-paging turns a bounded fetch into an unbounded one against a weight-limited API. Page further only under an explicit larger budget the caller names, never by default.
+Reversibility: The exception is part of the typed contract, so relaxing it later is additive: callers that handled it keep working. Returning partial data first and adding the exception later would break every consumer that assumed completeness.
+Verification: an over-window fixture asserts the named exception with no partial result, a fitting-window fixture asserts full pricing, and the client test asserts weight plus time budgets bound the fetch before the exception path is reached.
