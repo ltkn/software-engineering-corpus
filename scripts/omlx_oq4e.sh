@@ -26,6 +26,8 @@
 #   OQ_SEQLEN   imatrix sequence length, default 512
 #   PRESERVE_MTP  keep the native MTP draft head (Lightning MTP), default 1.
 #               Set to 0 for MTP-free outputs (reproduces pre-MTP runs).
+#   HF_HUB_CACHE  huggingface hub cache for source auto-discovery
+#               (default: ~/.cache/huggingface/hub)
 #
 # Examples:
 #   scripts/omlx_oq4e.sh se2
@@ -59,18 +61,51 @@ PRESERVE_MTP="${PRESERVE_MTP:-1}"
 if [ "$PRESERVE_MTP" = "1" ]; then MTP_PY=True; else MTP_PY=False; fi
 
 if [ -z "$SRC" ]; then
-    # Default: orcarouter uncensored Flash-Next snapshot (single snapshot dir).
-    CANDIDATE="$HOME/.cache/huggingface/hub/models--orcarouter--Qwen3.8-Flash-Next-Uncensored/snapshots"
-    if [ -d "$CANDIDATE" ] && [ "$(ls "$CANDIDATE" | wc -l)" -eq 1 ]; then
-        SRC="$CANDIDATE/$(ls "$CANDIDATE")"
+    # Auto-discover: newest snapshot of every cached model whose config
+    # selects the qwen4_exp (Flash-Next) family — official Qwen release,
+    # uncensored forks, whatever the cache holds. Exactly one match is
+    # used silently; zero or several require an explicit --src.
+    HUB="${HF_HUB_CACHE:-$HOME/.cache/huggingface/hub}"
+    MATCHES=""
+    for model_dir in "$HUB"/models--*; do
+        [ -d "$model_dir/snapshots" ] || continue
+        newest=""
+        for snap in "$model_dir"/snapshots/*/; do
+            [ -f "$snap/config.json" ] || continue
+            grep -q 'qwen4_exp' "$snap/config.json" || continue
+            if [ -z "$newest" ] || [ "$snap" -nt "$newest" ]; then
+                newest="$snap"
+            fi
+        done
+        if [ -n "$newest" ]; then
+            MATCHES="$MATCHES${MATCHES:+$'\n'}$newest"
+        fi
+    done
+    NMATCHES=0
+    [ -n "$MATCHES" ] && NMATCHES=$(printf '%s\n' "$MATCHES" | wc -l)
+    if [ "$NMATCHES" -eq 1 ]; then
+        SRC="${MATCHES%/}"
     else
-        echo "cannot infer source model: pass --src <snapshot-dir>" >&2
+        echo "cannot infer source model ($NMATCHES qwen4_exp candidates):" >&2
+        printf '%s\n' "$MATCHES" >&2
+        echo "pass --src <snapshot-dir>" >&2
         exit 2
     fi
 fi
 
+# Output tag derived from the source: models--Org--Name -> Name, so the
+# official release and forks never share an output directory.
+case "$SRC" in
+    *models--*)
+        _tag="${SRC%%/snapshots/*}"
+        _tag="${_tag##*models--}"
+        MODEL_TAG="${_tag#*--}"
+        ;;
+    *) MODEL_TAG="custom-model" ;;
+esac
+
 BUNDLE="/tmp/calibration-se.txt"
-OUT="$MODELS_OUT/Qwen3.8-Flash-Next-Uncensored-oQ${OQ_LEVEL}e-$VERSION"
+OUT="$MODELS_OUT/$MODEL_TAG-oQ${OQ_LEVEL}e-$VERSION"
 NPZ="$OQUP/imatrix-$VERSION.npz"
 LOG="$OQUP/oq${OQ_LEVEL}e-$VERSION.log"
 RUNNER="$OQUP/run_oq${OQ_LEVEL}e_$VERSION.py"
