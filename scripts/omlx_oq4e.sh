@@ -18,6 +18,8 @@
 #               output is never overwritten; rerun with a new version per
 #               corpus iteration). Without <org/model>, the source is
 #               auto-discovered (exactly one qwen4_exp match required).
+#   [ngram_bits] optional PLE N-gram table width: 2 3 4 5 6 8 (default 8).
+#               There is no 16: MLX affine tops out at 8-bit.
 #
 # Env overrides (defaults match the quant machine layout):
 #   OMLX_REPO   omlx checkout on the feat/custom-corpus-ngram-q8 branch
@@ -35,7 +37,8 @@
 #               (default: ~/.cache/huggingface/hub)
 #
 # Examples:
-#   scripts/omlx_oq4e.sh Qwen/Qwen3.8-Flash-Next coder-8bit-ngram-mtp
+#   scripts/omlx_oq4e.sh Qwen/Qwen3.8-Flash-Next coder-8bit-ngram-mtp 8
+#   scripts/omlx_oq4e.sh Qwen/Qwen3.8-Flash-Next coder-4bit-ngram 4
 #   scripts/omlx_oq4e.sh se2
 #   scripts/omlx_oq4e.sh se3 --src ~/.cache/huggingface/hub/models--Qwen--Qwen3.8-Flash-Next/snapshots/<sha>
 #   nohup scripts/omlx_oq4e.sh Qwen/Qwen3.8-Flash-Next coder-8bit-ngram-mtp > ~/oqup/coder-driver.log 2>&1 &
@@ -45,11 +48,17 @@ FIRST="${1:?usage: omlx_oq4e.sh [<org/model>] <version> [--src <dir>] [--dry-run
 shift || true
 if [[ "$FIRST" == */* ]]; then
     REPO="$FIRST"
-    VERSION="${1:?usage: omlx_oq4e.sh <org/model> <version> [--src <dir>] [--dry-run]}"
+    VERSION="${1:?usage: omlx_oq4e.sh <org/model> <version> [ngram_bits] [--src <dir>] [--dry-run]}"
     shift || true
 else
     REPO=""
     VERSION="$FIRST"
+fi
+# Optional third positional: N-gram table bit width (integer).
+NGRAM_ARG=""
+if [ $# -gt 0 ] && [[ "${1:-}" != --* ]]; then
+    NGRAM_ARG="$1"
+    shift || true
 fi
 
 SRC="${SRC:-}"
@@ -68,6 +77,17 @@ VENV_PY="${VENV_PY:-$OMLX_REPO/.venv-3.12/bin/python}"
 OQUP="${OQUP:-$HOME/oqup}"
 MODELS_OUT="${MODELS_OUT:-$HOME/models-out}"
 NGRAM_BITS="${NGRAM_BITS:-8}"
+if [ -n "$NGRAM_ARG" ]; then
+    NGRAM_BITS="$NGRAM_ARG"
+fi
+case " 2 3 4 5 6 8 " in
+    *" $NGRAM_BITS "*) ;;
+    *)
+        echo "invalid ngram bits '$NGRAM_BITS' (supported: 2 3 4 5 6 8)" >&2
+        echo "MLX affine has no 16-bit width; use preserve_ngram_table for unquantized" >&2
+        exit 2
+        ;;
+esac
 OQ_LEVEL="${OQ_LEVEL:-4}"
 OQ_SAMPLES="${OQ_SAMPLES:-128}"
 OQ_SEQLEN="${OQ_SEQLEN:-512}"
