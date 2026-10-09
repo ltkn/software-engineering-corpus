@@ -9,10 +9,15 @@
 # involved: this file is additive only.
 #
 # Usage:
-#   scripts/omlx_oq4e.sh <version> [--src <model-snapshot-dir>] [--dry-run]
+#   scripts/omlx_oq4e.sh <org/model> <version> [--src <dir>] [--dry-run]
+#   scripts/omlx_oq4e.sh <version> [--src <dir>] [--dry-run]   (legacy form)
 #
-#   <version>   experiment suffix, e.g. se2 (must be new: output is never
-#               overwritten; rerun with a new version per corpus iteration)
+#   <org/model> huggingface repo pair, resolved to the newest cached snapshot,
+#               e.g. Qwen/Qwen3.8-Flash-Next
+#   <version>   experiment suffix, e.g. coder-8bit-ngram-mtp (must be new:
+#               output is never overwritten; rerun with a new version per
+#               corpus iteration). Without <org/model>, the source is
+#               auto-discovered (exactly one qwen4_exp match required).
 #
 # Env overrides (defaults match the quant machine layout):
 #   OMLX_REPO   omlx checkout on the feat/custom-corpus-ngram-q8 branch
@@ -30,13 +35,22 @@
 #               (default: ~/.cache/huggingface/hub)
 #
 # Examples:
+#   scripts/omlx_oq4e.sh Qwen/Qwen3.8-Flash-Next coder-8bit-ngram-mtp
 #   scripts/omlx_oq4e.sh se2
 #   scripts/omlx_oq4e.sh se3 --src ~/.cache/huggingface/hub/models--Qwen--Qwen3.8-Flash-Next/snapshots/<sha>
-#   nohup scripts/omlx_oq4e.sh se2 > ~/oqup/se2-driver.log 2>&1 &
+#   nohup scripts/omlx_oq4e.sh Qwen/Qwen3.8-Flash-Next coder-8bit-ngram-mtp > ~/oqup/coder-driver.log 2>&1 &
 set -euo pipefail
 
-VERSION="${1:?usage: omlx_oq4e.sh <version> [--src <dir>] [--dry-run]}"
+FIRST="${1:?usage: omlx_oq4e.sh [<org/model>] <version> [--src <dir>] [--dry-run]}"
 shift || true
+if [[ "$FIRST" == */* ]]; then
+    REPO="$FIRST"
+    VERSION="${1:?usage: omlx_oq4e.sh <org/model> <version> [--src <dir>] [--dry-run]}"
+    shift || true
+else
+    REPO=""
+    VERSION="$FIRST"
+fi
 
 SRC="${SRC:-}"
 DRY_RUN=0
@@ -60,12 +74,36 @@ OQ_SEQLEN="${OQ_SEQLEN:-512}"
 PRESERVE_MTP="${PRESERVE_MTP:-1}"
 if [ "$PRESERVE_MTP" = "1" ]; then MTP_PY=True; else MTP_PY=False; fi
 
+HUB="${HF_HUB_CACHE:-$HOME/.cache/huggingface/hub}"
+
+if [ -n "${REPO:-}" ] && [ -z "$SRC" ]; then
+    # Resolve an explicit repo pair to its newest cached snapshot.
+    CAND="$HUB/models--${REPO//\//--}/snapshots"
+    [ -d "$CAND" ] || {
+        echo "not in cache: $REPO (looked for $CAND)" >&2
+        echo "download it first, or check the exact org/model spelling" >&2
+        exit 2
+    }
+    newest=""
+    for snap in "$CAND"/*/; do
+        [ -f "$snap/config.json" ] || continue
+        if [ -z "$newest" ] || [ "$snap" -nt "$newest" ]; then
+            newest="$snap"
+        fi
+    done
+    [ -n "$newest" ] || { echo "no snapshots with config.json under $CAND" >&2; exit 2; }
+    SRC="${newest%/}"
+    if ! grep -q 'qwen4_exp' "$SRC/config.json"; then
+        echo "WARNING: $REPO config does not mention qwen4_exp — continuing," >&2
+        echo "but the Q8 N-gram override only applies to that family" >&2
+    fi
+fi
+
 if [ -z "$SRC" ]; then
     # Auto-discover: newest snapshot of every cached model whose config
     # selects the qwen4_exp (Flash-Next) family — official Qwen release,
     # uncensored forks, whatever the cache holds. Exactly one match is
-    # used silently; zero or several require an explicit --src.
-    HUB="${HF_HUB_CACHE:-$HOME/.cache/huggingface/hub}"
+    # used silently; zero or several require an explicit repo or --src.
     MATCHES=""
     for model_dir in "$HUB"/models--*; do
         [ -d "$model_dir/snapshots" ] || continue
@@ -93,16 +131,20 @@ if [ -z "$SRC" ]; then
     fi
 fi
 
-# Output tag derived from the source: models--Org--Name -> Name, so the
-# official release and forks never share an output directory.
-case "$SRC" in
-    *models--*)
-        _tag="${SRC%%/snapshots/*}"
-        _tag="${_tag##*models--}"
-        MODEL_TAG="${_tag#*--}"
-        ;;
-    *) MODEL_TAG="custom-model" ;;
-esac
+# Output tag derived from the source: repo pair -> Name, models--Org--Name
+# path -> Name, so official and fork quants never share an output directory.
+if [ -n "${REPO:-}" ]; then
+    MODEL_TAG="${REPO##*/}"
+else
+    case "$SRC" in
+        *models--*)
+            _tag="${SRC%%/snapshots/*}"
+            _tag="${_tag##*models--}"
+            MODEL_TAG="${_tag#*--}"
+            ;;
+        *) MODEL_TAG="custom-model" ;;
+    esac
+fi
 
 BUNDLE="/tmp/calibration-se.txt"
 OUT="$MODELS_OUT/$MODEL_TAG-oQ${OQ_LEVEL}e-$VERSION"
