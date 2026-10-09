@@ -289,3 +289,35 @@ JSON (collector, same event):
 Incident reading: the warn line is the cause and any error line is the symptom, joined on requestId — a 403 ownership refusal stays info because the system worked (it refused), while the pool-saturation warn needs a human before it becomes errors. Business-error codes ride in outcome beside the level, so the error-rate alert counts 5xx plus failed outcomes, never 4xx volume that an attacker controls.
 Anti-pattern: log.error on every 404/403, so a credential-stuffing spray becomes a log flood that pages the team — the flood is the DoS completing itself; or debug in the hot path in production, paying double (allocation plus collector cardinality) for lines nobody reads; or one format per service, so the join key changes spelling at the gateway.
 Verification: a fixture 403 produces exactly one info line carrying outcome=forbidden and zero error lines; prod sampling asserts debug lines at zero; the alert routes on error plus warn-rate, and a spray drill (10k forged 403s) pages nobody while a pool-exhaustion drill pages once with the owner attached.
+
+---
+
+Signal needed: collector pipeline backpressure with an explicit loss ordering.
+Schema: receivers feed processors (memory limiter, then batch) feeding exporters with bounded queues and declared overflow policy per pipeline (drop oldest vs block the receiver); the collector's self-telemetry counts every drop by pipeline.
+Incident reading: a burst arrives as declared, counted drops — never as a collector outage, and never as silent gaps discovered weeks later.
+Anti-pattern: default-unbounded queues on every stage, one traffic spike exhausting collector memory fleet-wide and losing the incident's own telemetry first.
+Verification: burst drill at a multiple of sustained traffic shows bounded memory, counted drops, recovery without restart; loss ordering documented per pipeline and asserted in config review.
+
+---
+
+Signal needed: trace attribute allow-list per service enforced at creation.
+Schema: allow-listed attributes per span kind (route template, system, destination); everything else dropped when the span is built, high-cardinality values refused rather than truncated.
+Incident reading: traces stay joinable and cheap because attribute shape is a contract versioned with the service, not an accident of whatever the code happened to attach.
+Anti-pattern: arbitrary context dumps as attributes, cardinality and sensitive data exploding together while each team assumes another team curates.
+Verification: attribute-schema test per service (unknown attribute fails the build); sensitive-value probe on attributes denied; cardinality ledger unchanged by the change under test.
+
+---
+
+Signal needed: log archival lifecycle with a rehearsed rehydration path.
+Schema: hot retention in days (searchable), warm object storage in months (queryable slowly), deletion per schedule with owner; rehydration procedure documented with time bounds per date-range size.
+Incident reading: last quarter's incident stays answerable without keeping everything hot; rehydration time is a known number, not discovered mid-investigation.
+Anti-pattern: infinite hot retention until the bill forces a panicked delete-everything, destroying the audit trail in the middle of its useful life.
+Verification: rehydration drill restores a stated date range within the bound; retention schedule per log class with owner and legal basis; delete jobs assert completion.
+
+---
+
+Signal needed: fleet rollout for agent and collector config changes.
+Schema: versioned collector configuration, canary cohort receiving changes first, config-hash metric reported per agent, drift alert on locally edited configs.
+Incident reading: a bad pipeline change shows as canary-only degradation with instant rollback, never as fleet-wide blindness discovered at the next incident.
+Anti-pattern: hand-edited configs diverging per host until nobody can state what the fleet runs, and every incident response starts with configuration archaeology.
+Verification: canary drill (harmful batch sizing) contained to the cohort with automatic rollback; config-hash dashboard shows a single version fleet-wide; unmanaged-edit probe alerts within the stated window.
