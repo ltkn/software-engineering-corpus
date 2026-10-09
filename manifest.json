@@ -12,8 +12,8 @@
   },
   "bundle": {
     "target_tokens": "200k-250k weighted",
-    "blocks_counted": 1475,
-    "unweighted_estimate": "~214.1k est of 1470 counted blocks in the 28 weighted files (bytes/5.5 pre-check, code-density pass 2026-10-08 +8 blocks plus edit-mechanics pass 2026-10-08 +6 blocks plus comprehension-algo-dialect pass 2026-10-08 +12 blocks; ~865.2k as sum(tokens x weight); all 31 bundle-scope files including the unweighted 29/30 are 1475 blocks)",
+    "blocks_counted": 1512,
+    "unweighted_estimate": "~224.6k est of 1512 counted blocks in the 28 weighted files (bytes/5.5 pre-check, code-density pass 2026-10-08 +8 blocks plus edit-mechanics pass 2026-10-08 +6 blocks plus comprehension-algo-dialect pass 2026-10-08 +12 blocks plus mined Multi-SWE-bench repair loops +37 blocks in 02; ~912.8k as sum(tokens x weight); all 31 bundle-scope files including the unweighted 29/30 are 1512 blocks)",
     "eval": [
       "eval/heldout-se.txt",
       "eval/heldout-general.txt",
@@ -33,8 +33,8 @@
     },
     {
       "id": "02-repair-loops",
-      "blocks": 89,
-      "tokens": "est ~12.7k (pre-check 68.3 KB, ~143/block, 2026-10-08)",
+      "blocks": 126,
+      "tokens": "est ~23.3k",
       "share": 4.5,
       "code_forward_target": null
     },
@@ -242,6 +242,69 @@
       "code_forward_target": null
     }
   ],
-  "ledger": "populate at implementation: one entry per baseline {name, version, status, as-of, source}. Stamped now: MITRE ATT&CK Enterprise v19.2 {status: current, as-of: 2026-10-07, source: attack.mitre.org} — the technique-ID vocabulary for 31 and 08.",
-  "license": "TBD, must be permissive before first release"
+  "ledger": "populate at implementation: one entry per baseline {name, version, status, as-of, source}. Stamped now: MITRE ATT&CK Enterprise v19.2 {status: current, as-of: 2026-10-07, source: attack.mitre.org} \u2014 the technique-ID vocabulary for 31 and 08.",
+  "license": "TBD, must be permissive before first release",
+  "mined": {
+    "source": "ByteDance-Seed/Multi-SWE-bench (harness Apache-2.0; dataset CC0 with source-license compliance)",
+    "allowlist": {
+      "alibaba__fastjson2": "Apache-2.0",
+      "apache__dubbo": "Apache-2.0",
+      "fasterxml__jackson-core": "Apache-2.0",
+      "fasterxml__jackson-databind": "Apache-2.0",
+      "fasterxml__jackson-dataformat-xml": "Apache-2.0",
+      "google__gson": "Apache-2.0",
+      "googlecontainertools__jib": "Apache-2.0",
+      "mockito__mockito": "MIT",
+      "darkreader__darkreader": "ISC",
+      "mui__material-ui": "MIT",
+      "vuejs__core": "MIT"
+    },
+    "excluded": [
+      "elastic__logstash (Elastic License/SSPL)"
+    ],
+    "split_rule": "sha1(instance_id) % 2: even=mined, odd=sealed holdout",
+    "mined_count": 37,
+    "holdout_count": 149,
+    "holdout_ids": "eval/mined-holdout-ids.txt (sealed: never add these instances to calibration)",
+    "target_file": "02-repair-loops.txt",
+    "mined_instance_ids": [
+      "darkreader__darkreader-7241",
+      "fasterxml__jackson-core-183",
+      "fasterxml__jackson-databind-3701",
+      "fasterxml__jackson-dataformat-xml-544",
+      "googlecontainertools__jib-4035",
+      "mockito__mockito-3173",
+      "mui__material-ui-34445",
+      "vuejs__core-11625",
+      "alibaba__fastjson2-82",
+      "darkreader__darkreader-6747",
+      "fasterxml__jackson-databind-4257",
+      "googlecontainertools__jib-2542",
+      "mui__material-ui-35838",
+      "fasterxml__jackson-core-1053",
+      "fasterxml__jackson-databind-4050",
+      "fasterxml__jackson-dataformat-xml-590",
+      "mockito__mockito-3167",
+      "mui__material-ui-24010",
+      "fasterxml__jackson-core-1142",
+      "fasterxml__jackson-databind-4338",
+      "mockito__mockito-3133",
+      "mui__material-ui-33880",
+      "mui__material-ui-29613",
+      "vuejs__core-11165",
+      "mui__material-ui-34437",
+      "vuejs__core-8470",
+      "fasterxml__jackson-core-1172",
+      "fasterxml__jackson-databind-4487",
+      "mui__material-ui-30374",
+      "mui__material-ui-36853",
+      "fasterxml__jackson-databind-4311",
+      "mui__material-ui-25637",
+      "fasterxml__jackson-databind-4426",
+      "mui__material-ui-39775",
+      "fasterxml__jackson-databind-4132",
+      "mui__material-ui-24205",
+      "mui__material-ui-23884"
+    ]
+  }
 }
