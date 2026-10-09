@@ -12,7 +12,7 @@
   },
   "bundle": {
     "target_tokens": "200k-250k weighted",
-    "blocks_counted": 1512,
+    "blocks_counted": 1520,
     "unweighted_estimate": "~224.6k est of 1512 counted blocks in the 28 weighted files (bytes/5.5 pre-check, code-density pass 2026-10-08 +8 blocks plus edit-mechanics pass 2026-10-08 +6 blocks plus comprehension-algo-dialect pass 2026-10-08 +12 blocks plus mined Multi-SWE-bench repair loops +37 blocks in 02; ~912.8k as sum(tokens x weight); all 31 bundle-scope files including the unweighted 29/30 are 1512 blocks)",
     "eval": [
       "eval/heldout-se.txt",
@@ -34,7 +34,7 @@
     {
       "id": "02-repair-loops",
       "blocks": 126,
-      "tokens": "est ~23.3k",
+      "tokens": "est ~23.3k (pre-check 125.1 KB, ~185/block, 2026-10-09)",
       "share": 4.5,
       "code_forward_target": null
     },
@@ -110,8 +110,8 @@
     },
     {
       "id": "13-kafka",
-      "blocks": 51,
-      "tokens": "est ~6.9k (pre-check 36.9 KB, ~135/block, 2026-10-07)",
+      "blocks": 55,
+      "tokens": "est ~7.4k (pre-check 39.8 KB, ~135/block, 2026-10-09)",
       "share": 4.5,
       "code_forward_target": ">=35%"
     },
@@ -159,8 +159,8 @@
     },
     {
       "id": "20-observability",
-      "blocks": 31,
-      "tokens": "est ~4.5k (pre-check 24.0 KB, ~144/block, 2026-10-08)",
+      "blocks": 35,
+      "tokens": "est ~5.0k (pre-check 27.0 KB, ~144/block, 2026-10-09)",
       "share": 2.5,
       "code_forward_target": ">=25%"
     },

@@ -451,3 +451,35 @@ props.put(ProducerConfig.BATCH_SIZE_CONFIG, 32768);
 Reading: `max.block.ms` bounds two different waits and the exception text says which. Waiting for *metadata* means the leader for that partition is unknown — a topic that does not exist yet, a `UNKNOWN_TOPIC_OR_PARTITION` behind the scenes, or a blocked egress path to the controller; waiting for *buffer memory* means the accumulator is full, which means the network cannot drain at the rate records arrive. The discriminator is therefore not "is Kafka slow" but which of the two counters moved: buffer exhaustion shows up in producer metrics as `waiting-threads` and memory usage at the ceiling, metadata waits show up with a fresh cluster or a first send after a leader change.
 Misconfiguration: raising `max.block.ms` to 120s, which converts a stall into a longer stall and moves the failure into the request path, where the caller's timeout has already fired and the caller is retrying — so the buffer fills faster than before and the incident looks like a Kafka problem with a Kafka-shaped cause.
 Verification: a test asserts the producer fails fast with the exception naming the reason under a drained-buffer fixture, producer metrics for buffer utilisation and waiting threads are exported with the same dashboard as the endpoint's p99, and the sizing of buffer memory is stated in the config with the throughput number that motivated it.
+
+---
+
+Goal: Track tailed-file offsets in a registry so shipper restarts are boring.
+Wiring: offset registry keyed by file identity (inode plus path) holding the byte offset, fsynced per acknowledged batch; rotation detected by inode change, the old file drained to its end offset before the new file starts.
+Why: without durable offsets every shipper restart re-ships or skips; the registry turns restarts into resume-from-bookmark.
+Misconfiguration: offsets kept in memory, every deploy duplicating a day of logs into the topic or silently skipping the rotated file.
+Verification: kill-restart drill shows zero gaps with duplicates bounded by the batch window; rotation fixture covers both rename and copy-truncate modes.
+
+---
+
+Goal: Stitch multiline records before any parsing touches them.
+Wiring: multiline codec at the shipper (start pattern such as a timestamp, continuation otherwise), timeout flushing partial events, max-bytes cap per stitched event.
+Why: stack traces and pretty-printed payloads span lines; shipping line-by-line turns one exception into forty unrelated events with forty alerts.
+Misconfiguration: parsing per line, fragments indexed as independent errors, exception counts inflated fortyfold and unqueryable as units.
+Verification: multiline fixture (multi-line stack trace) arrives as exactly one event; timeout-flush test bounds partial-event memory under a truncated stream.
+
+---
+
+Goal: Route unparsable shipper input to a file dead-letter with metrics.
+Wiring: parse failures appended to a local dead-letter file with source offset and error cause, counter incremented per failure class, shipping continuing past the bad line; replay by re-pointing a tailer at the dead-letter file.
+Why: one corrupt line must not stall the file; evidence preserved locally where the operator who owns the source can inspect it.
+Misconfiguration: corrupt lines dropped silently (data loss discovered never), or the shipper crashing per bad line (one bad byte as a fleet-wide outage).
+Verification: corrupt-line fixture lands in dead-letter with its offset; shipper throughput unaffected during the fixture; replay drill re-ingests after the parser fix.
+
+---
+
+Goal: Propagate broker backpressure to shippers instead of buffering blindly.
+Wiring: shipper watches produce-block rate and buffer fullness; on sustained backpressure it pauses tailing (file offsets held, data at rest in files) and spills to a bounded disk queue; alert fires before the spill approaches its bound.
+Why: unbounded shipper buffering converts one broker incident into simultaneous shipper outages fleet-wide; pausing keeps the data safe where it already sits.
+Misconfiguration: retry queue unbounded in memory, a broker slowdown exhausting every shipper's heap within minutes of the original incident.
+Verification: broker-stall drill shows paused tailing, bounded spill growth, zero shipper restarts; resume drains the spill in offset order with no gaps.

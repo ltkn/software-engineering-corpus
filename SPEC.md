@@ -433,7 +433,7 @@ Shape per block: Goal → configuration plus minimal code → why these values �
 
 Mix target: ≥35% code-forward reference blocks (config, producer/consumer snippets).
 
-Budget: dense. Bundle share 4.5%. est ~4.8k tokens, 44 blocks (added the new consumer group protocol/KIP-1237 posture, the 4.3 OAUTHBEARER assertion + BrokerJwtValidator note, and two Legacy blocks for ZooKeeper-era config and classic-producer fencing).
+Budget: dense. Bundle share 4.5%. est ~4.8k tokens, 44 blocks (added the new consumer group protocol/KIP-1237 posture, the 4.3 OAUTHBEARER assertion + BrokerJwtValidator note, and two Legacy blocks for ZooKeeper-era config and classic-producer fencing); est ~7.4k, 55 blocks after clean-room shipper-side additions (offset registry, multiline stitching, file dead-letter, broker-backpressure propagation — no mined lineage).
 
 Boundaries: Java client mechanics stay minimal here (language in 10); failure transcripts are 02; outbox pattern mechanism is shared with 19 (each file states its own side: relay here, pattern rationale there).
 
@@ -599,7 +599,7 @@ Shape per block: Signal needed → schema or config fragment → how it reads du
 
 Mix target: ≥25% code-forward reference blocks (JSON log schemas, OTel config, alert rules).
 
-Budget: dense. Bundle share 2.5%. est ~2.6k tokens, 26 blocks (added the Boot OTel starter 4.1 anchor block and the tenant/baggage trust-boundary block).
+Budget: dense. Bundle share 2.5%. est ~2.6k tokens, 26 blocks (added the Boot OTel starter 4.1 anchor block and the tenant/baggage trust-boundary block); est ~5.0k, 35 blocks after clean-room pipeline additions (loss ordering, attribute allow-list, archival lifecycle, fleet rollout — no mined lineage).
 
 Boundaries: testing is 18 (which verifies behavior pre-prod); Java tooling mechanics are 10; incident containment is 06/09. If a block debugs code rather than production, it belongs in 02.
 
