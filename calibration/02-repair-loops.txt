@@ -949,3 +949,1361 @@ zero floating references
 $ audit-fork-secrets
 zero secrets resolvable in fork context
 5 consecutive PR builds green (3 fork, 2 main) plus one approval-gated deploy, with the tag-move drill (repoint a test tag, watch pin-lint fail before any job runs) asserted in the suite.
+
+---
+
+Failure: [Bug] Base64 padding in themes breaks the extension
+Bug Report
+
+Bug Description
+Using base64 encoded images in themes can sometimes break the extension if output is padded by `==`. This seems to be caused by the regex used on line 767:
+const delimiterRegex = /\s*={2,}\s*/gm;
+The problem with that regex is that it matches certain selectors containing base64 encoded strings like this one here:
+.CodeMirror-merge-r-deleted, .CodeMirror-merge-l-deleted {
+    background-image: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFNAAAAFklEQVQImWO84ePDwMCQ8uEDEwMMAAA1TAO4kytpLAAAAABJRU5ErkJggg==') !important;
+}
+which results in `') !im
+Diagnosis: change localized to src/generators/utils/parse.ts (1 hunk(s)); covered by tests/generators/utils/parse.tests.ts:Base64 in CSS.
+Fix:
+@@ -143,7 +143,7 @@ export function indexSitesFixesConfig<T extends SiteProps>(text: string): SitePr
+ 
+     let recordStart = 0;
+     // Delimiter between two blocks
+-    const delimiterRegex = /\s*={2,}\s*/gm;
++    const delimiterRegex = /^\s*={2,}\s*$/gm;
+     let delimiter: RegExpMatchArray;
+     let count = 0;
+     while ((delimiter = delimiterRegex.exec(text))) {
+Verify: fixed tests tests/generators/utils/parse.tests.ts:Base64 in CSS pass after the fix; patch run: 46 passed, 0 failed.
+
+---
+
+Failure: Inconsistent TextBuffer#getTextBuffer behavior
+Hi, I'm using 2.4.2. While I'm working on CBORParser, I noticed that CBORParser#getTextCharacters() returns sometimes `null` sometimes `[]` (empty array) when it's parsing empty string `""`.
+
+While debugging, I noticed that TextBuffer#getTextBuffer behaves inconsistently.
+
+TextBuffer buffer = new TextBuffer(new BufferRecycler());
+buffer.resetWithEmpty();
+buffer.getTextBuffer(); // returns null
+buffer.contentsAsString(); // returns empty string ""
+buffer.getTextBuffer(); // returns empty array []
+
+I think getTextBuffer should return the same value. Not sure which (`null` or `[]`) is expected th
+Diagnosis: change localized to src/main/java/com/fasterxml/jackson/core/util/TextBuffer.java (1 hunk(s)); covered by com.fasterxml.jackson.core.util.TestTextBuffer.
+Fix:
+@@ -304,7 +304,7 @@ public char[] getTextBuffer()
+             return (_resultArray = _resultString.toCharArray());
+         }
+         // Nope; but does it fit in just one segment?
+-        if (!_hasSegments)  return _currentSegment;
++        if (!_hasSegments && _currentSegment != null)  return _currentSegment;
+         // Nope, need to have/create a non-segmented array and return it
+         return contentsAsArray();
+     }
+Verify: fixed tests com.fasterxml.jackson.core.util.TestTextBuffer pass after the fix; patch run: 66 passed, 0 failed.
+
+---
+
+Failure: Allow custom `JsonNode` implementations
+**Is your feature request related to a problem? Please describe.**
+`com.fasterxml.jackson.databind.ObjectReader#readValue(JsonNode)` currently only works with `JsonNode` implementations from the `jackson-databind` module. It does not work with custom `JsonNode` implementations. We have a use case where we would like to use custom `JsonNode` implementations.
+
+**Describe the solution you'd like**
+`com.fasterxml.jackson.databind.ObjectReader#readValue(JsonNode)` should work with any  `JsonNode` implementation. The reason this currently does not work is because `ObjectCursor` currently casts to `O
+Diagnosis: change localized to src/main/java/com/fasterxml/jackson/databind/node/NodeCursor.java (1 hunk(s)); covered by com.fasterxml.jackson.databind.ObjectReaderTest.
+Fix:
+@@ -195,7 +195,7 @@ protected final static class ObjectCursor
+         public ObjectCursor(JsonNode n, NodeCursor p)
+         {
+             super(JsonStreamContext.TYPE_OBJECT, p);
+-            _contents = ((ObjectNode) n).fields();
++            _contents = n.fields();
+             _needEntry = true;
+         }
+Verify: fixed tests com.fasterxml.jackson.databind.ObjectReaderTest pass after the fix; patch run: 598 passed, 0 failed.
+
+---
+
+Failure: `@JacksonXmlText` does not work when paired with `@JsonRawValue`
+I apologize if there's a similar issue already opened - I didn't find anything when searching.
+
+**Describe the bug**
+When a field has both the `@JsonRawValue` and the `@JacksonXmlText` annotations, the `@JacksonXlmText` annotation has no effect.
+
+**Version information**
+com.fasterxml.jackson.core:jackson-annotations:2.13.3
+com.fasterxml.jackson.dataformat:jackson-dataformat-xml:2.13.3
+
+**To Reproduce**
+
+@JacksonXmlRootElement(localName = "test-pojo")
+public class TestPojo {
+     @JacksonXmlProperty(isAttribute = true)
+     String id;
+
+     @JacksonXmlText
+     @JsonRawValue
+     String value;
+Diagnosis: change localized to src/main/java/com/fasterxml/jackson/dataformat/xml/ser/ToXmlGenerator.java (3 hunk(s)); covered by com.fasterxml.jackson.dataformat.xml.misc.XmlTextTest, com.fasterxml.jackson.dataformat.xml.stream.XmlGeneratorTest.
+Fix:
+@@ -732,6 +732,8 @@ public void writeRawValue(String text) throws IOException {
+ 
+             if (_nextIsAttribute) {
+                 _xmlWriter.writeAttribute(_nextName.getNamespaceURI(), _nextName.getLocalPart(), text);
++            } else if (checkNextIsUnwrapped()) {
++                _xmlWriter.writeRaw(text);
+             } else {
+                 _xmlWriter.writeStartElement(_nextName.getNamespaceURI(), _nextName.getLocalPart());
+                 _xmlWriter.writeRaw(text);
+[…2 further hunk(s) trimmed for the block budget]
+Verify: fixed tests com.fasterxml.jackson.dataformat.xml.misc.XmlTextTest, com.fasterxml.jackson.dataformat.xml.stream.XmlGeneratorTest pass after the fix; patch run: 109 passed, 0 failed.
+
+---
+
+Failure: Jib authentification does not respect www-authenticate specification allowing Basic auth without specifying realm
+**Environment**:
+
+- *Jib version:* 3.3.2
+- *Build tool:* Gradle
+- *OS:* Macos Ventura 13.3.1
+
+**Description of the issue**:
+When trying to login to my self-hosted Docker registry, Jib fails with the following error:
+Caused by: com.google.cloud.tools.jib.api.RegistryAuthenticationFailedException: Failed to authenticate with registry <my registry> because: 'Bearer' was not found in the 'WWW-Authenticate' header, tried to parse: Basic
+Having a look to `com.google.cloud.tools.jib.registry.RegistryAuthenticator#fromAuthenticationMethod` I see that regexp used to determine authentification method ha
+Diagnosis: change localized to jib-core/src/main/java/com/google/cloud/tools/jib/registry/RegistryAuthenticator.java (1 hunk(s)); covered by jib-core:test, jib-cli:test, jib-maven-plugin:test.
+Fix:
+@@ -72,9 +72,9 @@ static Optional<RegistryAuthenticator> fromAuthenticationMethod(
+       @Nullable String userAgent,
+       FailoverHttpClient httpClient)
+       throws RegistryAuthenticationFailedException {
+-    // If the authentication method starts with 'basic ' (case insensitive), no registry
++    // If the authentication method starts with 'basic' (case insensitive), no registry
+     // authentication is needed.
+-    if (authenticationMethod.matches("^(?i)(basic) .*")) {
++    if (authenticationMethod.matches("^(?i)(basic).*")) {
+       return Optional.empty();
+     }
+Verify: fixed tests jib-core:test, jib-cli:test, jib-maven-plugin:test pass after the fix; patch run: 58 passed, 20 failed.
+
+---
+
+Failure: Annotation-based spying on a generic class breaks existing final/inline Spies
+Hello,
+
+I encountered an issue with JUnit5/Mockito when using `@Spy` annotation with generic types.
+Such configuration seems to break existing spies of Java `record` instances (inline mocks). The issue also occurs when using `Mockito.spy()` directly instead of the `@Spy` annotation. Example:
+
+@ExtendWith(MockitoExtension.class)
+class GenericSpyFailingTest {
+
+  // Removing this spy makes the test pass.
+  @Spy
+  private final List<String> genericSpy = List.of("item A", "item B");
+
+  @Spy
+  private ExampleRecord exampleRecord = new ExampleRecord("some value");
+
+  @Test
+  void exampleServiceUsesDe
+Diagnosis: change localized to src/main/java/org/mockito/internal/creation/bytebuddy/InlineDelegateByteBuddyMockMaker.java (4 hunk(s)); covered by java21:test.
+Fix:
+@@ -272,7 +272,9 @@ class InlineDelegateByteBuddyMockMaker
+                 type -> {
+                     if (isSuspended.get()) {
+                         return false;
+-                    } else if (mockitoConstruction.get() || currentConstruction.get() != null) {
++                    } else if ((currentMocking.get() != null
++                                    && type.isAssignableFrom(currentMocking.get()))
++                            || currentConstruction.get() != null) {
+                         return true;
+                     }
+                     Map<Class<?>, ?> interceptors = mockedConstruction.get();
+[…3 further hunk(s) trimmed for the block budget]
+Verify: fixed tests java21:test pass after the fix; patch run: 102 passed, 0 failed.
+
+---
+
+Failure: [Menu] ownerState is undefined when the Menu is opened
+Duplicates
+
+
+Latest version
+
+
+Steps to reproduce 🕹
+
+You can check here. When you click DASHBOARD button and error occurs.
+https://codesandbox.io/s/amazing-dubinsky-pkesu9?file=/index.js
+
+Current behavior 😯
+
+TypeError occurs.
+paper
+/index.js:20:31
+  17 | styleOverrides: {
+  18 |   paper: ({ ownerState }) => ({
+  19 |     marginTop:
+> 20 |       ownerState.anchorOrigin?.vertical === "bottom" &&
+     |                 ^
+  21 |       ownerState.transformOrigin?.vertical === "top"
+  22 |         ? "4px"
+  23 |         : 0
+
+Expected behavior 🤔
+
+no error occurs and can access ownerState.
+
+Context 🔦
+Diagnosis: change localized to packages/mui-material/src/Popover/Popover.js (1 hunk(s)); covered by /home/material-ui/packages/mui-envinfo/envinfo.test.js:@mui/envinfo includes info about the environment relevant to MUI, /home/material-ui/packages/mui-material/src/Popover/Popover.test.js:<Popover /> should not throw if ownerState is used in slot's styleOverrides.
+Fix:
+@@ -374,6 +374,7 @@ const Popover = React.forwardRef(function Popover(inProps, ref) {
+           {...PaperProps}
+           ref={handlePaperRef}
+           className={clsx(classes.paper, PaperProps.className)}
++          ownerState={ownerState}
+         >
+           {children}
+         </PopoverPaper>
+Verify: fixed tests /home/material-ui/packages/mui-envinfo/envinfo.test.js:@mui/envinfo includes info about the environment relevant to MUI, /home/material-ui/packages/mui-material/src/Popover/Popover.test.js:<Popover /> should not throw if ownerState is used in slot's styleOverrides pass after the fix; patch run: 6093 passed, 6 failed.
+
+---
+
+Failure: Errors in `computed` bypass `onErrorCaptured`
+Vue version
+
+3.4.38
+
+Link to minimal reproduction
+
+https://stackblitz.com/edit/vitejs-vite-kwgofp?file=src%2Fcomponents%2FNotCaptured.vue
+
+Steps to reproduce
+
+Preparations: Open the browser console
+
+1. Click 'Throw'
+
+
+What is expected?
+
+The same as when clicking 'Throw captured':
+- The UI should change according to the logic in App.vue
+- The error should not be visible in the console, only 'Capturing error'
+
+What is actually happening?
+
+- The UI does not change
+- The error is visible in the console
+- 'Capturing error' is not visible in the console
+
+System Info
+
+_No response_
+
+Any additional co
+Diagnosis: change localized to packages/runtime-core/src/apiWatch.ts (1 hunk(s)); covered by packages/runtime-core/__tests__/apiWatch.spec.ts > api: watch > watch + computed error should be caught by onErrorCaptured.
+Fix:
+@@ -400,7 +400,10 @@ function doWatch(
+   } else {
+     // default: 'pre'
+     job.flags! |= SchedulerJobFlags.PRE
+-    if (instance) job.id = instance.uid
++    if (instance) {
++      job.id = instance.uid
++      job.i = instance
++    }
+     scheduler = () => queueJob(job)
+   }
+   effect.scheduler = scheduler
+Verify: fixed tests packages/runtime-core/__tests__/apiWatch.spec.ts > api: watch > watch + computed error should be caught by onErrorCaptured pass after the fix; patch run: 3176 passed, 0 failed.
+
+---
+
+Failure: 判断字符串是否为JSON对象或JSON数组有问题
+![image](https://user-images.githubusercontent.com/9798724/165199526-ceb7c28a-8630-4515-94e1-820500bb1254.png)
+Diagnosis: change localized to core/src/main/java/com/alibaba/fastjson2/JSON.java (2 hunk(s)); covered by com.alibaba.fastjson2.issues.Issue81, com.alibaba.fastjson.atomic.AtomicBooleanReadOnlyTest, com.alibaba.fastjson.atomic.AtomicIntegerArrayFieldTest, com.alibaba.fastjson.atomic.AtomicIntegerReadOnlyTest.
+Fix:
+@@ -599,6 +599,9 @@ static boolean isValid(String text) {
+         if (text == null || text.length() == 0) {
+             return false;
+         }
++        if(!text.startsWith("{") & !text.startsWith("[")){
++            return false;
++        }
+         JSONReader jsonReader = JSONReader.of(text);
+         try {
+             jsonReader.skipValue();
+
+@@ -618,6 +621,9 @@ static boolean isValidArray(String text) {
+         if (text == null || text.length() == 0) {
+             return false;
+         }
++        if(!text.startsWith("[")){
++            return false;
++        }
+         JSONReader jsonReader = JSONReader.of(text);
+         try {
+             if (!jsonReader.isArray()) {
+Verify: fixed tests com.alibaba.fastjson2.issues.Issue81, com.alibaba.fastjson.atomic.AtomicBooleanReadOnlyTest, com.alibaba.fastjson.atomic.AtomicIntegerArrayFieldTest, com.alibaba.fastjson.atomic.AtomicIntegerReadOnlyTest pass after the fix; patch run: 957 passed, 0 failed.
+
+---
+
+Failure: [Bug] Incorrect `*` checking
+Bug Report
+
+Bug Description
+https://github.com/darkreader/darkreader/blob/d69522753bff6abea855bcbc7661642ffc950db4/src/generators/dynamic-theme.ts#L61
+seems to be wrong. As when #6738 is fixed, you will see that `fixes[fixes.length - 1].url[0] !== '*'` evaluate to true as it seems like likely meant to be `fixes[0].url[0] !== '*'`? As the last entry could be any domain from the `non-qualified domain` list.
+
+
+Website Address
+https://unix.stackexchange.com/questions/405783/why-does-man-print-gimme-gimme-gimme-at-0030
+
+Steps To Reproduce
+- Go to the sites.
+- Observe fixes aren't applied.
+
+Expected
+Diagnosis: change localized to src/generators/dynamic-theme.ts, src/generators/utils/parse.ts (3 hunk(s)); covered by tests/generators/utils/parse.tests.ts:Domain appearing in multiple records.
+Fix:
+@@ -58,10 +58,10 @@ export function getDynamicThemeFixesFor(url: string, frameURL: string, text: str
+         },
+     });
+ 
+-    if (fixes.length === 0 || fixes[fixes.length - 1].url[0] !== '*') {
++    if (fixes.length === 0 || fixes[0].url[0] !== '*') {
+         return null;
+     }
+-    const genericFix = fixes[fixes.length - 1];
++    const genericFix = fixes[0];
+ 
+     const common = {
+         url: genericFix.url,
+[…2 further hunk(s) trimmed for the block budget]
+Verify: fixed tests tests/generators/utils/parse.tests.ts:Domain appearing in multiple records pass after the fix; patch run: 41 passed, 0 failed.
+
+---
+
+Failure: `MapperFeature.REQUIRE_SETTERS_FOR_GETTERS` has no effect
+Hi, I've tried the code below to serialize properties that have both a getter and a setter. However the output is: `{"readonly":1,"readwrite":2}` while I expected it to be: `{"readwrite":2}`.
+
+public class Main {
+
+    public static class DataB {
+        private int readonly;
+        private int readwrite;
+
+        public DataB() {
+            readonly = 1;
+            readwrite = 2;
+        }
+
+        public int getReadwrite() {
+            return readwrite;
+        }
+        public void setReadwrite(int readwrite) {
+            this.readwrite = readwrite;
+        }
+        public int getReado
+Diagnosis: change localized to src/main/java/com/fasterxml/jackson/databind/introspect/POJOPropertyBuilder.java (1 hunk(s)); covered by com.fasterxml.jackson.databind.ser.RequireSetterForGetter736Test.
+Fix:
+@@ -394,7 +394,11 @@ public Class<?> getRawPrimaryType() {
+ 
+     @Override
+     public boolean couldDeserialize() {
+-        return (_ctorParameters != null) || (_setters != null) || (_fields != null);
++        return (_ctorParameters != null)
++            || (_setters != null)
++            || ((_fields != null)
++                // [databind#736] Since 2.16 : Fix `REQUIRE_SETTERS_FOR_GETTERS` taking no effect
++                && (_anyVisible(_fields)));
+     }
+ 
+     @Override
+Verify: fixed tests com.fasterxml.jackson.databind.ser.RequireSetterForGetter736Test pass after the fix; patch run: 635 passed, 1 failed.
+
+---
+
+Failure: NPE if the server doesn't provide any HTTP content for an error
+A user reported an NPE on the [Gitter channel](https://gitter.im/google/jib).
+
+Caused by: java.lang.NullPointerException
+	at com.fasterxml.jackson.core.JsonFactory.createParser(JsonFactory.java:889)
+	at com.fasterxml.jackson.databind.ObjectMapper.readValue(ObjectMapper.java:3005)
+	at com.google.cloud.tools.jib.json.JsonTemplateMapper.readJson(JsonTemplateMapper.java:118)
+	at com.google.cloud.tools.jib.json.JsonTemplateMapper.readJson (JsonTemplateMapper.java:118)
+	at com.google.cloud.tools.jib.registry.RegistryEndpointCaller.newRegistryErrorException (RegistryEndpointCaller.java:194)
+
+The NPE
+Diagnosis: change localized to jib-core/src/main/java/com/google/cloud/tools/jib/registry/RegistryEndpointCaller.java (2 hunk(s)); covered by jib-core:test.
+Fix:
+@@ -46,8 +46,8 @@
+ class RegistryEndpointCaller<T> {
+ 
+   /**
+-   * <a
+-   * href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/308">https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/308</a>.
++   * <a href =
++   * "https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/308">https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/308</a>.
+    */
+   @VisibleForTesting static final int STATUS_CODE_PERMANENT_REDIRECT = 308;
+[…1 further hunk(s) trimmed for the block budget]
+Verify: fixed tests jib-core:test pass after the fix; patch run: 75 passed, 11 failed.
+
+---
+
+Failure: [Joy][Menu] Scrollable menu jumps to end and back to start on load
+Duplicates
+
+
+Latest version
+
+
+Steps to reproduce 🕹
+
+Link to live example: https://codesandbox.io/s/k0zipv?file=/demo.tsx
+
+Steps:
+
+1. Open a menu with scrollable contents.
+
+
+Current behavior 😯
+
+On load, the menu will briefly jump to the end and back to the start.
+
+Expected behavior 🤔
+
+The menu doesn't scroll on load.
+
+Context 🔦
+
+n/a
+
+Your environment 🌎
+
+n/a
+Diagnosis: change localized to packages/mui-base/src/ListboxUnstyled/useListbox.ts (1 hunk(s)); covered by /home/material-ui/packages/mui-base/src/MenuUnstyled/MenuUnstyled.test.tsx:MenuUnstyled after initialization highlights the first item when the menu is opened.
+Fix:
+@@ -267,7 +267,7 @@ export default function useListbox<TOption>(props: UseListboxParameters<TOption>
+     return {
+       selected,
+       disabled,
+-      highlighted: highlightedIndex === index,
++      highlighted: highlightedIndex === index && index !== -1,
+     };
+   };
+Verify: fixed tests /home/material-ui/packages/mui-base/src/MenuUnstyled/MenuUnstyled.test.tsx:MenuUnstyled after initialization highlights the first item when the menu is opened pass after the fix; patch run: 7164 passed, 5 failed.
+
+---
+
+Failure: Compare `_snapshotInfo` in `Version`
+According to [semver](https://semver.org/), 1.0.0-alpha < 1.0.0-beta.
+
+However, `Version.compareTo` does not account for `_snapshotInfo` in its comparison: https://github.com/FasterXML/jackson-core/blob/2.16/src/main/java/com/fasterxml/jackson/core/Version.java#L135
+
+Does it make sense to compare `_snapshotInfo` as well?
+Diagnosis: change localized to src/main/java/com/fasterxml/jackson/core/Version.java (3 hunk(s)); covered by com.fasterxml.jackson.core.VersionTest.
+Fix:
+@@ -145,6 +147,17 @@ public int compareTo(Version other)
+                     diff = _minorVersion - other._minorVersion;
+                     if (diff == 0) {
+                         diff = _patchLevel - other._patchLevel;
++                        if (diff == 0) {
++                          if (isSnapshot() && other.isSnapshot()) {
++                            diff = _snapshotInfo.compareTo(other._snapshotInfo);
++                          } else if (isSnapshot() && !other.isSnapshot()) {
++                            diff = -1;
++                          } else if (!isSnapshot() && other.isSnapshot()) {
++                            diff = 1;
++                          } else {
++                            diff = 0;
++                          }
++                        }
+                     }
+                 }
+             }
+[…2 further hunk(s) trimmed for the block budget]
+Verify: fixed tests com.fasterxml.jackson.core.VersionTest pass after the fix; patch run: 174 passed, 0 failed.
+
+---
+
+Failure: `ObjectMapper.valueToTree()` will ignore the configuration `SerializationFeature.WRAP_ROOT_VALUE`
+Search before asking
+
+
+Describe the bug
+
+When we upgrade the jackson-databind version, then we found the ObjectMapper.valueToTree will return the different result with the previous version. Actually, we configured the SerializationFeature.WRAP_ROOT_VALUE. 
+
+The class is like this:
+
+@JsonRootName("event")
+public class Event {
+
+}
+
+The previous ObjectMapper.valueToTree result: 
+![image](https://github.com/FasterXML/jackson-databind/assets/12562318/a7e457b5-dacd-49d2-8f0f-79f266770d55)
+
+After upgraded the version result:
+![image](https://github.com/FasterXML/jackson-databind/assets/12562318/0ab442
+Diagnosis: change localized to src/main/java/com/fasterxml/jackson/databind/ObjectMapper.java (1 hunk(s)); covered by com.fasterxml.jackson.databind.node.TestConversions.
+Fix:
+@@ -3521,7 +3521,8 @@ public <T extends JsonNode> T valueToTree(Object fromValue)
+ 
+         // inlined 'writeValue' with minor changes:
+         // first: disable wrapping when writing
+-        final SerializationConfig config = getSerializationConfig().without(SerializationFeature.WRAP_ROOT_VALUE);
++        // [databind#4047] ObjectMapper.valueToTree will ignore the configuration SerializationFeature.WRAP_ROOT_VALUE
++        final SerializationConfig config = getSerializationConfig();
+         final DefaultSerializerProvider context = _serializerProvider(config);
+ 
+         // Then create TokenBuffer to use as JsonGenerator
+Verify: fixed tests com.fasterxml.jackson.databind.node.TestConversions pass after the fix; patch run: 623 passed, 0 failed.
+
+---
+
+Failure: `XmlMapper` serializes `@JsonAppend` property twice
+Discussed in https://github.com/FasterXML/jackson-databind/discussions/3806
+
+<div type='discussions-op-text'>
+
+<sup>Originally posted by **stepince** March  5, 2023</sup>
+XmlMapper is serializing jsonAppend virtual property twice.  ObjectMapper for json works correctly.
+
+jackson version: 2.14.1
+
+public class VirtualBeanPropertyWriterTest {
+    @Test
+    public void testJsonAppend() throws Exception {
+        ObjectMapper mapper = new XmlMapper();
+        String xml = mapper.writeValueAsString(new Pojo("foo"));
+        assertEquals("<Pojo><name>foo</name><virtual>bar</virtual></Pojo>",xml);
+Diagnosis: change localized to release-notes/VERSION-2.x, src/main/java/com/fasterxml/jackson/dataformat/xml/JacksonXmlAnnotationIntrospector.java (3 hunk(s)); covered by com.fasterxml.jackson.dataformat.xml.ser.JsonAppend578Test.
+Fix:
+@@ -124,6 +126,19 @@ public String findNamespace(MapperConfig<?> config, Annotated ann)
+         return null;
+     }
+ 
++    /**
++     * Due to issue [dataformat-xml#578] need to suppress calls to this method
++     * to avoid duplicate virtual properties from being added. Not elegant
++     * but .. works.
++     *
++     * @since 2.15
++     */
++    @Override
++    public void findAndAddVirtualProperties(MapperConfig<?> config, AnnotatedClass ac,
++            List<BeanPropertyWriter> properties) {
++        return;
++    }
++
+     /*
+     /**********************************************************************
+     /* XmlAnnotationIntrospector, isXxx methods
+[…2 further hunk(s) trimmed for the block budget]
+Verify: fixed tests com.fasterxml.jackson.dataformat.xml.ser.JsonAppend578Test pass after the fix; patch run: 117 passed, 0 failed.
+
+---
+
+Failure: Deep Stubs Incompatible With Mocking Enum
+**The following code works:**
+
+@ExtendWith(MockitoExtension.class)
+class BoardTest {
+    @Mock
+    Piece piece;
+
+    private Board instance;
+
+    @BeforeEach
+    void setUp() {
+        instance = new Board(piece, 10);
+    }
+
+    @Test
+    void getCostPerSpace() {
+        when(piece.getPiece()).thenReturn(PieceType.SQUARE);
+        double expected = 2d;
+        assertThat(instance.getCostPerSpace()).isEqualTo(expected);
+    }
+}
+
+**The following code fails:**
+
+@ExtendWith(MockitoExtension.class)
+class BoardTest {
+    @Mock(answer = RETURNS_DEEP_STUBS)
+    Piece piece;
+
+    private Board instance
+Diagnosis: change localized to src/main/java/org/mockito/internal/creation/bytebuddy/InlineDelegateByteBuddyMockMaker.java (3 hunk(s)); covered by java21:test.
+Fix:
+@@ -457,7 +465,7 @@ private <T> RuntimeException prettifyFailure(
+         }
+         throw new MockitoException(
+                 join(
+-                        "Mockito cannot mock this class: " + mockFeatures.getTypeToMock() + ".",
++                        "Mockito cannot mock this class: " + typeToMock + ".",
+                         "",
+                         "If you're not sure why you're getting this error, please open an issue on GitHub.",
+                         "",
+[…2 further hunk(s) trimmed for the block budget]
+Verify: fixed tests java21:test pass after the fix; patch run: 104 passed, 0 failed.
+
+---
+
+Failure: [system] transform and themeKey do not work together when using style from material-ui/system
+Using the material-ui system function 'style'  does not work properly when used with theme and styled-components.
+
+const spacing = style({
+  prop: "spacing",
+  cssProperty: "margin",
+  themeKey: "spacing",
+  transform: (value) => {
+    // This is never run when theme is provided to a styled-component
+    console.log(value);
+    return `-${value}px`;
+  }
+});
+
+
+
+
+
+- [ x] The issue is present in the latest release.
+- [ x] I have searched the [issues](https://github.com/mui-org/material-ui/issues) of this repository and believe that this is not a duplicate.
+
+This is addressed in a closed PR (stale
+Diagnosis: change localized to packages/material-ui-system/src/style.js (1 hunk(s)); covered by /home/material-ui/packages/material-ui-system/src/style.test.js:style should transform the property correctly using theme.
+Fix:
+@@ -19,10 +19,10 @@ function getValue(themeMapping, transform, propValueFinal, userValue = propValue
+     value = themeMapping[propValueFinal] || userValue;
+   } else {
+     value = getPath(themeMapping, propValueFinal) || userValue;
++  }
+ 
+-    if (transform) {
+-      value = transform(value);
+-    }
++  if (transform) {
++    value = transform(value);
+   }
+ 
+   return value;
+Verify: fixed tests /home/material-ui/packages/material-ui-system/src/style.test.js:style should transform the property correctly using theme pass after the fix; patch run: 3405 passed, 7 failed.
+
+---
+
+Failure: NPE in `Version.equals()` if snapshot-info `null`
+Hi!
+
+The `Version.equals` implementation updated with 2.16.0 for [comparing snapshots](https://github.com/FasterXML/jackson-core/issues/1050) raises an NPE if snapshotInfo is null.
+I recommend to sanitize the snapshoptInfo within constructor as done for groupId and artifactId.
+Diagnosis: change localized to release-notes/VERSION-2.x, src/main/java/com/fasterxml/jackson/core/Version.java (6 hunk(s)); covered by com.fasterxml.jackson.core.TestVersions.
+Fix:
+@@ -112,9 +117,11 @@ public String toFullString() {
+         return sb.toString();
+     }
+ 
+-    @Override public int hashCode() {
+-        return _artifactId.hashCode() ^ _groupId.hashCode() ^ _snapshotInfo.hashCode()
+-            + _majorVersion - _minorVersion + _patchLevel;
++    @Override
++    public int hashCode() {
++        return _artifactId.hashCode() ^ _groupId.hashCode()
++                ^ Objects.hashCode(_snapshotInfo)
++                + _majorVersion - _minorVersion + _patchLevel;
+     }
+ 
+     @Override
+
+@@ -79,7 +81,9 @@ public Version(int major, int minor, int patchLevel, String snapshotInfo,
+      */
+     public boolean isUnknownVersion() { return (this == UNKNOWN_VERSION); }
+ 
+-    public boolean isSnapshot() { return (_snapshotInfo != null && _snapshotInfo.length() > 0); }
++    public boolean isSnapshot() {
++        return (_snapshotInfo != null) && (_snapshotInfo.length() > 0);
++    }
+ 
+     /**
+      * @return {@code True} if this instance is the one returned by
+[…4 further hunk(s) trimmed for the block budget]
+Verify: fixed tests com.fasterxml.jackson.core.TestVersions pass after the fix; patch run: 180 passed, 0 failed.
+
+---
+
+Failure: `AtomicReference` serializer does not support `@JsonSerialize(contentConverter=...)`
+Describe your Issue
+
+(note: root cause for https://github.com/FasterXML/jackson-modules-java8/issues/294)
+
+Looks like `contentConverter` property of `@JsonSerialize` annotation is not supported for `AtomicReference`: and since functionality comes from `ReferenceTypeSerializer` like also other "reference" types (JDK8 and Guava `Optional`s).
+Diagnosis: change localized to release-notes/VERSION-2.x, src/main/java/com/fasterxml/jackson/databind/ser/std/ReferenceTypeSerializer.java (2 hunk(s)); covered by com.fasterxml.jackson.databind.convert.ConvertingSerializerTest.
+Fix:
+@@ -37,6 +37,7 @@ Project: jackson-databind
+   deserialization with `READ_UNKNOWN_ENUM_VALUES_AS_NULL` and `FAIL_ON_INVALID_SUBTYPE` wrong
+  (reported by @ivan-zaitsev)
+  (fix contributed by Joo-Hyuk K)
++#4337: `AtomicReference` serializer does not support `@JsonSerialize(contentConverter=...)`
+ 
+ 2.16.2 (not yet released)
+ 
+diff --git a/src/main/java/com/fasterxml/jackson/databind/ser/std/ReferenceTypeSerializer.java b/src/main/java/com/fasterxml/jackson/databind/ser/std/ReferenceTypeSerializer.java
+index 1e31bdfee4..b37102509b 100644
+--- a/src/main/java/com/fasterxml/jackson/databind/ser/std/ReferenceTypeSerializer.java
++++ b/src/main/java/com/fasterxml/jackson/databind/ser/std/ReferenceTypeSerializer.java
+[…1 further hunk(s) trimmed for the block budget]
+Verify: fixed tests com.fasterxml.jackson.databind.convert.ConvertingSerializerTest pass after the fix; patch run: 643 passed, 0 failed.
+
+---
+
+Failure: Support @Captor injection in JUnit 5 method parameters
+There is already an open PR #1350 that proposes and adds support for `@Mock`. This issue is to extend on that PR if / when it gets merged to also support the `@Captor` annotation in method parameters. This would allow to inject method specific generic `ArgumentCaptor` that can't be caught with `ArgumentCaptor.of(Class)`.
+Diagnosis: change localized to src/main/java/org/mockito/Captor.java, src/main/java/org/mockito/internal/configuration/CaptorAnnotationProcessor.java, src/main/java/org/mockito/internal/util/reflection/GenericMaster.java, subprojects/junit-jupiter/src/main/java/org/mockito/junit/jupiter/MockitoExtension.java (14 hunk(s)); covered by junit-jupiter:compileTestJava.
+Fix:
+@@ -20,14 +19,15 @@
+ import org.junit.jupiter.api.extension.ParameterContext;
+ import org.junit.jupiter.api.extension.ParameterResolutionException;
+ import org.junit.jupiter.api.extension.ParameterResolver;
+-import org.mockito.Mock;
+ import org.mockito.Mockito;
+ import org.mockito.MockitoSession;
+ import org.mockito.ScopedMock;
+-import org.mockito.internal.configuration.MockAnnotationProcessor;
+ import org.mockito.internal.configuration.plugins.Plugins;
+ import org.mockito.internal.session.MockitoSessionLoggerAdapter;
+ import org.mockito.junit.MockitoJUnitRunner;
++import org.mockito.junit.jupiter.resolver.CaptorParameterResolver;
++import org.mockito.junit.jupiter.resolver.CompositeParameterResolver;
++import org.mockito.junit.jupiter.resolver.MockParameterResolver;
+ import org.mockito.quality.Strictness;
+ 
+ /**
+[…13 further hunk(s) trimmed for the block budget]
+Verify: fixed tests junit-jupiter:compileTestJava pass after the fix; patch run: 98 passed, 0 failed.
+
+---
+
+Failure: [ListItemText] primaryTypographyProps doesn't include variantMapping
+Duplicates
+
+
+Latest version
+
+
+Current behavior 😯
+
+While using ListItemText and providing a variant to `primaryTypographyProps ` it defaults to a span. And since there's an issue with using `component` if you create your [custom components](https://mui.com/material-ui/guides/typescript/#complications-with-the-component-prop) with typescript, which we do.
+
+  <List>
+    <ListItem key="1">
+      <ListItemText
+        primary="some random text"
+        primaryTypographyProps={{
+          variant: 'h4',
+        }}
+      />
+    </ListItem>
+    <ListItem key="2">
+      <ListItemText
+        primary="s
+Diagnosis: change localized to packages/mui-material/src/ListItemText/ListItemText.js (1 hunk(s)); covered by /home/material-ui/packages/mui-material/src/ListItemText/ListItemText.test.js:<ListItemText /> should use variant if provided.
+Fix:
+@@ -84,7 +84,7 @@ const ListItemText = React.forwardRef(function ListItemText(inProps, ref) {
+       <Typography
+         variant={dense ? 'body2' : 'body1'}
+         className={classes.primary}
+-        component="span"
++        component={primaryTypographyProps?.variant ? undefined : 'span'}
+         display="block"
+         {...primaryTypographyProps}
+       >
+Verify: fixed tests /home/material-ui/packages/mui-material/src/ListItemText/ListItemText.test.js:<ListItemText /> should use variant if provided pass after the fix; patch run: 5981 passed, 6 failed.
+
+---
+
+Failure: [Button] Theme - disableRipple ignored in MuiButtonBase defaultProps
+Duplicates
+
+
+Latest version
+
+
+Current behavior 😯
+
+After migrating to MUI 5.1 our button component has the ripple effect enabled even with the `disableRipple` set to `true` in theme MuiButtonBase defaultProps.
+
+Expected behavior 🤔
+
+The ripple effect should be disabled if `disableRipple` property is set to true in  MuiButtonBase defaultProps.
+
+I didnt have that issue when I followed the documentation  [How to disable ripple effect globally](https://mui.com/getting-started/faq/#how-can-i-disable-the-ripple-effect-globally)
+
+Steps to reproduce 🕹
+
+A codesandbox reproducing the issue
+
+https://codesa
+Diagnosis: change localized to packages/mui-material/src/Button/Button.js (1 hunk(s)); covered by /home/material-ui/packages/mui-material/src/Button/Button.test.js:<Button /> should disable ripple when MuiButtonBase has disableRipple in theme's defaultProps.
+Fix:
+@@ -318,7 +318,7 @@ const Button = React.forwardRef(function Button(inProps, ref) {
+   const fullWidth = fullWidthProp || fullWidthContext || false;
+   const size = sizeProp || sizeContext || 'medium';
+   const variant = variantProp || variantContext || 'text';
+-  const disableRipple = disableRippleProp || disableRippleContext || false;
++  const disableRipple = disableRippleContext || disableRippleProp;
+ 
+   const ownerState = {
+     ...props,
+Verify: fixed tests /home/material-ui/packages/mui-material/src/Button/Button.test.js:<Button /> should disable ripple when MuiButtonBase has disableRipple in theme's defaultProps pass after the fix; patch run: 4343 passed, 5 failed.
+
+---
+
+Failure: bug(vue-model): does not pass values when using an object string
+Vue version
+
+3.4.28+
+
+Link to minimal reproduction
+
+https://stackblitz.com/edit/vpo3zh?file=src%2Fcomponents%2FExample.vue
+
+Steps to reproduce
+
+Ionic Framework has a `ion-range` that can be set for dual knobs by passing a string object to the value.
+
+1. Make sure to use Vue 3.4.28+
+2. Navigate to the [repro](https://stackblitz.com/edit/vpo3zh?file=src%2Fcomponents%2FExample.vue) to see the [dual knobs](https://ionicframework.com/docs/api/range#dual-knobs) of `ion-range`.
+3. Notice that the first knob has a value of 20 and the second knob has a value of 80.
+4. The knobs render as a value of 0
+Diagnosis: change localized to packages/runtime-dom/src/patchProp.ts (1 hunk(s)); covered by packages/runtime-dom/__tests__/customElement.spec.ts > defineCustomElement > props > renders custom element w/ correct object prop value.
+Fix:
+@@ -54,7 +54,11 @@ export const patchProp: DOMRendererOptions['patchProp'] = (
+     )
+     // #6007 also set form state as attributes so they work with
+     // <input type="reset"> or libs / extensions that expect attributes
+-    if (key === 'value' || key === 'checked' || key === 'selected') {
++    // #11163 custom elements may use value as an prop and set it as object
++    if (
++      !el.tagName.includes('-') &&
++      (key === 'value' || key === 'checked' || key === 'selected')
++    ) {
+       patchAttr(el, key, nextValue, isSVG, parentComponent, key !== 'value')
+     }
+   } else {
+Verify: fixed tests packages/runtime-dom/__tests__/customElement.spec.ts > defineCustomElement > props > renders custom element w/ correct object prop value pass after the fix; patch run: 3009 passed, 0 failed.
+
+---
+
+Failure: getLuminance doesn't work with hsla colors
+Duplicates
+
+
+Latest version
+
+
+Steps to reproduce 🕹
+
+`getLuminance` doesn't seem to handle `hsla(..)` colors correctly. For example, `getLuminance("hsla(0, 0%, 100%, 1)")` returns `0.009` (I would expect it to return `1`). 
+
+Code sandbox here: https://codesandbox.io/s/xenodochial-hamilton-5igep7?file=/src/App.tsx
+Some test cases added here (currently failing): https://github.com/mui/material-ui/pull/34437/commits/b61830dcd08842886f3dffd964f55de17ddeb0d8
+
+Current behavior 😯
+
+getLuminance("hsla(0, 0%, 100%, 1)") === 0.009
+
+Expected behavior 🤔
+
+getLuminance("hsla(0, 0%, 100%, 1)") === 1
+
+Context 🔦
+Diagnosis: change localized to packages/mui-system/src/colorManipulator.js (1 hunk(s)); covered by /home/material-ui/packages/mui-system/src/colorManipulator.test.js:utils/colorManipulator getLuminance returns a valid luminance for hsla black.
+Fix:
+@@ -189,7 +189,10 @@ export function hslToRgb(color) {
+ export function getLuminance(color) {
+   color = decomposeColor(color);
+ 
+-  let rgb = color.type === 'hsl' ? decomposeColor(hslToRgb(color)).values : color.values;
++  let rgb =
++    color.type === 'hsl' || color.type === 'hsla'
++      ? decomposeColor(hslToRgb(color)).values
++      : color.values;
+   rgb = rgb.map((val) => {
+     if (color.type !== 'color') {
+       val /= 255; // normalized
+Verify: fixed tests /home/material-ui/packages/mui-system/src/colorManipulator.test.js:utils/colorManipulator getLuminance returns a valid luminance for hsla black pass after the fix; patch run: 6069 passed, 6 failed.
+
+---
+
+Failure: Vue 3.3.4. defineEmits doesn't setup extended events
+Vue version
+
+3.3.4
+
+Link to minimal reproduction
+
+https://github.com/tragid/vue-default-export-error/tree/vue-3.3.4-emit-errors
+
+Steps to reproduce
+
+1. Create BaseEmits type:
+export interface BaseEmits {
+  (e: 'input-event', value: string): void;
+  (e: 'change-event', value: string): void;
+}
+2. Create component and defineEmits with extending BaseEmits
+interface ComponentEmits extends BaseEmits {
+  (e: 'blur-event', value: string): void;
+  (e: 'focus-event', value: string): void;
+}
+
+const emit = defineEmits<ComponentEmits>();
+
+3. Facing runtime exceptions on DEV and not setup extended emits on
+Diagnosis: change localized to packages/compiler-sfc/src/script/resolveType.ts (1 hunk(s)); covered by packages/compiler-sfc/__tests__/compileScript/defineEmits.spec.ts > defineEmits > w/ type (interface w/ extends).
+Fix:
+@@ -334,12 +334,15 @@ function resolveInterfaceMembers(
+         continue
+       }
+       try {
+-        const { props } = resolveTypeElements(ctx, ext, scope)
++        const { props, calls } = resolveTypeElements(ctx, ext, scope)
+         for (const key in props) {
+           if (!hasOwn(base.props, key)) {
+             base.props[key] = props[key]
+           }
+         }
++        if (calls) {
++          ;(base.calls || (base.calls = [])).push(...calls)
++        }
+       } catch (e) {
+         ctx.error(
+           `Failed to resolve extends base type.\nIf this previously worked in 3.2, ` +
+Verify: fixed tests packages/compiler-sfc/__tests__/compileScript/defineEmits.spec.ts > defineEmits > w/ type (interface w/ extends) pass after the fix; patch run: 2748 passed, 0 failed.
+
+---
+
+Failure: `JsonPointer.append(JsonPointer.tail())` includes the original pointer
+Given the following code:
+
+var original = JsonPointer.compile("/a1/b/c");
+
+var tailPointer = original.tail();
+
+var other = JsonPointer.compile("/a2");
+
+var concatenated = other.append(tailPointer);
+
+I would expect concatenated to be the same as `JsonPointer.compile("/a2/b/c")`. 
+
+However, instead it is `JsonPointer.compile("/a2/a1/b/c")`, because `append` appends `tail._asString` which still contains the segments from before `tail()` was called.
+Diagnosis: change localized to release-notes/CREDITS-2.x, release-notes/VERSION-2.x, src/main/java/com/fasterxml/jackson/core/JsonPointer.java (7 hunk(s)); covered by com.fasterxml.jackson.core.jsonptr.JsonPointer1168Test, com.fasterxml.jackson.core.jsonptr.JsonPointerTest.
+Fix:
+@@ -436,12 +440,9 @@ public JsonPointer appendIndex(int index) {
+         if (index < 0) {
+             throw new IllegalArgumentException("Negative index cannot be appended");
+         }
+-        String currentJsonPointer = _asString;
+-        if (currentJsonPointer.endsWith("/")) {
+-            //removes final slash
+-            currentJsonPointer = currentJsonPointer.substring(0, currentJsonPointer.length()-1);
+-        }
+-        return compile(currentJsonPointer + SEPARATOR + index);
++        // 14-Dec-2024, tatu: Used to have odd logic for removing "trailing" slash;
++        //    removed from 2.17
++        return compile(toStringBuilder(8).append(SEPARATOR).append(index).toString());
+     }
+ 
+     /**
+[…6 further hunk(s) trimmed for the block budget]
+Verify: fixed tests com.fasterxml.jackson.core.jsonptr.JsonPointer1168Test, com.fasterxml.jackson.core.jsonptr.JsonPointerTest pass after the fix; patch run: 181 passed, 0 failed.
+
+---
+
+Failure: (reverted) Add `Iterable<T>` as recognized `IterationType` instance (along with `Iterable`, `Stream`)
+Describe your Issue
+
+Since #3950 added new `IterationType` (in Jackson 2.16), 2 types are recognized:
+
+       if (rawType == Iterator.class || rawType == Stream.class) {
+
+But as per:
+
+https://github.com/FasterXML/jackson-dataformat-xml/issues/646
+
+it would seem `Iterable` should also be recognized similarly. If so, this could be changed in 2.18.
+Diagnosis: change localized to release-notes/VERSION-2.x, src/main/java/com/fasterxml/jackson/databind/type/TypeFactory.java (2 hunk(s)); covered by com.fasterxml.jackson.databind.type.JavaTypeTest, com.fasterxml.jackson.databind.type.TypeFactoryTest.
+Fix:
+@@ -6,6 +6,8 @@ Project: jackson-databind
+ 
+ 2.18.0 (not yet released)
+ 
++#4443: Add `Iterable<T>` as recognized `IterationType` instance (along with
++  `Iterable`, `Stream`)
+ #4453: Allow JSON Integer to deserialize into a single-arg constructor of
+   parameter type `double`
+  (contributed by David M)
+diff --git a/src/main/java/com/fasterxml/jackson/databind/type/TypeFactory.java b/src/main/java/com/fasterxml/jackson/databind/type/TypeFactory.java
+index ce35d06ff0..321f2b17bd 100644
+--- a/src/main/java/com/fasterxml/jackson/databind/type/TypeFactory.java
++++ b/src/main/java/com/fasterxml/jackson/databind/type/TypeFactory.java
+[…1 further hunk(s) trimmed for the block budget]
+Verify: fixed tests com.fasterxml.jackson.databind.type.JavaTypeTest, com.fasterxml.jackson.databind.type.TypeFactoryTest pass after the fix; patch run: 593 passed, 0 failed.
+
+---
+
+Failure: [AutoComplete] onChange being called when value is duplicated
+Duplicates
+
+
+Latest version
+
+
+Current behavior 😯
+
+According to the documentation:
+
+> Callback fired when the value changes.
+
+However, it seems that when the value is a duplicate - the onChange hook is ran. 
+
+Expected behavior 🤔
+
+onChange should not run, as the value has not changed?
+
+Steps to reproduce 🕹
+
+https://codesandbox.io/s/vibrant-surf-ztbsl
+
+Steps:
+
+1. send a freesolo item, i.e. "hello" press enter
+2. send a second freesolo item, "hello" press enter
+3. observe the chip is not added, however in the console the onChange event happens..
+
+
+Context 🔦
+
+I would like to send my chip updates as
+Diagnosis: change localized to packages/mui-base/src/AutocompleteUnstyled/useAutocomplete.js (1 hunk(s)); covered by /home/material-ui/packages/mui-material/src/Autocomplete/Autocomplete.test.js:<Autocomplete /> prop: multiple should not call onChange function for duplicate values.
+Fix:
+@@ -570,7 +570,11 @@ export default function useAutocomplete(props) {
+   };
+ 
+   const handleValue = (event, newValue, reason, details) => {
+-    if (value === newValue) {
++    if (Array.isArray(value)) {
++      if (value.length === newValue.length && value.every((val, i) => val === newValue[i])) {
++        return;
++      }
++    } else if (value === newValue) {
+       return;
+     }
+Verify: fixed tests /home/material-ui/packages/mui-material/src/Autocomplete/Autocomplete.test.js:<Autocomplete /> prop: multiple should not call onChange function for duplicate values pass after the fix; patch run: 4744 passed, 7 failed.
+
+---
+
+Failure: Overlay css variables are not present when `defaultMode="dark"`
+Duplicates
+
+
+Latest version
+
+
+Steps to reproduce 🕹
+
+Link to live example: https://codesandbox.io/s/recursing-monad-rg3n5v
+
+Steps: 
+
+1. Open the link above, then open the sandbox browser in a new window (to use the devtools).
+![image](https://user-images.githubusercontent.com/5668416/223389794-a58c3649-9343-4d85-8a82-0637a49176bd.png)
+2. Open the devtools and search for `--mui-overlays-1` in the Elements tab. Observe that the value is not present.
+3. Remove the `defaultMode="dark"` or set the value to `"light"` from the sandbox code and reload the sandbox browser. Search for `--mui-overlays-1`
+Diagnosis: change localized to packages/mui-system/src/cssVars/prepareCssVars.ts (1 hunk(s)); covered by /home/material-ui/packages/mui-system/src/cssVars/prepareCssVars.test.ts:prepareCssVars `generateCssVars` should always return a new object.
+Fix:
+@@ -38,9 +38,12 @@ function prepareCssVars<T extends DefaultCssVarsTheme, ThemeVars extends Record<
+ 
+   const generateCssVars = (colorScheme?: string) => {
+     if (!colorScheme) {
+-      return { css: rootCss, vars: rootVars };
++      return { css: { ...rootCss }, vars: rootVars };
+     }
+-    return colorSchemesMap[colorScheme];
++    return {
++      css: { ...colorSchemesMap[colorScheme].css },
++      vars: colorSchemesMap[colorScheme].vars,
++    };
+   };
+ 
+   return {
+Verify: fixed tests /home/material-ui/packages/mui-system/src/cssVars/prepareCssVars.test.ts:prepareCssVars `generateCssVars` should always return a new object pass after the fix; patch run: 7530 passed, 5 failed.
+
+---
+
+Failure: Problem deserializing some type of Enums when using `PropertyNamingStrategy`
+Search before asking
+
+
+Describe the bug
+
+When using a mapper with a `PropertyNamingStrategy` configured, the following exception is thrown when trying to deserialize an enum that contains a field with the same name as one of the enum constants:
+
+
+com.fasterxml.jackson.databind.exc.InvalidDefinitionException: Multiple fields representing property "foo": tech.picnic.config.util.EnumDeserializationTest$SomeEnum#FOO vs tech.picnic.config.util.EnumDeserializationTest$SomeEnum#foo
+ at [Source: REDACTED (`StreamReadFeature.INCLUDE_SOURCE_IN_LOCATION` disabled); line: 1, column: 1]
+	at com.fasterxml.j
+Diagnosis: change localized to release-notes/CREDITS-2.x, release-notes/VERSION-2.x, src/main/java/com/fasterxml/jackson/databind/introspect/POJOPropertiesCollector.java (3 hunk(s)); covered by com.fasterxml.jackson.databind.deser.enums.EnumSameName4302Test.
+Fix:
+@@ -1728,3 +1728,8 @@ Jan Pachol (janpacho@github)
+  * Reported #4175: Exception when deserialization of `private` record with
+    default constructor
+   (2.16.0)
++
++Pieter Dirk Soels (Badbond@github)
++ * Reprted #4302: Problem deserializing some type of Enums when using
++  `PropertyNamingStrategy`
++  (2.16.2)
+diff --git a/release-notes/VERSION-2.x b/release-notes/VERSION-2.x
+index cdb0221ec5..adc027f31c 100644
+--- a/release-notes/VERSION-2.x
++++ b/release-notes/VERSION-2.x
+[…2 further hunk(s) trimmed for the block budget]
+Verify: fixed tests com.fasterxml.jackson.databind.deser.enums.EnumSameName4302Test pass after the fix; patch run: 636 passed, 1 failed.
+
+---
+
+Failure: [styles] Outdated warning message
+Current Behavior 😯
+
+override `MuiTabs.styleOverrides.root` in global theme will invoke warning message in the develop console, and can not apply to component correctly, while typescript is working fine
+
+Expected Behavior 🤔
+
+the style should be apply correctly
+
+Steps to Reproduce 🕹
+
+
+
+Steps:
+
+1. make global theme and add style to components.MuiTabs.root
+![image](https://user-images.githubusercontent.com/11850511/112955199-c22d1b00-9171-11eb-966f-298a680d807c.png)
+2. use `ThemeProvider` to inject theme
+3. render Tab component and there will be an warning message in console
+![image](https://user-
+Diagnosis: change localized to packages/material-ui-styles/src/getStylesCreator/getStylesCreator.js (1 hunk(s)); covered by /home/material-ui/packages/material-ui-styles/src/makeStyles/makeStyles.test.js:makeStyles warnings should warn if the key is not available.
+Fix:
+@@ -56,7 +56,7 @@ export default function getStylesCreator(stylesOrCreator) {
+             console.warn(
+               [
+                 'Material-UI: You are trying to override a style that does not exist.',
+-                `Fix the \`${key}\` key of \`theme.overrides.${name}\`.`,
++                `Fix the \`${key}\` key of \`theme.components.${name}.styleOverrides\`.`,
+                 '',
+                 `If you intentionally wanted to add a new key, please use the theme.components[${name}].variants option.`,
+               ].join('\n'),
+Verify: fixed tests /home/material-ui/packages/material-ui-styles/src/makeStyles/makeStyles.test.js:makeStyles warnings should warn if the key is not available pass after the fix; patch run: 3658 passed, 4 failed.
+
+---
+
+Failure: Introspection includes delegating ctor's only parameter as a property in `BeanDescription`
+If I have `ParameterNamesModule` and this data class:
+public class Data {
+  private final String foo;
+  private final Integer bar;
+
+  @JsonCreator(mode = JsonCreator.Mode.DELEGATING)
+  static Data fromBuilder(Builder builder) {
+    return new Data(builder.foo, builder.bar);
+  }
+
+  private Data(String foo, Integer bar) {
+    this.foo = foo;
+    this.bar = bar;
+  }
+
+  public String getFoo() {
+    return foo;
+  }
+
+  public Integer getBar() {
+    return bar;
+  }
+
+  public static class Builder {
+    private String foo;
+    private Integer bar;
+
+    @JsonProperty("foo")
+    public Builder foo(String
+Diagnosis: change localized to release-notes/CREDITS-2.x, release-notes/VERSION-2.x, src/main/java/com/fasterxml/jackson/databind/introspect/POJOPropertiesCollector.java (3 hunk(s)); covered by com.fasterxml.jackson.databind.deser.creators.DelegatingCreatorImplicitNames2543Test.
+Fix:
+@@ -1756,3 +1756,8 @@ Jesper Blomquist (jebl01@github)
+ András Péteri (apeteri@github)
+  * Suggested #4416: Deprecate `JsonNode.asText(String)`
+   (2.17.0)
++
++Kyrylo Merzlikin (kirmerzlikin@github)
++ * Contributed fix for #2543: Introspection includes delegating ctor's
++   only parameter as a property in `BeanDescription`
++  (2.17.0)
+diff --git a/release-notes/VERSION-2.x b/release-notes/VERSION-2.x
+index 93a28a36d2..52d2681229 100644
+--- a/release-notes/VERSION-2.x
++++ b/release-notes/VERSION-2.x
+[…2 further hunk(s) trimmed for the block budget]
+Verify: fixed tests com.fasterxml.jackson.databind.deser.creators.DelegatingCreatorImplicitNames2543Test pass after the fix; patch run: 648 passed, 0 failed.
+
+---
+
+Failure: Can't get correct position after changing spacing of icons in <Rating /> component in v5.
+For some reasons, I need to change the spacing between icons in `<Rating />`  component, but it causes the component cannot get correct position of each icons.
+
+Here is the demo:
+
+https://codesandbox.io/s/halfrating-material-demo-forked-0lh9f?file=/demo.js:388-393
+
+When you move your mouse on the second star, the third one will be highlighted.
+Diagnosis: change localized to packages/mui-material/src/Rating/Rating.js (1 hunk(s)); covered by /home/material-ui/packages/mui-material/src/Rating/Rating.test.js:<Rating /> should handle mouse hover correctly.
+Fix:
+@@ -367,14 +367,14 @@ const Rating = React.forwardRef(function Rating(inProps, ref) {
+     }
+ 
+     const rootNode = rootRef.current;
+-    const { right, left } = rootNode.getBoundingClientRect();
+-    const { width } = rootNode.firstChild.getBoundingClientRect();
++    const { right, left, width: containerWidth } = rootNode.getBoundingClientRect();
++
+     let percent;
+ 
+     if (theme.direction === 'rtl') {
+-      percent = (right - event.clientX) / (width * max);
++      percent = (right - event.clientX) / containerWidth;
+     } else {
+-      percent = (event.clientX - left) / (width * max);
++      percent = (event.clientX - left) / containerWidth;
+     }
+ 
+     let newHover = roundValueToPrecision(max * percent + precision / 2, precision);
+Verify: fixed tests /home/material-ui/packages/mui-material/src/Rating/Rating.test.js:<Rating /> should handle mouse hover correctly pass after the fix; patch run: 8547 passed, 1 failed.
+
+---
+
+Failure: Change `JsonNode.withObject(String)` to work similar to `withArray()` wrt argument
+Describe your Issue
+
+(see #3780 for lengthy background discussion)
+
+New `JsonNode.withObject(String)` method added in 2.14 only allows for using String that is valid `JsonPointer` expression. This is different from existing `withArray(String)` method. While I earlier felt that the new behavior is more sensible, avoiding confusion, it seems many users feel otherwise.
+
+As a consequence I think behavior should be changed for 2.16 to allow for "property-or-expression" -- this should be safe (enough) change and along with #4095 solve the issue.
+Diagnosis: change localized to release-notes/VERSION-2.x, src/main/java/com/fasterxml/jackson/databind/JsonNode.java, src/main/java/com/fasterxml/jackson/databind/node/ObjectNode.java (3 hunk(s)); covered by com.fasterxml.jackson.databind.node.ObjectNodeTest, com.fasterxml.jackson.databind.node.WithPathTest.
+Fix:
+@@ -89,6 +89,15 @@ public ObjectNode with(String exprOrProperty) {
+         return result;
+     }
+ 
++    @Override
++    public ObjectNode withObject(String exprOrProperty) {
++        JsonPointer ptr = _jsonPointerIfValid(exprOrProperty);
++        if (ptr != null) {
++            return withObject(ptr);
++        }
++        return withObjectProperty(exprOrProperty);
++    }
++
+     @Override
+     public ObjectNode withObjectProperty(String propName) {
+         JsonNode child = _children.get(propName);
+[…2 further hunk(s) trimmed for the block budget]
+Verify: fixed tests com.fasterxml.jackson.databind.node.ObjectNodeTest, com.fasterxml.jackson.databind.node.WithPathTest pass after the fix; patch run: 628 passed, 0 failed.
+
+---
+
+Failure: [DatePicker] Select the year only, and the current month is displayed.
+Current Behavior 😯
+
+Using the lab's Date Picker in Material-UI v5-alpha, when I select the year to be displayed only, the current month is shown with the year. 
+
+Expected Behavior 🤔
+
+I expect it to show the year only and nothing else.
+
+Steps to Reproduce 🕹
+
+1. You can see this behavior from the example on the doc. ('Year only' section in Lab/Date Picker)
+2. Below is the link that contains the code.
+https://github.com/mui-org/material-ui/blob/v5.0.0-alpha.20/docs/src/pages/components/date-picker/ViewsDatePicker.js
+Diagnosis: change localized to packages/material-ui-lab/src/DateRangePicker/DateRangePickerViewMobile.tsx, packages/material-ui-lab/src/DayPicker/PickersCalendarHeader.tsx (2 hunk(s)); covered by /home/material-ui/packages/material-ui-lab/src/DayPicker/DayPicker.test.tsx:<DayPicker /> should skip the header.
+Fix:
+@@ -157,6 +157,11 @@ function PickersCalendarHeader<TDate>(
+     }
+   };
+ 
++  // No need to display more information
++  if (views.length === 1 && views[0] === 'year') {
++    return null;
++  }
++
+   return (
+     <div className={classes.root}>
+       <div role="presentation" className={classes.label} onClick={handleToggleView}>
+[…1 further hunk(s) trimmed for the block budget]
+Verify: fixed tests /home/material-ui/packages/material-ui-lab/src/DayPicker/DayPicker.test.tsx:<DayPicker /> should skip the header pass after the fix; patch run: 3427 passed, 7 failed.
+
+---
+
+Failure: [Autocomplete] candidate.toLowerCase is not a function
+Current Behavior 😯
+
+`candidate.toLowerCase is not a function`
+
+![image](https://user-images.githubusercontent.com/3893769/99293742-46ed4d00-2800-11eb-95d7-65088f772e3b.png)
+
+Expected Behavior 🤔
+
+It should work without throwing a runtime error
+
+Steps to Reproduce 🕹
+
+https://codesandbox.io/s/material-ui-autocomplete-r3okv?file=/src/App.tsx
+
+Steps:
+
+1. Click the link above
+
+Context 🔦
+
+Just trying to get the autocomplete working with an array of objects. And it's throwing a runtime error, which means that either types are wrong or there is actually a bug in the implementation.
+
+Your Environment 🌎
+Diagnosis: change localized to packages/material-ui/src/useAutocomplete/useAutocomplete.js, scripts/react-next.diff (3 hunk(s)); covered by /home/material-ui/packages/material-ui/src/Autocomplete/Autocomplete.test.js:<Autocomplete /> warnings warn if getOptionLabel do not return a string.
+Fix:
+@@ -115,9 +115,10 @@ export default function useAutocomplete(props) {
+           )}.`,
+         );
+       }
+-      return optionLabel;
+-    };
+-  }
++      return String(optionLabel);
++    }
++    return optionLabel;
++  };
+ 
+   const ignoreFocus = React.useRef(false);
+   const firstFocus = React.useRef(true);
+diff --git a/scripts/react-next.diff b/scripts/react-next.diff
+index 2e1cb361449a08..f39625d5e8c31b 100644
+--- a/scripts/react-next.diff
++++ b/scripts/react-next.diff
+[…2 further hunk(s) trimmed for the block budget]
+Verify: fixed tests /home/material-ui/packages/material-ui/src/Autocomplete/Autocomplete.test.js:<Autocomplete /> warnings warn if getOptionLabel do not return a string pass after the fix; patch run: 3386 passed, 7 failed.
