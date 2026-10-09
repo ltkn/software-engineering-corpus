@@ -33,12 +33,17 @@
 #   OQ_SEQLEN   imatrix sequence length, default 512
 #   PRESERVE_MTP  keep the native MTP draft head (Lightning MTP), default 1.
 #               Set to 0 for MTP-free outputs (reproduces pre-MTP runs).
+#   PRESERVE_NGRAM_TABLE  keep the PLE N-gram table unquantized (BF16
+#               passthrough) instead of quantizing it, default 0. Set to 1
+#               for the unquantized-table baseline to bench quantized-table
+#               variants against. Conflicts with the ngram_bits positional.
 #   HF_HUB_CACHE  huggingface hub cache for source auto-discovery
 #               (default: ~/.cache/huggingface/hub)
 #
 # Examples:
 #   scripts/omlx_oq4e.sh Qwen/Qwen3.8-Flash-Next coder-8bit-ngram-mtp 8
 #   scripts/omlx_oq4e.sh Qwen/Qwen3.8-Flash-Next coder-4bit-ngram 4
+#   PRESERVE_NGRAM_TABLE=1 scripts/omlx_oq4e.sh Qwen/Qwen3.8-Flash-Next coder-ngram-fp
 #   scripts/omlx_oq4e.sh se2
 #   scripts/omlx_oq4e.sh se3 --src ~/.cache/huggingface/hub/models--Qwen--Qwen3.8-Flash-Next/snapshots/<sha>
 #   nohup scripts/omlx_oq4e.sh Qwen/Qwen3.8-Flash-Next coder-8bit-ngram-mtp > ~/oqup/coder-driver.log 2>&1 &
@@ -93,6 +98,18 @@ OQ_SAMPLES="${OQ_SAMPLES:-128}"
 OQ_SEQLEN="${OQ_SEQLEN:-512}"
 PRESERVE_MTP="${PRESERVE_MTP:-1}"
 if [ "$PRESERVE_MTP" = "1" ]; then MTP_PY=True; else MTP_PY=False; fi
+PRESERVE_NGRAM="${PRESERVE_NGRAM_TABLE:-0}"
+if [ "$PRESERVE_NGRAM" = "1" ]; then
+    if [ -n "$NGRAM_ARG" ]; then
+        echo "PRESERVE_NGRAM_TABLE=1 conflicts with the ngram_bits positional" >&2
+        exit 2
+    fi
+    NGRAM_LINE="    preserve_ngram_table=True,"
+    NGRAM_VERIFY="preserved"
+else
+    NGRAM_LINE="    ngram_bits=$NGRAM_BITS,"
+    NGRAM_VERIFY="quantized:$NGRAM_BITS"
+fi
 
 HUB="${HF_HUB_CACHE:-$HOME/.cache/huggingface/hub}"
 
@@ -205,7 +222,7 @@ quantize_oq_streaming(
     preserve_mtp=$MTP_PY,
     calib_dataset="$BUNDLE",
     sensitivity_calib_dataset="$BUNDLE",
-    ngram_bits=$NGRAM_BITS,
+$NGRAM_LINE
     imatrix_cache_path="$NPZ",
     imatrix_reuse_cache=False,
     imatrix_num_samples=$OQ_SAMPLES, imatrix_seq_length=$OQ_SEQLEN,
@@ -220,11 +237,11 @@ fi
 echo "== launching (log: $LOG) =="
 "$VENV_PY" "$RUNNER" > "$LOG" 2>&1
 echo "== quantize returned, verifying =="
-"$VENV_PY" - "$OUT" "$BUNDLE" "$OQ_LEVEL" "$NGRAM_BITS" <<'PY'
+"$VENV_PY" - "$OUT" "$BUNDLE" "$OQ_LEVEL" "$NGRAM_VERIFY" <<'PY'
 import json
 import sys
 
-out, bundle, level, ngram_bits = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+out, bundle, level, ngram_spec = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
 report = json.load(open(f"{out}/oq_imatrix_report.json"))
 q = json.load(open(f"{out}/config.json"))["quantization"]
 ngram = {k: v for k, v in q.items() if "ngram" in k}
@@ -235,16 +252,23 @@ print(f"imatrix entries: {report['entry_count']}, missing: {len(report['missing'
 print(f"global        : bits={q.get('bits')} group_size={q.get('group_size')}")
 print(f"ngram shards  : {len(ngram)}, e.g. {next(iter(ngram.values())) if ngram else None}")
 
+if ngram_spec == "preserved":
+    # Passthrough leaves no per-layer quantization entry: the shards
+    # must be absent from the quantization dict, not merely high-bit.
+    ngram_ok = len(ngram) == 0
+else:
+    _, bits = ngram_spec.split(":")
+    ngram_ok = bool(ngram) and all(
+        v.get("bits") == int(bits) and v.get("group_size") == 32
+        for v in ngram.values()
+    )
+
 ok = (
     report["calib_dataset"] == bundle
     and report["cache_reused"] is False
     and report["entry_count"] > 0
     and q.get("bits") == level
-    and ngram
-    and all(
-        v.get("bits") == ngram_bits and v.get("group_size") == 32
-        for v in ngram.values()
-    )
+    and ngram_ok
 )
 print("VERIFY:", "OK" if ok else "FAILED")
 sys.exit(0 if ok else 1)
