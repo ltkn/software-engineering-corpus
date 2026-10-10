@@ -12,7 +12,7 @@
   },
   "bundle": {
     "target_tokens": "200k-250k weighted",
-    "blocks_counted": 1531,
+    "blocks_counted": 1545,
     "unweighted_estimate": "~224.6k est of 1512 counted blocks in the 28 weighted files (bytes/5.5 pre-check, code-density pass 2026-10-08 +8 blocks plus edit-mechanics pass 2026-10-08 +6 blocks plus comprehension-algo-dialect pass 2026-10-08 +12 blocks plus mined Multi-SWE-bench repair loops +37 blocks in 02; ~912.8k as sum(tokens x weight); all 31 bundle-scope files including the unweighted 29/30 are 1512 blocks)",
     "eval": [
       "eval/heldout-se.txt",
@@ -173,8 +173,8 @@
     },
     {
       "id": "22-python",
-      "blocks": 34,
-      "tokens": "est ~5.7k (pre-check 30.4 KB, ~166/block, 2026-10-08)",
+      "blocks": 48,
+      "tokens": "est ~7.2k (pre-check 38.9 KB, ~151/block, 2026-10-10)",
       "share": 2.5,
       "code_forward_target": ">=40%"
     },

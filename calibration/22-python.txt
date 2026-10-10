@@ -429,3 +429,158 @@ def timed(pattern: re.Pattern[str], value: str) -> float:
 Why: two decisions, both measured. First, the character class plus explicit {8,64} bounds means the match is linear in the input — there is no nested quantifier for backtracking to explode on, so "aaa…a!" fails in microseconds instead of hanging the worker. The vulnerable shape it replaces is nested repetition like ([a-z]+)*$ on a 30-character near-miss, which the timing test shows crossing the 100ms budget while the bounded class stays under 5 microseconds on the same input. Second, \A…\Z plus fullmatch (not search with ^…$, which a embedded newline can slip past in multiline mode) anchors both ends exactly once — one anchor mechanism, not two that disagree. Atomic groups (3.11 possessive ++) exist for patterns that genuinely need repetition-of-groups, but the judgment here is that a bounded class needs neither. A sanity check before trusting: each rejection names its reason (type, length, alphabet) in the test id, so a future relaxation of the alphabet fails the exact row it changes.
 Pitfall: ^…$ with re.MULTILINE letting "good\nbad" match; catastrophic (x+x+)+$ pasted from a tutorial with no timing test; compiling the pattern per request instead of once at module scope.
 Verification: $ uv run pytest -q reports 6 passed (valid, too short, bad alphabet, newline smuggle, near-miss timing under budget, type rejection); the timing test asserts the near-miss input completes under 1ms while the documented-vulnerable shape exceeds 100ms on the same box, pinning the reason the bounded class exists.
+
+---
+
+Goal: Exception hierarchies that callers can actually handle.
+Wiring:
+class CheckoutError(Exception): pass
+class PaymentDeclined(CheckoutError):
+    def __init__(self, code: str) -> None:
+        super().__init__(f"payment declined: {code}")
+        self.code = code
+Why: callers catch CheckoutError for the whole domain or PaymentDeclined for the specific case; a flat ValueError-everywhere forces string matching on messages.
+Pitfall: except Exception: pass swallowing checkout failures into silent success; raising bare strings or errno ints the caller cannot type-check.
+Verification: handler test catches the parent for all children and the child specifically; no-bare-except lint over the codebase.
+
+---
+
+Goal: Chain exceptions with context, never replace them.
+Wiring:
+try:
+    charge(order)
+except GatewayTimeout as exc:
+    raise CheckoutError(order.id) from exc
+Why: `from` preserves the causal chain in the traceback; without it the gateway timeout (the actual cause) vanishes and debugging starts from the wrapper.
+Pitfall: raise CheckoutError(...) bare inside the handler, discarding the original; or logging-and-returning-None, converting a failure into missing data downstream.
+Verification: chained-traceback test asserts __cause__ set; log of the wrapper without the cause fails review.
+
+---
+
+Goal: Subprocess calls without shell injection or hangs.
+Wiring:
+import shlex
+import subprocess
+result = subprocess.run(
+    ["git", "log", "--format=%H", branch],
+    capture_output=True, text=True, timeout=30, check=False,
+)
+Why: argv lists never invoke a shell, so branch names with spaces or semicolons are data, not code; timeout bounds the hang; check=False keeps error handling explicit.
+Pitfall: shell=True with an f-string command, a branch named "x; rm -rf ~" away from disaster; no timeout, one hung child holding a worker forever.
+Verification: injection fixture (branch with shell metacharacters) runs safely; timeout drill kills the hung child and reports.
+
+---
+
+Goal: Temporary files that clean themselves up.
+Wiring:
+from pathlib import Path
+import tempfile
+with tempfile.TemporaryDirectory(prefix="export-") as tmp:
+    out = Path(tmp) / "report.csv"
+    out.write_text(render())
+    upload(out)
+Why: the context manager owns the lifecycle; normal exit and exceptions both remove the directory.
+Pitfall: /tmp/report.csv fixed names colliding across workers, or mktemp-style files never deleted, filling the disk over months.
+Verification: exception-mid-block test asserts the directory is gone; fixed-/tmp-name lint fails the build.
+
+---
+
+Goal: Bound every cache or it becomes a leak.
+Wiring:
+from functools import lru_cache
+@lru_cache(maxsize=4096)
+def compiled_rule(source: str) -> Rule: ...
+Why: memoization trades memory for time explicitly; maxsize turns the trade into a bounded one with LRU eviction.
+Pitfall: unbounded lru_cache (maxsize=None) keyed on request ids growing forever; unhashable args crashing at call time instead of review time.
+Verification: cache_info asserted bounded in load tests; unhashable-argument fixture raises TypeError at the boundary with a clear message.
+
+---
+
+Goal: Dynamic resource sets managed with ExitStack, not nested with-statements.
+Wiring:
+from contextlib import ExitStack
+with ExitStack() as stack:
+    handles = [stack.enter_context(open(p)) for p in paths]
+    process(handles)
+Why: the resource count is runtime data; ExitStack unwinds all of them in reverse order on any exit path.
+Pitfall: hand-rolled try/finally chains that leak handle three of seven on the second exception; or opening all files eagerly when iteration would do.
+Verification: exception-mid-processing test asserts every opened handle closed; handle-count metric flat after the block.
+
+---
+
+Goal: Never unpickle untrusted bytes.
+Wiring: json (or msgpack with strict types) at every trust boundary; pickle allowed only for in-process memo files the same uid wrote and reads.
+Why: pickle executes arbitrary code during loads by design (__reduce__); a pickle file from anyone else is a program, not data.
+Pitfall: pickle.load on an uploaded model/config "because it's convenient", the deserialization RCE the security file catalogs.
+Verification: boundary-scan test (no pickle import in request-handling modules); pickle.loads on a hostile fixture raises or is refused before execution completes.
+
+---
+
+Goal: Timezone-aware datetimes end to end, naive nowhere.
+Wiring:
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+stored = datetime.now(timezone.utc)
+shown = stored.astimezone(ZoneInfo("Europe/Paris"))
+Why: naive datetimes compare and subtract without error but without meaning across zones; UTC storage plus zoned display keeps arithmetic honest and DST transitions explicit.
+Pitfall: datetime.now() naive stored to the database, autumn DST fallback duplicating an hour of timestamps silently.
+Verification: naive-datetime lint (now() without tz fails review); round-trip test across a DST boundary preserves instants.
+
+---
+
+Goal: Compare floats with tolerance, never with ==.
+Wiring:
+import math
+assert math.isclose(total, expected, rel_tol=1e-9)
+Why: decimal fractions are not exactly representable in binary; accumulation order changes the last ulp, so == tests the representation, not the value.
+Pitfall: total == expected passing on one platform and failing on another, or after a reordering no test covers.
+Verification: equality-against-float lint; tolerance value stated per assertion with the reason (accumulation depth) in a comment.
+
+---
+
+Goal: Keep imports acyclic with lazy edges at the seams.
+Wiring: high-level modules import low-level ones; the one unavoidable back-edge imports lazily inside the function that needs it, with the reason in a comment.
+Why: import cycles fail at startup with partial-initialization errors that read as missing attributes, the most misleading traceback in Python.
+Pitfall: module-level circular imports "working" until one import order change breaks production while tests stay green.
+Verification: import-cycle test (import each top-level module first in a fresh interpreter); lazy-import comments reviewed, never silent.
+
+---
+
+Goal: Choose multiprocessing for CPU-bound Python work that threads cannot scale.
+Wiring:
+from concurrent.futures import ProcessPoolExecutor
+with ProcessPoolExecutor(max_workers=4) as pool:
+    results = list(pool.map(render_chunk, chunks))
+Why: CPU-bound threads serialize on the GIL (free-threaded builds excluded by the version gate in this file); processes scale linearly to cores at serialization cost per chunk.
+Pitfall: threads for CPU-bound hashing measured at 1.0x across 8 threads, "parallelized" in name only; or processes for tiny chunks where pickling dominates.
+Verification: speedup measured per chunk size (linear to cores for large chunks); chunk-size floor documented where pickling wins back the gain.
+
+---
+
+Goal: Handle signals in CLI tools so Ctrl-C actually stops.
+Wiring: main loop checks a threading.Event set by a SIGINT/SIGTERM handler; in-flight work checkpointed, partial output removed on abort.
+Why: the default KeyboardInterrupt mid-write leaves half files that the next run treats as complete; an explicit handler turns abort into cleanup.
+Pitfall: swallowing KeyboardInterrupt to "finish quickly", the tool then unkillable except by SIGKILL with corrupt state.
+Verification: SIGINT-mid-run drill leaves no partial outputs; second run resumes from the checkpoint, not from scratch.
+
+---
+
+Goal: Standard logging with hierarchy and levels, no prints in library code.
+Wiring:
+import logging
+log = logging.getLogger(__name__)
+log.debug("cache miss for %s", key)
+Why: per-module loggers let operators silence and raise verbosity per component; prints bypass every collector, level filter, and redaction rule the telemetry file requires.
+Pitfall: print() debugging committed to main, secrets in stdout captured by the orchestrator into permanent logs.
+Verification: print-statement lint over non-CLI modules; logger-name test (every module's logger matches __name__).
+
+---
+
+Goal: itertools for the shapes loops get wrong.
+Wiring:
+import itertools
+for key, group in itertools.groupby(sorted(rows, key=lambda r: r.tenant)):
+    summarize(key, list(group))
+Why: groupby expresses "adjacent equal keys" with no index bookkeeping; sorted-plus-groupby is the whole pattern, and forgetting the sort is the whole bug class.
+Pitfall: hand-rolled grouping with off-by-one on the last group; groupby on unsorted input silently producing one group per run of equal keys.
+Verification: unsorted-input fixture exposes the run-splitting behavior in review; last-group assertion present in every grouping test.
