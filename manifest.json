@@ -12,7 +12,7 @@
   },
   "bundle": {
     "target_tokens": "200k-250k weighted",
-    "blocks_counted": 1545,
+    "blocks_counted": 1565,
     "unweighted_estimate": "~224.6k est of 1512 counted blocks in the 28 weighted files (bytes/5.5 pre-check, code-density pass 2026-10-08 +8 blocks plus edit-mechanics pass 2026-10-08 +6 blocks plus comprehension-algo-dialect pass 2026-10-08 +12 blocks plus mined Multi-SWE-bench repair loops +37 blocks in 02; ~912.8k as sum(tokens x weight); all 31 bundle-scope files including the unweighted 29/30 are 1512 blocks)",
     "eval": [
       "eval/heldout-se.txt",
@@ -54,8 +54,8 @@
     },
     {
       "id": "05-agentic-coding",
-      "blocks": 55,
-      "tokens": "est ~10.4k (pre-check 56.0 KB, ~190/block, 2026-10-08)",
+      "blocks": 65,
+      "tokens": "est ~12.2k (pre-check 65.8 KB, ~188/block, 2026-10-10)",
       "share": 5.0,
       "code_forward_target": null
     },
@@ -82,8 +82,8 @@
     },
     {
       "id": "09-opsec",
-      "blocks": 36,
-      "tokens": "est ~4.5k (pre-check 24.3 KB, ~126/block, 2026-10-07)",
+      "blocks": 45,
+      "tokens": "est ~5.7k (pre-check 30.4 KB, ~126/block, 2026-10-10)",
       "share": 3.0,
       "code_forward_target": null
     },

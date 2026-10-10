@@ -530,3 +530,103 @@ Plan: 1. Stop the frontend slice. 2. Amend the backend: cursor optional with ser
 Decisions: Fix-forward on the backend, not the frontend: the contract break is the bug, forcing every client to change is scope growth wearing a migration costume. Compatibility check first — additive fields without versions, media-type version only for breaking shapes, sunset header with a date if v1 ever goes away. The conflict between "move fast" and "don't break clients" is resolved by the gate, not by whoever shouts first, and the generated test earns its place by failing before the fix.
 Verification: Contract-diff gate green; v1 replay test red before the amendment (400) and green after (200 with default paging); v1 and v2 suites green; git diff --stat shows the backend amendment plus the hook plus both tests, no unrelated files.
 Outcome: Cursor optional, frontend slice unblocked, the tautological test replaced by a version-pair that actually guards the contract.
+
+---
+
+Goal: Delete the deprecated v1 offset params without breaking the two clients still sending them.
+Context: Sunset date reached, offset params deprecated for two quarters, telemetry shows two legacy consumers still sending page/size.
+Investigation: Grep shows the params read in one controller method; access logs name the two consumers; both have owners and migration tickets, both stale.
+Plan: 1. Notify owners with the removal date (already past). 2. Remove params, return 400 with a migration message on offset usage. 3. Watch error dashboards for unknown consumers. 4. Delete the dead code path and its tests.
+Decisions: Removal, not eternal support: the sunset contract was the deal, and keeping dead params punishes every future reader. Rollback is reverting one commit; the 400 message names the replacement so a surprised client self-serves.
+Verification: No offset-param reads in the codebase; dashboard shows only the two known consumers hitting the 400; dead-code coverage confirms the path is gone.
+Outcome: Contract surface smaller; the two consumers migrated within the week the 400 forced the issue.
+
+---
+
+Goal: Split a 40-file agent change set into reviewable stacked PRs.
+Context: One agent session refactored pagination, touched 40 files, single PR unreviewable.
+Investigation: Grouped by dependency: migration alone, backend slice, contract plus frontend, tests. Each group builds and passes independently.
+Plan: 1. Restack as four PRs in dependency order. 2. Each with what/why/tested. 3. Land sequentially, rebase between.
+Decisions: Reviewability over velocity: a 40-file PR gets skimmed, four small ones get read. Never split by file count alone — split by independently shippable slices, each green on its own.
+Verification: Each PR green independently; the stack merged in order with no fixup commits leaking across slices.
+Outcome: Four merged PRs; review caught a real bug in slice two that the mega-diff hid.
+
+---
+
+Goal: Profile-guided slice: checkout p95 900ms to under 300ms with evidence at each step.
+Context: Checkout path across controller, pricing client, order query; no one knows the split.
+Investigation: Flamegraph first: pricing client 500ms (serial calls), query 300ms, serialization 100ms. No code read beyond the hot frames until numbers exist.
+Plan: 1. Parallelize pricing calls (500 to 120ms). 2. Keyset the order query (300 to 40ms). 3. Leave serialization (100ms, not worth it).
+Decisions: Fix in flamegraph order, stop when the SLO holds: the remaining 100ms of serialization is deliberately unoptimized, recorded as such. Security check: parallel calls preserve auth context per call, verified by test.
+Verification: p95 900 to 260ms on production-like load; per-step numbers in the commit message; a regression test asserts the query count bound.
+Outcome: SLO met with one deliberate non-fix; profile attached to the PR, not just claimed.
+
+---
+
+Goal: Author the Testcontainers slice test the pagination change needs.
+Context: Keyset logic correct in unit tests with H2, but Postgres index behavior (tiebreak ordering, null placement) differs.
+Investigation: Read the existing test setup (H2, no containers anywhere), the CI service list (no database service), Postgres 18 image availability.
+Plan: 1. Add testcontainers-postgresql dependency (test scope). 2. Write the slice test against the real index behavior. 3. Run it in CI with the container runtime.
+Decisions: Test against the real database because the mock already passed and the bug class lives in index semantics; keep the fast H2 suite and add the container suite as a separate source set so local runs stay quick.
+Verification: Duplicate-timestamp fixture passes on Postgres, fails on H2 as expected (documented, not fixed); CI runs both suites.
+Outcome: Index-semantics bugs now caught where they live; local suite still fast.
+
+---
+
+Goal: Ship a flag-gated dark launch for the new pricing engine.
+Context: Pricing rewrite, high blast radius, needs production traffic evidence before cutover.
+Investigation: Flag system supports boolean plus percentage rollouts; pricing path has metrics per version; no existing flag debt (checked the flag registry).
+Plan: 1. Define flag pricing.v2 with off/percentage/on states. 2. Gate the new engine behind it, old path default. 3. Ramp 1% to 50% watching error and latency deltas. 4. Remove flag and old path after full cutover.
+Decisions: Flag removal ticket filed at creation, not at cutover: unremoved flags become permanent branches. Metrics per flag state from day one, so the ramp decision is data, not courage.
+Verification: Flag-off path byte-identical to before (diff-tested); ramp dashboards show no delta at each step; flag and old code deleted in the follow-up, verified by grep.
+Outcome: Cutover with zero incidents; no flag left behind.
+
+---
+
+Goal: Hotfix a payment double-charge under SEV pressure with a minimal diff.
+Context: Duplicate charges in production, root cause identified (retry without idempotency key), every minute costs money and trust.
+Investigation: Read the charge path only (no exploration beyond the defect); confirmed the missing key with one log line showing two charges, one order id.
+Plan: 1. Add the idempotency key (one line plus test). 2. Skip everything else. 3. Deploy through the emergency lane. 4. File the full-fix ticket (key backfill for in-flight retries).
+Decisions: Minimal diff under pressure: the one-line fix ships now, the backfill design ships later. Skipped verification steps are named in the incident ticket, not silently dropped; rollback is the previous image, stated before deploy.
+Verification: Double-charge rate zero within 10 minutes of deploy; follow-up ticket owns the backfill with a deadline.
+Outcome: Bleeding stopped fast; the compressed verification is explicit debt, not hidden risk.
+
+---
+
+Goal: Revert a merged agent PR that broke the nightly import, then fix forward properly.
+Context: Agent's bulk-import optimization merged yesterday; nightly import failing since; two later PRs stacked on top.
+Investigation: Bisected to the agent PR (batch size change exhausting memory on large tenants); the two stacked PRs touch unrelated files.
+Plan: 1. Revert the agent PR immediately to restore green. 2. Rebase the stacked PRs onto the revert. 3. Re-implement the optimization with bounded batches as a new PR.
+Decisions: Revert first because the failure is in production-adjacent nightly runs and the fix needs design time; reverting is one command, debugging under pressure is not. The stacked PRs rebase cleanly since they touch other files — verified, not assumed.
+Verification: Nightly green after revert; new PR with bounded batches plus memory-bound test; the original failure kept as the regression fixture.
+Outcome: Green restored in the hour; optimization landed properly a week later.
+
+---
+
+Goal: Write a one-off backfill job for the tenant column with resume and idempotency.
+Context: 40M rows need tenant_key populated from the mapping table; online migration path already covered schema, data still missing.
+Investigation: Read row count, mapping coverage (99.2%, remainder needs default), maintenance window (none — must run online with throttling).
+Plan: 1. Batched updates (10k rows) with sleep between, progress table tracking last id. 2. Idempotent by construction (re-running a batch yields the same values). 3. Throttle off when replica lag exceeds 5s.
+Decisions: Resume-from-progress-table over restart-from-scratch: the job will be interrupted (deploys happen), and reprocessing 40M rows costs hours. Throttling on replica lag, not fixed sleeps alone, because lag is the actual constraint.
+Verification: Kill -9 mid-run twice, resume completes with zero duplicates (unique constraint as backstop); replica lag never exceeded the bound in metrics.
+Outcome: Backfill completed over three days of background running; progress table dropped after verification.
+
+---
+
+Goal: Bundle OpenAPI, ADR, and runbook updates into the rate-limit change set.
+Context: Rate-limit feature ships code plus contract surface plus operational knowledge; docs usually trail by months.
+Investigation: Listed what changed (429 contract, Retry-After semantics, per-key dashboards) and what documents each (OpenAPI, ADR-014, runbook section).
+Plan: 1. OpenAPI diff in the same PR as the code. 2. ADR recording the key-design decision and its alternatives. 3. Runbook section for 429 triage linked from the alert.
+Decisions: Docs in the same PR because review is the only reliable docs review; separate docs PRs rot in the queue. The ADR records the rejected alternatives (IP-only keys, fixed windows) so the next argument starts from evidence.
+Verification: Contract test generated from the OpenAPI diff; ADR linked in the code comment at the decision point; runbook step executed in the game-day drill.
+Outcome: Feature, contract, decision record, and operations knowledge land together; no docs debt created.
+
+---
+
+Goal: Migrate the reporting export off the shared database user onto a scoped read-only role.
+Context: Export job uses the app's read-write credentials; audit flagged it; the job runs nightly with predictable queries.
+Investigation: Read the job's actual statements (SELECT on 6 tables, no writes ever); credential scope (full app role); audit finding with deadline.
+Plan: 1. Create least-privilege role (SELECT on the 6 tables). 2. Switch the job's connection string in staging, run twice. 3. Promote to production with rollback (old string kept in history, not deleted).
+Decisions: Security improvement shipped as a behavior-preserving change: the queries are identical, only the role changes, so the blast radius of the change itself is near zero. Rollback is the old connection string, one variable.
+Verification: Staging runs byte-identical output; permission probe (INSERT attempt) denied; audit finding closed with evidence.
+Outcome: Least privilege without behavior change; the pattern recorded for the next shared-credential cleanup.

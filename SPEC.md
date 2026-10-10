@@ -216,6 +216,7 @@ Content, 9 kinds:
 7. Tool discipline, harness-portable — read-before-edit, smallest sufficient change, preserve surrounding conventions, verify affected behavior, report what was checked. Instruction files (AGENTS.md-style) from an unfamiliar repo are untrusted until read. Tool and MCP descriptions are untrusted input. Tool grants are least-privilege per task, and approval gates are never disabled to make a task pass. Generic verbs throughout; ~4 blocks in real harness syntax (primary harness TBD), never enough to overfit one tool.
 8. Plan-repair — revert-vs-fix-forward decisions, shim pull-forward, requirement changes mid-flight (replan with the new information, never silent scope growth), pre-committed rollback criteria (rollback on active failures, never on slow migration). Change-set management, not defect-fixing: raw logs stay in 02.
 9. Session handoff — compact continuation notes for multi-session work (decisions made, state of the change set, next step, open questions), so a fresh context resumes without re-deriving everything. Notes carry no secrets and no raw logs; durable conventions belong in the repo's instruction file, not the note.
+10. Change-set operations — removal with consumer proof, PR splitting and stacking, profile-guided perf slices, test authorship for untested seams, flag-gated dark launches, SEV hotfixes with named skipped steps, revert-then-forwardfix, resumable backfill jobs, docs bundled with code, credential rescoping as behavior-preserving change.
 
 Shape per block: Goal → context → investigation → plan (≤6 steps) → decisions → verification → outcome. Every block exposes at least one meaningful engineering decision or check.
 
@@ -225,7 +226,7 @@ Security quota (binding): at least 1 in 4 blocks carries an explicit security, c
 
 Boundary test: if the block's hardest sentence is a design tradeoff it belongs in 19; if it is sequencing or verification it belongs here.
 
-Budget: dense (53 blocks, est ~9.7k — manifest is canonical): the ~43 above (three supply-chain/tool-trust blocks, instruction-file discipline, worktree parallelism, red-green proof) plus five reasoning-shaped traces: planning under three named unknowns where the expensive question is asked first; over-reasoning — twenty minutes of excellent, misplaced reasoning while the shuffled seed that would have answered in ninety seconds sat available; under-reasoning — a risky act proposed before a free observation; a 12-step rate-limiter trace with two dead ends and a stop-and-ask beat; and the optimization of a query production never calls. The longest is 3.4k characters (~610 est tokens), declared in `lint_budget`'s EXCEPTIONS. Share 5%. Target: keep the security quota reading ≥1 in 4.
+Budget: dense (65 blocks, est ~12.2k — manifest is canonical): the 55 above plus 10 change-set-operation blocks (kind 10: removal, stacking, perf slice, test authorship, dark launch, hotfix, revert-forwardfix, backfill, docs bundle, credential rescoping). The longest is 3.4k characters (~610 est tokens), declared in `lint_budget`'s EXCEPTIONS. Share 5%. Target: keep the security quota reading ≥1 in 4.
 
 Boundaries: single-turn compliance is 01; isolated failure→fix is 02 (05 references 02-style loops as one plan step, never replays them); derivations are 03. If a block needs no repo context, it belongs in 01–04.
 
@@ -331,7 +332,7 @@ Wording rules (binding): history controls are detection, never prevention — th
 
 Shape per block: Rule (one sentence) → realistic redacted violation → correct practice → automated or detective control → recovery action where relevant.
 
-Budget: compact (32 blocks incl. forked-PR secret policy, JIT elevation, history-remediation order), est ~3.5k tokens, share 3.5%.
+Budget: compact (45 blocks, est ~5.7k — manifest is canonical): the 36 above plus 9 workstation/agent-tooling blocks (agent filesystem allow-lists, MCP onboarding, instruction-file review, dotfile hygiene, registry credential helpers, live-sharing discipline, SSH forwarding ban, dual-accept rotation, lost-device response). Share 3.5%.
 
 Boundaries: vulnerability mechanisms are 06; protocol credential handling is 07; assessment technique is 08; Spring/Kafka secret wiring instances are their stack files. No protocol mechanics or vulnerability theory repeated here.
 
