@@ -12,7 +12,7 @@
   },
   "bundle": {
     "target_tokens": "200k-250k weighted",
-    "blocks_counted": 1520,
+    "blocks_counted": 1531,
     "unweighted_estimate": "~224.6k est of 1512 counted blocks in the 28 weighted files (bytes/5.5 pre-check, code-density pass 2026-10-08 +8 blocks plus edit-mechanics pass 2026-10-08 +6 blocks plus comprehension-algo-dialect pass 2026-10-08 +12 blocks plus mined Multi-SWE-bench repair loops +37 blocks in 02; ~912.8k as sum(tokens x weight); all 31 bundle-scope files including the unweighted 29/30 are 1512 blocks)",
     "eval": [
       "eval/heldout-se.txt",
@@ -40,8 +40,8 @@
     },
     {
       "id": "03-math-logic-cot",
-      "blocks": 66,
-      "tokens": "est ~7.9k (pre-check 42.3 KB, ~119/block, 2026-10-07)",
+      "blocks": 77,
+      "tokens": "est ~8.9k (pre-check 47.7 KB, ~115/block, 2026-10-10)",
       "share": 5.5,
       "code_forward_target": null
     },
