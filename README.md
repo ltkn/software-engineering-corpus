@@ -107,6 +107,35 @@ Follow in order, rerun earlier steps when later ones move. The steps assume the 
 6. Evaluate. `./llama-perplexity` on `eval/heldout-se.txt` and `eval/heldout-general.txt`, plus the perplexity-vs-F16 logit KL per file. Never ship a Q3/Q4 without this.
 7. Tune. Move manifest weights at most ±25% per iteration, log the reason, and rerun 2–6. The recompute gate is `scripts/recompute_gate.py` and should be part of the corpus edit chain; any new claim in 03/23 goes in its task table.
 
+## Building oQ quants with oMLX — step order (Apple Silicon, custom corpus + Q8 N-gram)
+
+Same corpus, different toolchain: MLX safetensors quants (`oQ3e/oQ4e/oQ5e`) with the PLE N-gram table held at Q8, built from the `feat/custom-corpus-ngram-q8` oMLX branch. Run on the quant host (128 GB); develop on any Mac.
+
+1. Host env. Apple Silicon, macOS 15+, full Xcode optional (quant needs no custom kernels). Python 3.11–3.13 only (3.14 will not install the pinned MLX):
+```bash
+brew install python@3.12
+git clone <omlx-remote> ~/dev/omlx && cd ~/dev/omlx
+git checkout feat/custom-corpus-ngram-q8
+/opt/homebrew/opt/python@3.12/bin/python3.12 -m venv .venv-3.12
+source .venv-3.12/bin/activate
+pip install -e ".[dev]"
+python -m pytest tests/test_oq_custom_corpus.py -q   # expect 12 passed
+```
+2. Corpus. `git pull` this repo on the quant host, then `scripts/count_tokens.sh <model.gguf> --update-manifest` whenever sources changed.
+3. Source model. MLX safetensors dir (not GGUF): `config.json` with `model_type: qwen4_exp`, `*.safetensors`, `tokenizer.json`. Either download via the oMLX admin panel or resolve the HF cache snapshot:
+```bash
+ls ~/.cache/huggingface/hub/models--Qwen--Qwen3.8-Flash-Next/snapshots/
+```
+4. Launch. One command per experiment (output dirs are never overwritten — use a new `<version>` per iteration):
+```bash
+scripts/omlx_oq4e.sh Qwen/Qwen3.8-Flash-Next coder-8bit-ngram-mtp 8
+scripts/omlx_oq3e.sh Qwen/Qwen3.8-Flash-Next coder-q3-ngram8 8      # Q3 trunk, Q8 table
+scripts/omlx_oq5e.sh Qwen/Qwen3.8-Flash-Next coder-q5-ngram8 8      # Q5 trunk, Q8 table
+```
+Variants: omit the trailing `8` for the default Q8 table; `PRESERVE_NGRAM_TABLE=1` keeps the table unquantized (bench baseline); `PRESERVE_MTP=0` strips the draft head; `VENDOR_SLICES=chat,tool_calling,reasoning` drops a vendored slice for ablations. `nohup ... &` for the multi-hour runs.
+5. Verify. Each script self-checks the report (corpus used, fresh cache, entries) and the config (trunk bits, N-gram `{bits: 8, group_size: 32}`). Read `~/oqup/oq<level>e-<version>.log` and the imatrix `expert_coverage` (p05 ≥ 16 is the bar).
+6. Serve + evaluate. Symlink the output into `~/.omlx/models` (or `omlx serve --model-dir ~/models-out`), then score heldouts plus LiveCodeBench against the stock baseline before calling any version good.
+
 ## Layout
 
 ```text
