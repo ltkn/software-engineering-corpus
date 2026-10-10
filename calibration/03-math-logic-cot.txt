@@ -548,3 +548,93 @@ Step 2. The consequences scale differently: the registry's memory grows with liv
 Step 3. The rejection is the least interesting consequence because it is the only one that is loud. Silent ones: alert rules that query the metric start timing out, the SLO burn query gets slower and its window shrinks, and a new endpoint with high-cardinality paths can be merged with no test failing, because nothing in the build measures cardinality.
 Step 4. Prevention is arithmetic made visible: assert cardinality after a generated request sweep, and export the count as a metric with an alert on growth, which turns a 250k-series mistake into a page rather than a quarterly incident.
 Answer: 256932 series from one metric; the loud failure is cheap, the quiet ones are the readers and the alerts, so cardinality belongs in CI next to the tests.
+
+---
+
+Q: State 2^10, 2^20, 2^30 exactly, and when the K/M/G shorthand is honest.
+Step 1. 2^10 = 1024, 2^20 = 1048576, 2^30 = 1073741824.
+Step 2. "1K/1M/1G" shorthand errs by 2.4%, 4.9%, 7.4%: fine for capacity estimates, never for allocation math or buffer sizes.
+Step 3. Internalize the doublings, not the decimals: each +10 in the exponent is another factor of a thousand, so 2^40 is about a trillion.
+Answer: 1024, 1048576, 1073741824; shorthand for estimates, exact powers for sizes.
+
+---
+
+Q: One billion UUIDv4 ids minted. Collision chance, and should inserts check for duplicates?
+Step 1. Approximation P ≈ n^2/2^129 for n = 1e9 gives ≈ 1.47e-21.
+Step 2. That is orders of magnitude below hardware-failure rates; a per-insert dedupe lookup costs real latency on every write to insure against the impossible.
+Step 3. A unique constraint as a backstop is free insurance; active collision checking is waste.
+Answer: ≈ 1.47e-21; rely on the constraint, skip the check.
+
+---
+
+Q: One benchmark runs 2x faster, another 8x faster. What is the honest average speedup?
+Step 1. Arithmetic mean 5x overstates: it treats ratios as additive quantities.
+Step 2. Geometric mean sqrt(2*8) = 4.0 is the consistent average of ratios: it answers "what single speedup reproduces the combined effect".
+Step 3. Report per-benchmark speedups alongside; any single-number average of ratios that is not geometric is a choice of how to lie.
+Answer: 4.0x geometric; never arithmetic-mean ratios.
+
+---
+
+Q: A stage is 90% parallelizable over 8 workers. Speedup ceiling, and what adding 8 more buys.
+Step 1. Amdahl: S = 1/(0.1+0.9/8) = 4.71, not 8.
+Step 2. At 16 workers: 1/(0.1+0.05625) = 6.4. Doubling workers buys 36% more speed; the serial tenth dominates.
+Step 3. Past this point the serial fraction is the only optimization target; more workers rent contention, not speed.
+Answer: 4.71x ceiling at 8; attack the serial 10%, not the worker count.
+
+---
+
+Q: Each attempt succeeds with probability 0.9, independent attempts, 3 tries. Overall success?
+Step 1. Failure needs all three to fail: 0.1^3 = 0.001, so success 99.9%.
+Step 2. Independence is the load-bearing assumption: a shared outage behind all three attempts correlates them and the math turns optimistic.
+Step 3. With correlation unknown, report "99.9% under independence" and separately bound the shared-cause case.
+Answer: 99.9% iff attempts are truly independent; verify the shared cause first.
+
+---
+
+Q: Sorted table, one million rows. Worst-case binary search comparisons?
+Step 1. log2(10^6) = 19.93, so 20 comparisons worst case.
+Step 2. Doubling the table adds exactly one comparison: logarithmic growth is why the index stays fast at 10x scale.
+Step 3. Contrast linear scan at 500k average: the log is the whole reason ordered indexes exist.
+Answer: 20 comparisons; each doubling costs one more.
+
+---
+
+Q: 65 tenants hashed uniformly over 64 partitions. What is guaranteed, and what is not?
+Step 1. Pigeonhole: some partition holds at least two tenants. Guaranteed collision, no statement about severity.
+Step 2. With skewed tenant sizes the max load exceeds the mean far beyond the pigeonhole bound; the bound is a floor on unfairness, not a ceiling.
+Step 3. Design from measured key distribution, not from the guarantee: the pigeonhole tells you perfect balance is impossible, never that observed balance is acceptable.
+Answer: A collision is certain; its cost is measured, not derived.
+
+---
+
+Q: A miss costs 1000, a false alarm costs 10. Threshold A misses 2% and alarms 10%; threshold B misses 5% and alarms 2%. Choose by expected cost.
+Step 1. E[A] = 0.02*1000 + 0.10*10 = 21. E[B] = 0.05*1000 + 0.02*10 = 50.2.
+Step 2. A wins despite five times the alarms: the miss cost dominates, so alarm count is nearly irrelevant to the decision.
+Step 3. Thresholds come from cost arithmetic, never from accuracy symmetry: equal error rates are optimal only when errors cost equally.
+Answer: A at expected cost 21; price errors, then threshold.
+
+---
+
+Q: Gossip with fanout 3 must reach 10000 nodes. Rounds in the failure-free case?
+Step 1. 3^8 = 6561 < 10000 <= 19683 = 3^9, so 9 rounds minimum.
+Step 2. Losses and slow nodes add rounds on top; the powers give the floor the protocol cannot beat.
+Step 3. Fanout trades rounds against per-node bandwidth: the log base is the fanout, the argument is the fleet.
+Answer: 9 rounds minimum; failures only add.
+
+---
+
+Q: Draft: "host A p99 100ms, host B p99 300ms, so fleet p99 is about 200ms." Correct it.
+Step 1. Wrong: quantiles do not average. The pooled p99 depends on traffic weights and both shapes; 200ms is right only by coincidence.
+Step 2. With most traffic on A the pooled p99 sits near 100ms; with most on B it sits near 300ms. The average erases exactly the information that decides.
+Step 3. Report per-host p99s plus the pooled value computed from merged data, never the mean of the two numbers.
+Correction: "Fleet p99 is computed from pooled observations, not averaged from per-host p99s."
+Answer: Merge then measure; averaging quantiles fabricates a number.
+
+---
+
+Q: Draft: "dedupe UUIDv4 ids on insert; at ten million rows collisions are a real risk." Correct it.
+Step 1. Wrong by ~25 orders of magnitude: P ≈ n^2/2^129 ≈ 1.47e-25 at n = 1e7.
+Step 2. A per-insert dedupe check burns a lookup on every write against a risk smaller than undetected hardware error.
+Step 3. Keep the unique constraint as a free backstop; delete the check.
+Correction: "UUIDv4 collision risk at this scale needs no mitigation beyond the constraint."
+Answer: ≈ 1.47e-25; the check costs more than the risk it insures.
