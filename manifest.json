@@ -306,5 +306,30 @@
       "mui__material-ui-24205",
       "mui__material-ui-23884"
     ]
+  },
+  "vendor": {
+    "jundot-oqe": {
+      "source": "omlx/oqe_calibration_data.json, https://github.com/jundot/omlx (2026-10-10)",
+      "source_sha256": "04d98e2d7367f7a53e3efa759acded87717d8b70562df142e1e02963af571aa0",
+      "license": "Apache-2.0 (repo LICENSE; complies via vendor/jundot-oqe/ATTRIBUTION.md)",
+      "slices": [
+        "code",
+        "tool_calling",
+        "chat",
+        "reasoning"
+      ],
+      "omitted": [
+        "ko",
+        "zh",
+        "ja",
+        "en",
+        "mixed",
+        "bartowski"
+      ],
+      "texts": 1055,
+      "chars": 2289065,
+      "regenerate": "python3 scripts/vendor_oqe_slices.py <oqe json>",
+      "note": "Build input only: appended after calibration/*.txt by scripts/omlx_oq*.sh. Never hand-edit; never counted by format/budget lints."
+    }
   }
 }

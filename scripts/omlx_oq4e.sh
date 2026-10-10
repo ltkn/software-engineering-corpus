@@ -209,6 +209,14 @@ fi
 
 echo "== building bundle =="
 cat "$CORPUS_REPO"/calibration/*.txt > "$BUNDLE"
+# Vendored upstream slices (Apache-2.0, see vendor/jundot-oqe/ATTRIBUTION.md)
+# append after authored files; token-stream calibration concatenates anyway.
+for vslice in "$CORPUS_REPO"/vendor/jundot-oqe/*.txt; do
+    [ -f "$vslice" ] || continue
+    printf '\n---\n\n' >> "$BUNDLE"
+    cat "$vslice" >> "$BUNDLE"
+    echo "  + vendor $(basename "$vslice")"
+done
 wc -c "$BUNDLE"
 
 echo "== writing runner $RUNNER =="
