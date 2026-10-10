@@ -641,12 +641,13 @@ Content, 6 kinds:
 4. Packaging and CLI — pyproject discipline, uv for env/lock/install with inline script metadata (PEP 723), dependency groups (PEP 735) and the standard lock file format (PEP 751), ruff for lint/format, Typer/argparse CLIs with typed options, script entry points for corpus tooling.
 5. Data and quant tooling — pandas/polars frames for strategy analysis, notebook-to-script discipline, reproducible seeds, CSV/Parquet interchange hygiene.
 6. Interop notes — calling Python from JVM pipelines (and vice versa) safely, contract schemas at the boundary, error propagation across runtimes.
+7. Runtime and stdlib discipline — exception hierarchies with chained causes, subprocess without shells, self-cleaning temp files, bounded caches, ExitStack resource sets, pickle boundaries, tz-aware datetimes, float tolerance, acyclic imports, process pools for CPU-bound work, signal handling, stdlib logging, itertools shapes.
 
 Shape per block: Goal → snippet → why this form → pitfall → verification (type-check, test, or repro evidence).
 
 Mix target: ≥40% code-forward reference blocks.
 
-Budget: compact. Bundle share 2.5%. Supporting file; breadth over depth. est ~2.4k tokens, 25 blocks (added the PEP 723/735/751 packaging block — no "---" markers inside the snippet, per the delimiter rule).
+Budget: compact. Bundle share 2.5%. Supporting file; breadth over depth. est ~2.4k tokens, 25 blocks (added the PEP 723/735/751 packaging block — no "---" markers inside the snippet, per the delimiter rule); est ~7.2k, 48 blocks after the runtime/stdlib kind-7 pass (exceptions, subprocess, tempfiles, caches, ExitStack, pickle, tz, floats, imports, processes, signals, logging, itertools — every snippet compile-checked).
 
 Boundaries: Java equivalents stay in 10 (no language comparisons beyond one line); failure transcripts are 02; finance math is 23 (which may show Python snippets only as worked calculations, never as tooling advice).
 
