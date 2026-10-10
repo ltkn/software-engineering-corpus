@@ -39,6 +39,8 @@
 #               variants against. Conflicts with the ngram_bits positional.
 #   HF_HUB_CACHE  huggingface hub cache for source auto-discovery
 #               (default: ~/.cache/huggingface/hub)
+#   VENDOR_SLICES comma-separated upstream slices to append
+#               (default: code,tool_calling,chat,reasoning)
 #
 # Examples:
 #   scripts/omlx_oq4e.sh Qwen/Qwen3.8-Flash-Next coder-8bit-ngram-mtp 8
@@ -99,6 +101,7 @@ OQ_SEQLEN="${OQ_SEQLEN:-512}"
 PRESERVE_MTP="${PRESERVE_MTP:-1}"
 if [ "$PRESERVE_MTP" = "1" ]; then MTP_PY=True; else MTP_PY=False; fi
 PRESERVE_NGRAM="${PRESERVE_NGRAM_TABLE:-0}"
+VENDOR_SLICES="${VENDOR_SLICES:-code,tool_calling,chat,reasoning}"
 if [ "$PRESERVE_NGRAM" = "1" ]; then
     if [ -n "$NGRAM_ARG" ]; then
         echo "PRESERVE_NGRAM_TABLE=1 conflicts with the ngram_bits positional" >&2
@@ -211,8 +214,16 @@ echo "== building bundle =="
 cat "$CORPUS_REPO"/calibration/*.txt > "$BUNDLE"
 # Vendored upstream slices (Apache-2.0, see vendor/jundot-oqe/ATTRIBUTION.md)
 # append after authored files; token-stream calibration concatenates anyway.
+# VENDOR_SLICES selects the mix (default: all four). Drop 'code' to test
+# whether trivial code pairs contribute anything beyond benchmark shape:
+#   VENDOR_SLICES=chat,tool_calling,reasoning scripts/omlx_oq4e.sh ...
 for vslice in "$CORPUS_REPO"/vendor/jundot-oqe/*.txt; do
     [ -f "$vslice" ] || continue
+    _slicename="$(basename "$vslice" .txt)"
+    case ",$VENDOR_SLICES," in
+        *",$_slicename,"*) ;;
+        *) echo "  - vendor $_slicename (skipped by VENDOR_SLICES)"; continue ;;
+    esac
     printf '\n---\n\n' >> "$BUNDLE"
     cat "$vslice" >> "$BUNDLE"
     echo "  + vendor $(basename "$vslice")"
