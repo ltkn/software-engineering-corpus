@@ -292,3 +292,75 @@ Violation: An automated update PR for a build-time plugin at a new major merges 
 Practice: Patch and minor updates flow on green with a frozen lockfile diff read by the CI check; new majors of anything that runs at build time wait a stated window, because the first days of a new release are when a compromised or broken publish is discovered; the diff is read for install scripts, new dependencies of the dependency, and changed maintainer identity.
 Control: Update tooling configured with cool-down windows per dependency class, install-script allow-lists enforced, provenance and signature checks on the resolved artifacts, and a rule that auto-merge is disabled for build-time dependencies (06 kind 6 owns the mechanism, 21 kind 4 the workflow configuration).
 Recovery: Revert the update PR and re-pin; if the artifact executed code, treat the runner's credentials as exposed and follow the tier for the environment the runner could reach.
+
+---
+
+Rule: Agent filesystem access is allow-listed per task; keys and dotfiles are denied by default.
+Violation: Coding agent granted the repo root reads ~/.ssh/id_rsa and ~/.aws/credentials during "exploration", quotes both into the transcript to "summarize the environment".
+Practice: Agent sandboxes allow the task directory plus named read-only inputs; ~/.ssh, ~/.aws, ~/.gnupg, .env files, and cloud credential paths denied in every profile; grants re-scoped per task, never per tool installation.
+Control: Deny-rule test (agent read of a canary key file fails closed with an audit line); tool-config review asserts least-privilege grants per task template.
+Recovery: Rotate anything the transcript quoted; tighten the profile that allowed the read; treat the transcript as a secret-bearing store per kind 8.
+
+---
+
+Rule: MCP servers are onboarded like dependencies, not like plugins.
+Violation: Team adds a community MCP server by URL; its tool descriptions exfiltrate prompt content, it auto-updates to a compromised version, and its config holds a shared API token committed beside it.
+Practice: Pin server versions or digests; review tool descriptions as untrusted input at onboarding and on update; per-server credentials scoped to the task, never shared tokens in committed configs; updates gated like dependency updates with the cool-down above.
+Control: MCP inventory with version pins and credential scope per server; description-change diff reviewed on update; token-shape scan covers tool configs.
+Recovery: Rotate the shared credential, pin to the last-known-good digest, review transcripts that ran against the server for quoted secrets.
+
+---
+
+Rule: AI instruction files are reviewed content, and they carry no secrets.
+Violation: AGENTS.md equivalent in a repo contains a pasted API key "for the agent to use" plus production database hostnames; every clone and every agent run ingests them.
+Practice: Instruction files hold conventions and pointers, never credentials; credential needs go in the documented secret path with a reference, not a value; instruction-file changes reviewed like code.
+Control: Secret-shape scan covers instruction files explicitly; fixture hostnames only (ISSUE--adjacent docs use .test domains).
+Recovery: Rotate the pasted values; purge the file's history; add the shape to the scanner.
+
+---
+
+Rule: Dotfile repos hold no credentials, even private ones.
+Violation: Private dotfiles repo contains .aws/credentials and a cloud token "because the repo is private"; a future collaborator, a stolen laptop, or a visibility misclick widens it silently.
+Practice: Dotfiles reference secret-manager paths and install scripts fetch at setup; private repos treated as public for secret purposes.
+Control: Secret scan runs on dotfile repos with the same rules as production repos; private visibility never cited as a control.
+Recovery: Rotate everything the repo held; re-issue per-machine credentials through the manager.
+
+---
+
+Rule: Container registry credentials live in helpers, never in committed config.
+Violation: ~/.docker/config.json with a base64 auth block (decodable by anyone) committed as "dev setup docs".
+Practice: Credential helpers per registry; auth entries absent from versioned files; local config git-ignored with the global ignore set.
+Control: Auth-block scan on config.json files in CI and workstation checks; helper presence asserted per registry used.
+Recovery: Rotate the registry credential; purge the committed file from history; audit pulls made with it.
+
+---
+
+Rule: Live sharing exposes the screen, so the screen is prepared before the call.
+Violation: Pairing session shares the full desktop; terminal scrollback shows a bearer token and an open .env tab while twenty people watch the recording that persists.
+Practice: Share a single window, never the desktop; pre-session sweep closes secret-bearing tabs and clears scrollback; recordings default off with owner approval to keep.
+Control: Screenshare checklist in the incident and pairing runbooks; recording-retention bound with an owner like any other store.
+Recovery: Rotate anything visible (assume the recording kept it); trim the recording or set its expiry.
+
+---
+
+Rule: SSH agent forwarding stays off except to hosts that already hold the key's power.
+Violation: ssh -A to a shared staging box; a privileged reader on that box uses the forwarded agent to reach production git as the engineer.
+Practice: Forwarding disabled by default in ssh config; per-host opt-in only where the target cannot abuse the agent (ProxyJump patterns preferred over forwarding for hops).
+Control: ssh-config audit (ForwardAgent no globally); connection log review for agent-channel use.
+Recovery: Remove the host's access to anything the agent could reach during the window; rotate deploy keys the agent held.
+
+---
+
+Rule: Credential rotation runs dual-accept with a grace window, never flag-day swaps.
+Violation: Database password rotated at deploy; old pods still running with the old value crash-loop until they restart, causing the outage the rotation was meant to prevent.
+Practice: New credential issued while the old stays valid for the grace window; workloads roll onto the new value; old value revoked only after the fleet reports the new one in use.
+Control: Rotation runbook with the grace checklist; fleet-version metric gates the revocation step; revocation without the gate fails the drill.
+Recovery: Re-issue on the dual path if a flag-day already happened; record the window the mixed state lasted for the audit.
+
+---
+
+Rule: Lost or replaced devices trigger credential response, not just MDM wipe.
+Violation: On-call phone replaced; SSO sessions and chat history with pasted tokens remain valid on the old device for weeks because "the wipe was queued".
+Practice: Device inventory tied to session lifetime; replacement or loss revokes SSO sessions, rotates CLI tokens, and re-issues short-lived credentials; chat history access re-authenticated on the new device.
+Control: Session-inventory review per device event; stale-session probe (old device token rejected) asserted after each rotation.
+Recovery: Treat as a tier-two exposure minimum: rotate device-bound credentials, verify session invalidation, review what the old device could still reach.
