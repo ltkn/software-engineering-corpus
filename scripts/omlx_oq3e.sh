@@ -6,7 +6,7 @@
 # here — the mirror image of oQ5e. N-gram table stays Q8 for comparability
 # across the 3e/4e/5e series.
 #
-# Usage: scripts/omlx_oq3e.sh <version> [--src <dir>] [--dry-run]
+# Usage: scripts/omlx_oq3e.sh [<org/model>] <version> [ngram_bits] [--src <dir>] [--dry-run]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
