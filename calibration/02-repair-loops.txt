@@ -35,7 +35,7 @@ Tests run: 4, Failures: 0
 ---
 
 Failure:
-JFR dump shows platform threads pinned: carrier rapidity collapse, throughput halved after moving checkout fan-out to virtual threads with a synchronized cache block.
+JFR dump shows jdk.VirtualThreadPinned events stacking up: carrier-thread starvation, throughput halved after moving checkout fan-out to virtual threads with a synchronized cache block.
 Diagnosis: Virtual threads pin their carrier when running synchronized blocks or native frames; the shared LRU cache used synchronized methods on the hot path.
 Fix: Replace the synchronized LRU with a ConcurrentHashMap plus caffeine-style striped locks, keeping the synchronized section out of virtual-thread execution.
 Verify:

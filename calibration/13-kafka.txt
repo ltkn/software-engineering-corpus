@@ -89,7 +89,7 @@ Verification: 50k-message audit shows zero duplicates and zero gaps; fence drill
 Goal: Bound the EOS scope honestly: what exactly-once covers and what it cannot.
 Wiring: EOS across Kafka read-process-write; side effects outside Kafka (emails, charges) made idempotent separately with keys.
 Why: transactions cannot span the email gateway; claiming EOS end-to-end without idempotent sinks is a fiction that fails at the first retry.
-Misconfiguration: "exactly-once checkout" with a non-idempotent charge call inside the transaction boundary drawing.
+Misconfiguration: "exactly-once checkout" with a non-idempotent charge call inside the transaction boundary.
 Verification: side-effect audit per pipeline (each sink idempotent or single-writer); duplicate-delivery drill asserts single effects.
 
 ---
@@ -337,7 +337,7 @@ sasl.login.callback.handler.class=org.apache.kafka.common.security.oauthbearer.O
 sasl.oauthbearer.jwt.validator.class=org.apache.kafka.common.security.oauthbearer.BrokerJwtValidator
 Why: private_key_jwt keeps the secret off the wire; BrokerJwtValidator validates signature, issuer, and audience, which is the thing CVE-2026-33557 (4.1.0–4.1.1) got wrong — the default DefaultJwtValidator accepted any well-formed JWT. Do not run 4.1.0/4.1.1 without explicitly setting the broker validator.
 Canonical failure: Kicking the client with an unsigned or wrong-audience JWT, and watching the broker accept it, means the broker is on the weak default validator.
-Verify: A signed assertion from the registered client authenticates; a self-signed or wrong-azd assertion is rejected and the validator class in the broker log is BrokerJwtValidator.
+Verify: A signed assertion from the registered client authenticates; a self-signed or wrong-aud assertion is rejected and the validator class in the broker log is BrokerJwtValidator.
 
 ---
 

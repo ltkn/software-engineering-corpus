@@ -613,7 +613,7 @@ Regression test: double-present the same token concurrently and assert exactly o
 
 ---
 
-Concept (session binding as theft detection, not as prevention; reviewed 2026-10): each session pins a peppered user-agent hash with a version, checked toxically on use.
+Concept (session binding as theft detection, not as prevention; reviewed 2026-10): each session pins a peppered user-agent hash with a version, checked on use.
 Participants: login handler minting the session, session row storing ua_hash plus ua_hash_version plus created IP, request filter recomputing the hash on each call.
 Sequence: at issue, hashCurrent of the User-Agent plus store of currentVersion; on use, hashWith of the presented User-Agent under the stored version and compare; mismatch on a customer session returns 401 without invalidating so a transient UA change does not log the user out everywhere, while mismatch telemetry is kept; operator bearer paths skip the check, session-cookie paths enforce it.
 Invariant: as deployment policy, a stolen cookie from a different UA fails closed on that request, IP is captured for triage and never enforced, and version rotation keeps old sessions verifying under their own version.

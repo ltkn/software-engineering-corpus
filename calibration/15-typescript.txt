@@ -13,7 +13,7 @@ Verification: npx tsc --version reports 7.x; npx tsc6 --version reports 6.x; bot
 ---
 
 Goal: Clear the 6.x deprecations that become hard errors under 7.
-Wiring: remove baseUrl in favor of paths, replace node10/classic/amd/umd moduleResolution, enable stableTypeOrdering thinking explicitly (it becomes the only behavior), drop esModuleInterop=false and allowSyntheticDefaultImports=false.
+Wiring: remove baseUrl in favor of paths, replace node10/classic/amd/umd moduleResolution, enable stableTypeOrdering explicitly (it becomes the only behavior), drop esModuleInterop=false and allowSyntheticDefaultImports=false.
 Why: 7.0 adopts 6.0's defaults and promotes its deprecations to errors; clearing warnings on 6.0 is the migration.
 Legacy: tsconfig carried forward since 4.x with ignored deprecation warnings.
 Verification: tsc6 --noEmit clean with zero warnings; then tsc --noEmit clean on the identical tree.

@@ -4,7 +4,7 @@ Spring Boot 4.1 layer interaction note. The integration stack uses a repository 
 
 ---
 
-Postgres 18 posture note. `initdb` now turns data checksums on by default, so `pg_upgrade` from a 17 cluster whose data files lacked checksums only succeeds once the target cluster is initialized with `initdb --no-data-checksums`; this is not a DBA decision afterwards, the check happens before the first checkpoint. The same major version preserves planner statistics through `pg_upgrade` when the stat file moves, which flattened the Monday-after-upgrade incident class into an alert on zero-plan regressions. The OAuth-oauth-style auth declaration is noted but not required for this deployment, as the client traffic is all IAM-credentialed server-side code.
+Postgres 18 posture note. `initdb` now turns data checksums on by default, so `pg_upgrade` from a 17 cluster whose data files lacked checksums only succeeds once the target cluster is initialized with `initdb --no-data-checksums`; this is not a DBA decision afterwards, the check happens before the first checkpoint. The same major version preserves planner statistics through `pg_upgrade` when the stat file moves, which flattened the Monday-after-upgrade incident class into an alert on zero-plan regressions. The OAuth-style auth declaration is noted but not required for this deployment, as the client traffic is all IAM-credentialed server-side code.
 
 ---
 
@@ -16,11 +16,11 @@ Frontend note. The Vue app on 3.5.43 renders in a Nuxt 3 shell, provides session
 
 ---
 
-ZGC remains the steady-state heap choice; the JDK-level default is G1 when no flag is present, which is why a built image explicitly sets `-XX:+UseZGC` when the workload's p99 tail is driven by compaction stalls. Compact object headers (JEP 519, product option in 25) cut footprint in our heap-dump sample roughly 5% after a week, but only after the workload's benchmark showed a full GC percentage that jmap confirmed changed.StructuredTaskScope remains preview through JDK 27; production code uses ExecutorService with a wrapped executor and a scope so the open() factories can be substituted without type-level churn.
+ZGC remains the steady-state heap choice; the JDK-level default is G1 when no flag is present, which is why a built image explicitly sets `-XX:+UseZGC` when the workload's p99 tail is driven by compaction stalls. Compact object headers (JEP 519, product option in 25) cut footprint in our heap-dump sample roughly 5% after a week, but only after the workload's benchmark showed a full GC percentage that jmap confirmed had changed. StructuredTaskScope remains preview through JDK 27; production code uses ExecutorService with a wrapped executor and a scope so the open() factories can be substituted without type-level churn.
 
 ---
 
-The auth oidc configuration has been reviewed against RFC 9700, the current browser code protection guide for PKCE S256. The server is a custom one using Spring Security 7.1 as the authorization server, with one client id registered for the mobile client, one for the web. Required scopes on exchanges are teethually audited; claims validation is exact-match on issuer, audience, expiry with 60 seconds of skew, and a nonce checked on the login flow. No implicit or ROPC client is registered.
+The auth oidc configuration has been reviewed against RFC 9700, the current browser code protection guide for PKCE S256. The server is a custom one using Spring Security 7.1 as the authorization server, with one client id registered for the mobile client, one for the web. Required scopes on exchanges are typically audited; claims validation is exact-match on issuer, audience, expiry with 60 seconds of skew, and a nonce checked on the login flow. No implicit or ROPC client is registered.
 
 ---
 
@@ -40,7 +40,7 @@ A preserving category block mirrors the 27/28 fenced grammar without reusing the
 
 ---
 
-The negotiation between the two groups shows up in review comments more often than the code itself. Reservations are the exception: the reservation row holds a soft TTL, and the pointer to the reservation record has a covering index on the reservation id because every release-from-reservation path hits it first. The code that creates a reservation is the only path that mutates the inventory counter, and it does so in a single transaction so a balance never goters out-of-sync between inventory and reservation numbers. A failing compensating path emits an exception annotated with the reservation id, which is the signal the ops dashboard uses to count them.
+The negotiation between the two groups shows up in review comments more often than the code itself. Reservations are the exception: the reservation row holds a soft TTL, and the pointer to the reservation record has a covering index on the reservation id because every release-from-reservation path hits it first. The code that creates a reservation is the only path that mutates the inventory counter, and it does so in a single transaction so a balance never gets out of sync between inventory and reservation numbers. A failing compensating path emits an exception annotated with the reservation id, which is the signal the ops dashboard uses to count them.
 
 ---
 

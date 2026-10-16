@@ -409,7 +409,7 @@ Regression control: A request with a forged tenant claim returns zero rows; the 
 
 Concept: Passkeys/WebAuthn as the phishing-resistant credential. Mechanism here; flows in 07.
 Vulnerable pattern: Two-factor via SMS OTP as the only second factor, or an optional phishable TOTP that users routinely skip.
-Why it fails: OTP codes are replayable, phishables, and SMS depends on the carrier; an attacker who can phish a login page can often relay the second factor.
+Why it fails: OTP codes are replayable, phishable, and SMS depends on the carrier; an attacker who can phish a login page can often relay the second factor.
 Remediation: Prefer passkeys (FIDO2) for human primary authentication; require phishing-resistant MFA for production access and gate sensitive actions behind step-up authentication; keep recovery paths equally strong because account recovery is the usual bypass.
 Regression control: Login-flow tests confirm phishing-resistant MFA for admin; recovery flows tested for bypass attempts and logged.
 
