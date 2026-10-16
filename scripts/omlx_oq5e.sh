@@ -5,7 +5,7 @@
 # error floor is much lower, so expect a smaller custom-vs-generic corpus
 # delta than at oQ4e — this run measures exactly that.
 #
-# Usage: scripts/omlx_oq5e.sh <version> [--src <dir>] [--dry-run]
+# Usage: scripts/omlx_oq5e.sh [<org/model>] <version> [ngram_bits] [--src <dir>] [--dry-run]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

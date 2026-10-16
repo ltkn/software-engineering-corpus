@@ -126,15 +126,20 @@ python -m pytest tests/test_oq_custom_corpus.py -q   # expect 12 passed
 ```bash
 ls ~/.cache/huggingface/hub/models--Qwen--Qwen3.8-Flash-Next/snapshots/
 ```
-4. Launch. One command per experiment (output dirs are never overwritten — use a new `<version>` per iteration):
+4. Launch. Each run first ensures the stock baseline — `<model>-oQ<level>e-stock`, oMLX's own default calibration (the built-in `oqe_code_multilingual` corpus at the tool's default sample settings, default N-gram table width, no vendor slices). It is built once per (source model, level, MTP setting); later runs reuse it, checked against the source snapshot and params recorded in `<out>/build.json`. The requested quant itself: same-name `<version>` reruns overwrite in place (previous log moves to `*.log.prev`, `build.json` re-records what went in); `stock` is a reserved name and `arm-*` comparators are protected from overwrite:
 ```bash
 scripts/omlx_oq4e.sh Qwen/Qwen3.8-Flash-Next coder-8bit-ngram-mtp 8
 scripts/omlx_oq3e.sh Qwen/Qwen3.8-Flash-Next coder-q3-ngram8 8      # Q3 trunk, Q8 table
 scripts/omlx_oq5e.sh Qwen/Qwen3.8-Flash-Next coder-q5-ngram8 8      # Q5 trunk, Q8 table
 ```
-Variants: omit the trailing `8` for the default Q8 table; `PRESERVE_NGRAM_TABLE=1` keeps the table unquantized (bench baseline); `PRESERVE_MTP=0` strips the draft head; `VENDOR_SLICES=chat,tool_calling,reasoning` drops a vendored slice for ablations. `nohup ... &` for the multi-hour runs.
-5. Verify. Each script self-checks the report (corpus used, fresh cache, entries) and the config (trunk bits, N-gram `{bits: 8, group_size: 32}`). Read `~/oqup/oq<level>e-<version>.log` and the imatrix `expert_coverage` (p05 ≥ 16 is the bar).
-6. Serve + evaluate. Symlink the output into `~/.omlx/models` (or `omlx serve --model-dir ~/models-out`), then score heldouts plus LiveCodeBench against the stock baseline before calling any version good.
+Variants: omit the trailing `8` for the default Q8 table; `PRESERVE_NGRAM_TABLE=1` keeps the table unquantized (bench baseline); `PRESERVE_MTP=0` strips the draft head; `VENDOR_SLICES=chat,tool_calling,reasoning` drops a vendored slice for ablations, `VENDOR_SLICES=` skips the append entirely (authored-only arm). `CORPUS_FILE=<bundle.txt>` replaces the assembled bundle — that is how control arms run. Arm B, generic text through the custom pipeline (built once, then protected from overwrite):
+```bash
+python3 scripts/make_bundles.py ~/dev/omlx/omlx/oqe_calibration_data.json  # once → bundles/generic.txt
+CORPUS_FILE=bundles/generic.txt scripts/omlx_oq4e.sh Qwen/Qwen3.8-Flash-Next arm-b-generic 8
+```
+`nohup ... &` for the multi-hour runs; the very first run on a fresh host builds stock first, so expect roughly twice the usual time once.
+5. Verify. Each script self-checks the report (corpus used, fresh cache, entries) and the config (trunk bits, N-gram `{bits: 8, group_size: 32}`), and writes `<out>/build.json` — source snapshot, bundle sha256, corpus + oMLX commits — the record that survives an overwrite and what the stock reuse check reads. Read `~/oqup/oq<level>e-<version>.log` and the imatrix `expert_coverage` (p05 ≥ 16 is the bar).
+6. Serve + evaluate. Symlink the output into `~/.omlx/models` (or `omlx serve --model-dir ~/models-out`), then score heldouts plus LiveCodeBench before calling any version good. Pair at eval time, always: `[stock, arm-b-generic, <current build>]` — current-vs-B isolates the corpus text (same pipeline, different text), current-vs-stock is the headline question (the whole custom pipeline vs out-of-the-box oMLX).
 
 ## Layout
 
@@ -142,6 +147,7 @@ Variants: omit the trailing `8` for the default Q8 table; `PRESERVE_NGRAM_TABLE=
 .
 ├── calibration/   # 27 sources
 ├── eval/          # heldout-se.txt, heldout-general.txt
+├── bundles/       # control-arm calibration bundles (build input only)
 ├── manifest.json  # tokens, weights, license (next)
 ├── SPEC.md        # agreed scope per file
 ├── TODO.md        # next high-level steps
