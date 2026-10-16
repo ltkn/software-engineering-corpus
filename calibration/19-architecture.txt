@@ -297,7 +297,7 @@ Decision context: Cross-service workflow between orders, payments, and fulfillme
 Options: orchestrated saga with compensations, choreographed saga, or 2PC.
 Recommendation with conditions: orchestrated saga. 2PC needs an always-available lock coordinator and blocks participant resources during the vote, which payment gateways do not expose. The orchestrator owns the state machine and the compensation table; each step is idempotent on the idempotency key from 06.
 Reversibility note: The orchestrator can be swapped for choreography later because the state machine and compensation table are the portable artifacts.
-Verification: Fault drill: kill a motor close to the payment step, assert compensation runs without replay of the authorize call; the idempotency log shows one authorize, one void.
+Verification: Fault drill: kill a participant close to the payment step, assert compensation runs without replay of the authorize call; the idempotency log shows one authorize, one void.
 
 ---
 
@@ -312,7 +312,7 @@ Verification: Load at 2x p99 target holds p95 flat, JFR pinning events zero, and
 Decision context: Model an LLM dependency inside checkout recovery.
 Options: the recovery service embeds the LLM SDK directly, the SDK is wrapped in a service, or the LLM sits behind a port with a deterministic fallback.
 Recommendation with conditions: port plus deterministic fallback. The port hides provider details; the fallback answers the bounded set of recovery questions without the model; timeout and spend caps sit at the port boundary and fail-closed.
-Verification: Provider swap drill: set the port to return the canned fallback and confirm checkout recovery still answers the bounded questions; spend and latency metrics alarm at one taste of the cap.
+Verification: Provider swap drill: set the port to return the canned fallback and confirm checkout recovery still answers the bounded questions; spend and latency metrics alarm at one touch of the cap.
 
 ---
 

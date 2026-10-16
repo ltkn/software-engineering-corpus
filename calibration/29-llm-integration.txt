@@ -10,15 +10,15 @@ Verification: provider-swap drill asserts the port still answers the bounded que
 ---
 
 Decision context: Production deployments on local-only inference with ONNX Runtime for Java.
-Options: ONNX Runtime through the Java binding, JNI to native runtime, or servant a managed inference endpoint.
+Options: ONNX Runtime through the Java binding, JNI directly to the native runtime, or a managed inference endpoint behind the port.
 Recommendation with conditions: Java's own `onnxruntime` package, backed by the native runtime, executed under its own quantized slot; JPMS opens the Java bindings to the native packages so native Image handling stays closed. A managed endpoint is acceptable only behind the same port boundary with a two-hop fallback to the local runtime when offline.
-Reversibility note: the local runtime is cold-Arellano fold-in; removing it only removes the fallback, not the primary path.
-Verification: the route with `search` or `rag` keyword routes through the JNI path and validates the bound state.
+Reversibility note: the local runtime is the primary path and doubles as the offline fallback for a managed endpoint; removing the managed option removes only the fallback.
+Verification: a request whose route matches `search` or `rag` goes through the local-runtime path, and its output DTO is validated before it reaches the transaction layer.
 
 ---
 
 Decision context: Function calling via the OpenAI-compatible tool schema.
-Options: hand-rolled tool dispatch in the prompt loop, or typed tool routing from an OpenAPI-generated confirm contract.
-Recommendation with conditions: strong-typed DTOs; rejects on `additionalProperties: false` schemas; a tool must never recreate a side effect that belongs to a dedicated transaction path.
-Reversibility note: a single-entry tool registry keeps the schema isolated, so a new tool can be deleted without a migration.
+Options: hand-rolled tool dispatch in the prompt loop, or typed tool routing from an OpenAPI-generated client contract.
+Recommendation with conditions: strongly typed DTOs; rejection on `additionalProperties: false` schemas; a tool must never recreate a side effect that belongs to a dedicated transaction path.
+Reversibility note: a single tool registry keeps the schemas isolated, so a new tool can be added or removed without a migration.
 Verification: a payload with an extra field fails the schema check; the schema gate test fails whenever the DTO tsconfig profile drops the constraint.

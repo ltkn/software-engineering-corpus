@@ -95,7 +95,7 @@ Answer: Expect ~1 false alarm per round; correct or pre-register.
 ---
 
 Q: Regression of checkout time on index usage plus hour-of-day gives coefficient -70ms on the index dummy, R² = 0.18. Read it.
-Step 1. -70ms is the ceteris-paribus association holding hour fixed, not a proven causal effect; unmeasured confounders (deployOwarmth, traffic mix) may ride along.
+Step 1. -70ms is the ceteris-paribus association holding hour fixed, not a proven causal effect; unmeasured confounders (deploy cache warmth, traffic mix) may ride along.
 Step 2. R² = 0.18 means 18% of variance explained; prediction from this model stays noisy.
 Step 3. Causal reading needs the paired experiment, not a bigger regression.
 Answer: Association -70ms controlling for hour; run the paired test for causation.

@@ -188,7 +188,7 @@ Check: review asks "would a loop state its invariant more clearly here" for any 
 ---
 
 Concept: Checked exceptions for recoverable conditions, unchecked for programming errors. Convention with API roots.
-Modern form: IOException and TaipeiBankTimeoutException checked (caller decides: retry, fallback); NullPointer-style bugs unchecked (fix the code, never catch).
+Modern form: IOException and PaymentTimeoutException checked (caller decides: retry, fallback); NullPointer-style bugs unchecked (fix the code, never catch).
 Why: the signature advertises recoverability; catching programming errors masks bugs.
 Counter-pattern: throws Exception on everything, or catching RuntimeException around business logic "to be safe".
 Check: API review asserts checked exceptions each have a documented caller action.
@@ -344,7 +344,7 @@ try (var scope = StructuredTaskScope.open()) {
     return new Page<>(users.get(), count.get());
 }
 Why: sibling tasks share one lifetime and one failure policy; join-or-throw replaces manual latch plus error aggregation.
-Counter-pattern: raw exeuctor plus CountDownLatch with hand-rolled exception collection that drops half the failures.
+Counter-pattern: raw executor plus CountDownLatch with hand-rolled exception collection that drops half the failures.
 Check: child-failure test asserts the scope throws with all failures visible; preview-flag documented in the build file.
 The build must also carry the two notes the compiler emits — `Note: Some input files use preview features of Java SE 25.` and `Note: Recompile with -Xlint:preview for details.` — because a preview API in a build log that shows no preview flag means someone compiled it somewhere it will not survive.
 

@@ -303,7 +303,7 @@ Verification: cardinality budget test on metric names; trace-to-log join asserte
 ---
 
 Goal: Startup-time checks as deploy gates.
-Wiring: ApplicationRunner validating миграции applied, required keys reachable, JWKS fetchable, feature flags parsed — failing fast with named causes.
+Wiring: ApplicationRunner validating migrations applied, required keys reachable, JWKS fetchable, feature flags parsed — failing fast with named causes.
 Why: deploys that cannot work must not receive traffic.
 Misconfiguration: lazy failures discovered by the first real user after the deploy "succeeded".
 Verification: startup-check suite runs in staging deploys; readiness gate blocks traffic until green.
