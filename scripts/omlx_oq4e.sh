@@ -48,7 +48,11 @@
 #   MODELS_OUT  quant outputs, one subdir per version (default: ~/models-out)
 #   NGRAM_BITS  PLE N-gram table width, default 8 (rest follows OQ_LEVEL)
 #   OQ_LEVEL    oQ base level, default 4 (oQ4e). scripts/omlx_oq5e.sh sets 5.
-#   OQ_SAMPLES  imatrix samples, default 128
+#   OQ_SAMPLES  imatrix samples, default 99999 — every calibration window is
+#               read (the subsample was what cost the first q8 build ~1%
+#               NLL/token vs stock on the 23k-token heldout). "All" scales to
+#               any sane bundle size; pass e.g. 128 to reproduce the old POC
+#               builds bit-for-bit.
 #   OQ_SEQLEN   imatrix sequence length, default 512
 #   PRESERVE_MTP  keep the native MTP draft head (Lightning MTP), default 1.
 #               Set to 0 for MTP-free outputs (reproduces pre-MTP runs).
@@ -129,7 +133,11 @@ case " 2 3 4 5 6 8 " in
         ;;
 esac
 OQ_LEVEL="${OQ_LEVEL:-4}"
-OQ_SAMPLES="${OQ_SAMPLES:-128}"
+# 99999 is "read every calibration window": the seeded sampler only subsamples
+# when the pool is larger than num_samples, and no realistic bundle reaches 50M
+# tokens. The old 128 default is what the first q8 build used; its ~1% deficit
+# vs stock on heldout-se2 shrank to a tie once the whole corpus was read.
+OQ_SAMPLES="${OQ_SAMPLES:-99999}"
 OQ_SEQLEN="${OQ_SEQLEN:-512}"
 PRESERVE_MTP="${PRESERVE_MTP:-1}"
 if [ "$PRESERVE_MTP" = "1" ]; then MTP_PY=True; else MTP_PY=False; fi
