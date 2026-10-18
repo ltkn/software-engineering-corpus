@@ -104,7 +104,7 @@ Follow in order, rerun earlier steps when later ones move. The steps assume the 
 3. Bundle. `cat calibration/*.txt > /tmp/calibration-se.txt` (or the weighted layout once weights are chosen).
 4. imatrix. `./llama-imatrix -m model-F16.gguf -f /tmp/calibration-se.txt -o imatrix-se.gguf --chunk 512 -ngl 99`.
 5. Quantize. `./llama-quantize --imatrix imatrix-se.gguf model-F16.gguf model-Q*.gguf <TYPE>` — keep `token_embd`, `output.weight`, and the imatrix winners at `q8_0` via `--tensor-type`.
-6. Evaluate. `./llama-perplexity` on `eval/heldout-se.txt` and `eval/heldout-general.txt`, plus the perplexity-vs-F16 logit KL per file. Never ship a Q3/Q4 without this.
+6. Evaluate. `./llama-perplexity` on `eval/heldout-se.txt` and `eval/heldout-general.txt`, plus the perplexity-vs-F16 logit KL per file. Never ship a Q3/Q4 without this. For closer comparisons, score `eval/heldout-se2.txt` too — a larger (23k-token) SE heldout authored fresh from the same house style; zero 12-gram shingle overlap with `calibration/`, so it stays independent of what the quantizer fit.
 7. Tune. Move manifest weights at most ±25% per iteration, log the reason, and rerun 2–6. The recompute gate is `scripts/recompute_gate.py` and should be part of the corpus edit chain; any new claim in 03/23 goes in its task table.
 
 ## Building oQ quants with oMLX — step order (Apple Silicon, custom corpus + Q8 N-gram)
@@ -147,7 +147,7 @@ CORPUS_FILE=bundles/generic.txt scripts/omlx_oq4e.sh Qwen/Qwen3.8-Flash-Next arm
 ```text
 .
 ├── calibration/   # 27 sources
-├── eval/          # heldout-se.txt, heldout-general.txt
+├── eval/          # heldout-se.txt, heldout-general.txt, heldout-se2.txt (~23k token larger heldout)
 ├── bundles/       # control-arm calibration bundles (build input only)
 ├── manifest.json  # tokens, weights, license (next)
 ├── SPEC.md        # agreed scope per file
