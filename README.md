@@ -131,6 +131,7 @@ ls ~/.cache/huggingface/hub/models--Qwen--Qwen3.8-Flash-Next/snapshots/
 scripts/omlx_oq4e.sh Qwen/Qwen3.8-Flash-Next coder-8bit-ngram-mtp 8
 scripts/omlx_oq3e.sh Qwen/Qwen3.8-Flash-Next coder-q3-ngram8 8      # Q3 trunk, Q8 table
 scripts/omlx_oq5e.sh Qwen/Qwen3.8-Flash-Next coder-q5-ngram8 8      # Q5 trunk, Q8 table
+scripts/omlx_oq6e.sh Qwen/Qwen3.8-Flash-Next coder-q6-ngram8 8      # Q6 trunk, Q8 table (reference tier)
 ```
 Variants: omit the trailing `8` for the default Q8 table; `PRESERVE_NGRAM_TABLE=1` keeps the table unquantized (bench baseline); `PRESERVE_MTP=0` strips the draft head; `VENDOR_SLICES=chat,tool_calling,reasoning` drops a vendored slice for ablations, `VENDOR_SLICES=` skips the append entirely (authored-only arm). `CORPUS_FILE=<bundle.txt>` replaces the assembled bundle — that is how control arms run. Arm B, generic text through the custom pipeline (built once, then protected from overwrite):
 ```bash
