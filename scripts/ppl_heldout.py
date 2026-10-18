@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Teacher-forced perplexity on the corpus heldout files, inside the oMLX venv.
 
-Loads the quant through oMLX's own loader (same code path the server uses,
-including the custom oQ / n-gram quantization), then scores a text file by
-summing token log-probs in non-overlapping chunks. Run it once per model —
+Loads the quant through oMLX's own runtime — for qwen4_exp checkpoints
+(DeltaNet + QSA + PLE n-gram) there is no mlx-lm model module, so the load
+goes through the vendored mlx-vlm registration exactly at the oMLX server
+stack (pre-load patches, forced sanitize, mmap PLE). Run it once per model —
 one process per quant, the 125B loads don't co-reside:
 
     ~/dev/omlx/.venv-3.12/bin/python scripts/ppl_heldout.py \
@@ -15,16 +16,16 @@ one process per quant, the 125B loads don't co-reside:
         --model ~/models-out/Qwen3.8-Flash-Next-oQ5e-coder-q8-ngram-mtp \
         --files eval/heldout-se.txt eval/heldout-general.txt
 
-The script only needs the oMLX venv (`omlx.models` + `mlx.core`); it should
-run from this corpus checkout with the quant host's `~/dev/omlx` venv python
-(the editable install there resolves `omlx` from `~/dev/omlx`). Only PPL
-deltas between runs matter: same chunking for both models, and the first pair
-should use the same files. Per-chunk NLL lines let you spot WHICH heldout
-region diverges, not just the average. `heldout-se.txt` is the domain-relevant
-comparison; `heldout-general.txt` is where stock shouldn't be sacrificed.
+The script needs the quant host's `~/dev/omlx` venv python (it imports
+`omlx` and `mlx_vlm`, both pinned there). Only PPL deltas between runs
+matter: same chunking for both models, and the first pair should use the
+same files. Per-chunk NLL lines let you spot WHICH heldout region diverges,
+not just the average. `heldout-se.txt` is the domain-relevant comparison;
+`heldout-general.txt` is where stock shouldn't be sacrificed.
 """
 
 import argparse
+import json
 import math
 import sys
 import time
@@ -35,21 +36,76 @@ import mlx.core as mx
 DEFAULT_CHUNK = 512  # tokens; matches the build's imatrix seq_length
 
 
+def load_omlx_quant(model_path: str):
+    """Load an oQ quant the way the oMLX server does for qwen4_exp.
+
+    The qwen4_exp text arch (GatedDeltaNet + QSA + PLE n-gram) has no
+    mlx-lm model module, so mlx-lm's registry raises "Model type qwen4_exp
+    not supported". The arch lives vendored inside omlx for mlx-vlm and is
+    wired by the for_vlm pre-load dispatcher (the same recipe the build's
+    calibration loads use). Forced sanitize is mandatory for MLX-format
+    files: mlx-vlm otherwise skips Model.sanitize and the
+    `model.language_model.*` weight keys never bind.
+    """
+    from omlx.engine.vlm import _force_qwen4_exp_sanitize_on_load
+    from omlx.oq import _calibration_model_settings
+    from omlx.utils.model_loading import (
+        maybe_apply_pre_load_patches,
+        materialize_lazy_state,
+    )
+
+    path = Path(model_path).expanduser()
+    if not path.is_dir():
+        raise FileNotFoundError(model_path)
+    config = json.loads((path / "config.json").read_text())
+    settings = _calibration_model_settings(
+        config, has_mtp_heads=False, has_mtp_weights=False
+    )
+    if settings is None:
+        raise ValueError(
+            "only qwen4_exp checkpoints are wired through this loader; "
+            f"config says {config.get('model_type')!r}"
+        )
+    maybe_apply_pre_load_patches(str(path), model_settings=settings, for_vlm=True)
+
+    import mlx_vlm
+    from mlx_vlm.utils import load as vlm_load
+
+    with _force_qwen4_exp_sanitize_on_load(path):
+        loaded = vlm_load(
+            str(path),
+            trust_remote_code=False,
+            lazy=True,
+        )
+    model = loaded[0]
+    processor = loaded[-1]
+    tokenizer = getattr(processor, "tokenizer", processor)
+    materialize_lazy_state(model)
+    del mlx_vlm
+    return model, tokenizer
+
+
 def forward_logits(model, ids: list[int]):
     """Run one token chunk through the model; return logits [T, vocab] (float32)."""
     arr = mx.array(ids)
+    attempts = (
+        lambda: model(arr),
+        lambda: model.language_model(arr),
+        lambda: model.forward(arr),
+    )
     out = None
-    try:
-        out = model(arr)
-    except Exception:
-        pass
+    error = None
+    for attempt in attempts:
+        try:
+            out = attempt()
+            if out is not None:
+                break
+        except Exception as exc:  # try the next call convention
+            error = exc
     if isinstance(out, tuple):
         out = out[0]
     if out is None:
-        try:
-            out = model.forward(arr)
-        except Exception as exc:
-            raise RuntimeError(f"could not run the model's forward pass: {exc}") from exc
+        raise RuntimeError(f"could not run the model's forward pass: {error}")
     import mlx.nn as nn
 
     return nn.log_softmax(out.reshape(-1, out.shape[-1]).astype(mx.float32), axis=-1)
@@ -105,17 +161,16 @@ def main() -> int:
             return 2
 
     print(f"loading {args.model} ...", file=sys.stderr, flush=True)
-    from omlx.models import MLXLanguageModel
-
-    mlm = MLXLanguageModel(args.model)
-    mlm.load()
-    assert mlm.model is not None and mlm.tokenizer is not None
+    model, tokenizer = load_omlx_quant(args.model)
+    if model is None or tokenizer is None:
+        print("load returned no model/tokenizer", file=sys.stderr)
+        return 1
 
     print(f"{'file':<28} {'tokens':>10} {'NLL/token':>10} {'PPL':>10} {'bits/tok':>9}")
     total: dict[str, float] = {}
     grand_nll = grand_toks = 0
     for path in args.files:
-        nll_sum, scored = score_file(mlm.model, mlm.tokenizer, Path(path), args.chunk)
+        nll_sum, scored = score_file(model, tokenizer, Path(path), args.chunk)
         if not scored:
             continue
         ppl = math.exp(nll_sum / scored)
