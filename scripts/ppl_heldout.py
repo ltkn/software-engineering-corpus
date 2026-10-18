@@ -86,26 +86,36 @@ def load_omlx_quant(model_path: str):
 
 
 def forward_logits(model, ids: list[int]):
-    """Run one token chunk through the model; return logits [T, vocab] (float32)."""
-    arr = mx.array(ids)
-    attempts = (
-        lambda: model(arr),
-        lambda: model.language_model(arr),
-        lambda: model.forward(arr),
-    )
+    """Run one token chunk through the model; return logits [T, vocab] (float32).
+
+    The vendored qwen4_exp trunk unpacks ``batch_size, seq_length = inputs.shape``
+    and needs the batch dim, and returns a ``LanguageModelOutput`` whose
+    ``.logits`` attribute carries the scores — not a bare tensor.
+    """
+    arr = mx.array(ids)[None]
+    errors = []
     out = None
-    error = None
-    for attempt in attempts:
+    attempts = (
+        ("model.language_model(inputs)", lambda: model.language_model(arr)),
+        ("model(inputs)", lambda: model(arr)),
+        ("model.forward(inputs)", lambda: model.forward(arr)),
+    )
+    for name, attempt in attempts:
         try:
             out = attempt()
-            if out is not None:
-                break
-        except Exception as exc:  # try the next call convention
-            error = exc
-    if isinstance(out, tuple):
-        out = out[0]
+            if out is not None and hasattr(out, "logits"):
+                out = out.logits
+            if out is None:
+                errors.append(f"{name}: returned None")
+                continue
+            break
+        except Exception as exc:  # report every convention's error, not just the last
+            errors.append(f"{name}: {type(exc).__name__}: {exc}")
+    if not isinstance(out, (mx.array,)):
+        if out is not None:
+            out = None if not hasattr(out, "shape") else out
     if out is None:
-        raise RuntimeError(f"could not run the model's forward pass: {error}")
+        raise RuntimeError("no forward convention worked:\n  " + "\n  ".join(errors))
     import mlx.nn as nn
 
     return nn.log_softmax(out.reshape(-1, out.shape[-1]).astype(mx.float32), axis=-1)
