@@ -18,7 +18,8 @@
 #
 # Output policy: rerunning the same <version> overwrites that quant in place
 # (previous log moves to *.log.prev; <out>/build.json records what went in —
-# source snapshot, bundle sha256, corpus + oMLX commits). 'stock' is a
+# source snapshot, bundle sha256, corpus + oMLX commits, and the imatrix
+# sampling config — samples × seq length). 'stock' is a
 # reserved version name and arm-* versions refuse overwrite. A pidfile in
 # $OQUP refuses concurrent runs of the same version.
 #
@@ -251,8 +252,12 @@ STOCK_PIDFILE="$OQUP/oq${OQ_LEVEL}e-$MODEL_TAG-stock.pid"
 PIDFILE="$OQUP/oq${OQ_LEVEL}e-$VERSION.pid"
 trap 'rm -f "$PIDFILE" "$STOCK_PIDFILE"' EXIT
 
-write_build_json() { # <out-dir> <calib-intent> <ngram-label> <bundle-or-"">
+write_build_json() { # <out-dir> <calib-intent> <ngram-label> <bundle-or-""> [samples] [seqlen]
     local out="$1" intent="$2" nlabel="$3" bundle="${4:-}" csha=""
+    # Stock never passes imatrix overrides, so its sampling is the library
+    # default (128 x 512) even when OQ_SAMPLES/OQ_SEQLEN are overridden for a
+    # custom arm in the same run; record what each arm actually used.
+    local samples="${5:-128}" seqlen="${6:-512}"
     if [ -n "$bundle" ] && [ -f "$bundle" ]; then
         csha="$(shasum -a 256 "$bundle" 2>/dev/null | awk '{print $1}')"
     fi
@@ -267,6 +272,8 @@ write_build_json() { # <out-dir> <calib-intent> <ngram-label> <bundle-or-"">
   "oq_level": $OQ_LEVEL,
   "ngram_bits": "$nlabel",
   "preserve_mtp": $PRESERVE_MTP,
+  "imatrix_samples": $samples,
+  "imatrix_seq_length": $seqlen,
   "calib_dataset_intent": "$intent",
   "corpus_bundle": "$bundle",
   "corpus_bundle_sha256": "$csha",
@@ -337,7 +344,7 @@ EOF
     rm -f "$STOCK_PIDFILE"
     echo "== stock built, verifying =="
     "$VENV_PY" "$VERIFY_PY" "$STOCK_OUT" "$BUNDLE" "$OQ_LEVEL" "default" "stock"
-    write_build_json "$STOCK_OUT" stock-default "default" ""
+    write_build_json "$STOCK_OUT" stock-default "default" "" 128 512
     echo "== stock baseline ready: $STOCK_OUT =="
 }
 
@@ -507,5 +514,5 @@ echo "== launching (log: $LOG) =="
 rm -f "$PIDFILE"
 echo "== quantize returned, verifying =="
 "$VENV_PY" "$VERIFY_PY" "$OUT" "$BUNDLE" "$OQ_LEVEL" "$NGRAM_VERIFY" "custom"
-write_build_json "$OUT" custom-bundle "$NGRAM_LABEL" "$BUNDLE"
+write_build_json "$OUT" custom-bundle "$NGRAM_LABEL" "$BUNDLE" "$OQ_SAMPLES" "$OQ_SEQLEN"
 echo "== done: $OUT =="
