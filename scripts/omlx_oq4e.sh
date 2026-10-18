@@ -23,6 +23,13 @@
 # reserved version name and arm-* versions refuse overwrite. A pidfile in
 # $OQUP refuses concurrent runs of the same version.
 #
+# After a completed build the heldout PPL runs automatically via
+# scripts/ppl_heldout.py — eval/heldout-se2.txt + heldout-se.txt +
+# heldout-general.txt at chunk 2048 (the stock baseline too, but only when
+# it actually rebuilds). Keep the oMLX server stopped while the script
+# runs; scoring shares the host with serving. Numbers also persist under
+# $OQUP/ppl-*.log.
+#
 # Nothing in the llama.cpp flow (README, SPEC, manifest, other scripts) is
 # involved: this file is additive only.
 #
@@ -69,6 +76,10 @@
 #               to this repo); replaces the assembled bundle entirely, so
 #               VENDOR_SLICES is ignored. Control arms use bundles/generic.txt.
 #   OQ_SKIP_STOCK set to 1 to skip ensuring the stock baseline this run.
+#   OQ_SKIP_PPL   set to 1 to skip the post-build heldout PPL scoring.
+#   PPL_FILES     heldout files to score, relative to eval/ (default:
+#                 heldout-se2.txt heldout-se.txt heldout-general.txt).
+#   PPL_CHUNK     PPL scoring window, default 2048.
 #
 # Examples:
 #   scripts/omlx_oq4e.sh Qwen/Qwen3.8-Flash-Next coder-8bit-ngram-mtp 8
@@ -294,6 +305,34 @@ write_build_json() { # <out-dir> <calib-intent> <ngram-label> <bundle-or-""> [sa
 EOF
 }
 
+run_heldout_ppl() { # <quant-dir> <ppl-log-path>
+    if [ "${OQ_SKIP_PPL:-0}" = "1" ]; then
+        echo "== heldout PPL skipped (OQ_SKIP_PPL=1) =="
+        return 0
+    fi
+    local ppl_script="$CORPUS_REPO/scripts/ppl_heldout.py"
+    if [ ! -f "$ppl_script" ]; then
+        echo "WARNING: heldout scorer missing, skipping: $ppl_script" >&2
+        return 0
+    fi
+    local args=() p
+    for p in ${PPL_FILES:-heldout-se2.txt heldout-se.txt heldout-general.txt}; do
+        [[ "$p" == /* ]] || p="$CORPUS_REPO/eval/$p"
+        args+=("$p")
+    done
+    PPL_CHUNK="${PPL_CHUNK:-2048}"
+    echo "== heldout PPL (chunk $PPL_CHUNK; keep the oMLX server stopped) =="
+    echo "   files: ${args[*]}"
+    if "$VENV_PY" "$ppl_script" --model "$1" --files "${args[@]}" --chunk "$PPL_CHUNK" > "$2" 2>&1; then
+        cat "$2"
+        echo "== heldout PPL recorded: $2 =="
+    else
+        echo "WARNING: heldout scoring failed — output in $2 (the quant itself is fine)" >&2
+        cat "$2" 2>/dev/null || true
+    fi
+    return 0
+}
+
 ensure_stock() {
     # Arm A — the stock oMLX baseline: the tool's own default calibration
     # (oqe_code_multilingual built-in corpus; code_multilingual sensitivity
@@ -353,6 +392,7 @@ EOF
     echo "== stock built, verifying =="
     "$VENV_PY" "$VERIFY_PY" "$STOCK_OUT" "$BUNDLE" "$OQ_LEVEL" "default" "stock"
     write_build_json "$STOCK_OUT" stock-default "default" "" 128 512
+    run_heldout_ppl "$STOCK_OUT" "$OQUP/ppl-stock-$MODEL_TAG-oQ${OQ_LEVEL}e.log"
     echo "== stock baseline ready: $STOCK_OUT =="
 }
 
@@ -523,4 +563,5 @@ rm -f "$PIDFILE"
 echo "== quantize returned, verifying =="
 "$VENV_PY" "$VERIFY_PY" "$OUT" "$BUNDLE" "$OQ_LEVEL" "$NGRAM_VERIFY" "custom"
 write_build_json "$OUT" custom-bundle "$NGRAM_LABEL" "$BUNDLE" "$OQ_SAMPLES" "$OQ_SEQLEN"
+run_heldout_ppl "$OUT" "$OQUP/ppl-$MODEL_TAG-oQ${OQ_LEVEL}e-$VERSION.log"
 echo "== done: $OUT =="
