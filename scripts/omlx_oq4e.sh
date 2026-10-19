@@ -60,7 +60,12 @@
 #               NLL/token vs stock on the 23k-token heldout). "All" scales to
 #               any sane bundle size; pass e.g. 128 to reproduce the old POC
 #               builds bit-for-bit.
-#   OQ_SEQLEN   imatrix sequence length, default 512
+#   OQ_SEQLEN   imatrix sequence length, default 2048 — calibrate at the
+#               serving shape: the packing chops the same total token stream
+#               into fewer, longer windows, so cost barely moves, but
+#               activation statistics now cover positions 0-2047 (the
+#               long-context/QSA-indexer regime the 512 windows never saw).
+#               Pass 512 to reproduce the pre-2048 builds bit-for-bit.
 #   PRESERVE_MTP  keep the native MTP draft head (Lightning MTP), default 1.
 #               Set to 0 for MTP-free outputs (reproduces pre-MTP runs).
 #   PRESERVE_NGRAM_TABLE  keep the PLE N-gram table unquantized (BF16
@@ -149,7 +154,11 @@ OQ_LEVEL="${OQ_LEVEL:-4}"
 # tokens. The old 128 default is what the first q8 build used; its ~1% deficit
 # vs stock on heldout-se2 shrank to a tie once the whole corpus was read.
 OQ_SAMPLES="${OQ_SAMPLES:-99999}"
-OQ_SEQLEN="${OQ_SEQLEN:-512}"
+# 2048 matches the serving shape (2048-token QSA indexer, chunk-2048 scoring)
+# and is the convention the DeepSeek-V4.1 Flash quantizers converged on.
+# Packing conserves total tokens (one concatenated stream chopped at
+# seq_length), so this changes window shape, not calibration cost.
+OQ_SEQLEN="${OQ_SEQLEN:-2048}"
 PRESERVE_MTP="${PRESERVE_MTP:-1}"
 if [ "$PRESERVE_MTP" = "1" ]; then MTP_PY=True; else MTP_PY=False; fi
 PRESERVE_NGRAM="${PRESERVE_NGRAM_TABLE:-0}"
