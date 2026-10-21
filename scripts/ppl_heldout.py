@@ -2,19 +2,26 @@
 # SPDX-License-Identifier: Apache-2.0
 """Teacher-forced perplexity on the corpus heldout files, inside the oMLX venv.
 
-Loads the quant through oMLX's own runtime — for qwen4_exp checkpoints
+Loads the quant through oMLX's own runtime. For qwen4_exp checkpoints
 (DeltaNet + QSA + PLE n-gram) there is no mlx-lm model module, so the load
 goes through the vendored mlx-vlm registration exactly at the oMLX server
-stack (pre-load patches, forced sanitize, mmap PLE). Run it once per model —
-one process per quant, the 125B loads don't co-reside:
+stack (pre-load patches, forced sanitize, mmap PLE). For DeepSeek V4.1 it
+goes through the V4.1 loader with Engram SSD offload and optional routed-
+expert offload, so a 128 GB host can score without materializing the full
+Engram or expert set.
+
+Run it once per model — one process per quant, the large loads don't
+co-reside:
 
     ~/dev/omlx/.venv-3.12/bin/python scripts/ppl_heldout.py \
         --model ~/models-out/Qwen3.8-Flash-Next-oQ5e-stock \
         --files eval/heldout-se.txt eval/heldout-general.txt
 
+    OQ_PPL_EXPERT_FRACTION=0.25 \
     ~/dev/omlx/.venv-3.12/bin/python scripts/ppl_heldout.py \
-        --model ~/models-out/Qwen3.8-Flash-Next-oQ5e-coder-q8-ngram-mtp \
-        --files eval/heldout-se.txt eval/heldout-general.txt
+        --model ~/models-out/DeepSeek-V4.1-Flash-1017-oQ3e-se-q3-ngram8 \
+        --files eval/heldout-se2.txt eval/heldout-se.txt eval/heldout-general.txt \
+        --chunk 2048
 
 The script needs the quant host's `~/dev/omlx` venv python (it imports
 `omlx` and `mlx_vlm`, both pinned there). Only PPL deltas between runs
@@ -22,11 +29,17 @@ matter: same chunking for both models, and the first pair should use the
 same files. Per-chunk NLL lines let you spot WHICH heldout region diverges,
 not just the average. `heldout-se.txt` is the domain-relevant comparison;
 `heldout-general.txt` is where stock shouldn't be sacrificed.
+
+For DeepSeek V4.1, `--moe-resident-fraction` (or
+`OQ_PPL_EXPERT_FRACTION`) controls how much of the routed-expert set stays
+resident; the rest streams from the checkpoint. The default 0.25 matches the
+quant host's safe serving range. Set it to 1.0 on a host with enough RAM.
 """
 
 import argparse
 import json
 import math
+import os
 import sys
 import time
 from pathlib import Path
@@ -36,17 +49,37 @@ import mlx.core as mx
 DEFAULT_CHUNK = 512  # tokens; matches the build's imatrix seq_length
 
 
-def load_omlx_quant(model_path: str):
-    """Load an oQ quant the way the oMLX server does for qwen4_exp.
+def load_omlx_quant(model_path: str, *, moe_resident_fraction: float | None = None):
+    """Load an oQ quant the way the oMLX server does for its model family.
 
-    The qwen4_exp text arch (GatedDeltaNet + QSA + PLE n-gram) has no
-    mlx-lm model module, so mlx-lm's registry raises "Model type qwen4_exp
-    not supported". The arch lives vendored inside omlx for mlx-vlm and is
-    wired by the for_vlm pre-load dispatcher (the same recipe the build's
+    qwen4_exp: the text arch (GatedDeltaNet + QSA + PLE n-gram) has no mlx-lm
+    model module, so mlx-lm's registry raises "Model type qwen4_exp not
+    supported". The arch lives vendored inside omlx for mlx-vlm and is wired
+    by the for_vlm pre-load dispatcher (the same recipe the build's
     calibration loads use). Forced sanitize is mandatory for MLX-format
     files: mlx-vlm otherwise skips Model.sanitize and the
     `model.language_model.*` weight keys never bind.
+
+    deepseek_v41: the V4.1 loader reads converted or source checkpoints with
+    Engram on SSD and, when asked, keeps only a fraction of each layer's
+    routed experts resident. That is the same runtime used by the server, so
+    PPL remains comparable with serving without fitting 400+ GB in RAM.
     """
+    path = Path(model_path).expanduser()
+    if not path.is_dir():
+        raise FileNotFoundError(model_path)
+    config = json.loads((path / "config.json").read_text())
+    model_type = str(config.get("model_type", "")).lower().replace("-", "_")
+    if model_type == "deepseek_v41":
+        from omlx.patches.deepseek_v41.loading import load as v41_load
+
+        kwargs = {"engram_ssd_offload": True}
+        if moe_resident_fraction is not None:
+            kwargs["moe_expert_offload_resident_fraction"] = moe_resident_fraction
+        model, processor = v41_load(str(path), **kwargs)
+        tokenizer = getattr(processor, "tokenizer", processor)
+        return model, tokenizer
+
     from omlx.engine.vlm import _force_qwen4_exp_sanitize_on_load
     from omlx.oq import _calibration_model_settings
     from omlx.utils.model_loading import (
@@ -54,17 +87,13 @@ def load_omlx_quant(model_path: str):
         materialize_lazy_state,
     )
 
-    path = Path(model_path).expanduser()
-    if not path.is_dir():
-        raise FileNotFoundError(model_path)
-    config = json.loads((path / "config.json").read_text())
     settings = _calibration_model_settings(
         config, has_mtp_heads=False, has_mtp_weights=False
     )
     if settings is None:
         raise ValueError(
-            "only qwen4_exp checkpoints are wired through this loader; "
-            f"config says {config.get('model_type')!r}"
+            "only qwen4_exp and deepseek_v41 checkpoints are wired through "
+            f"this loader; config says {config.get('model_type')!r}"
         )
     maybe_apply_pre_load_patches(str(path), model_settings=settings, for_vlm=True)
 
@@ -163,6 +192,13 @@ def main() -> int:
     ap.add_argument("--model", required=True, help="quant dir (config.json + safetensors) or HF id")
     ap.add_argument("--files", required=True, nargs="+", help="heldout text files to score, one by one")
     ap.add_argument("--chunk", type=int, default=DEFAULT_CHUNK, help="tokens per scoring window (default 512)")
+    ap.add_argument(
+        "--moe-resident-fraction",
+        type=float,
+        default=float(os.environ.get("OQ_PPL_EXPERT_FRACTION", "0.25")),
+        help="DeepSeek V4.1 routed-expert resident fraction (default 0.25; "
+        "OQ_PPL_EXPERT_FRACTION overrides)",
+    )
     args = ap.parse_args()
 
     for f in args.files:
@@ -171,33 +207,40 @@ def main() -> int:
             return 2
 
     print(f"loading {args.model} ...", file=sys.stderr, flush=True)
-    model, tokenizer = load_omlx_quant(args.model)
+    model, tokenizer = load_omlx_quant(
+        args.model, moe_resident_fraction=args.moe_resident_fraction
+    )
     if model is None or tokenizer is None:
         print("load returned no model/tokenizer", file=sys.stderr)
         return 1
 
-    print(f"{'file':<28} {'tokens':>10} {'NLL/token':>10} {'PPL':>10} {'bits/tok':>9}")
-    total: dict[str, float] = {}
-    grand_nll = grand_toks = 0
-    for path in args.files:
-        nll_sum, scored = score_file(model, tokenizer, Path(path), args.chunk)
-        if not scored:
-            continue
-        ppl = math.exp(nll_sum / scored)
-        total[path] = ppl
-        grand_nll += nll_sum
-        grand_toks += scored
-        print(f"{Path(path).name:<28} {scored:>10} {nll_sum / scored:>10.4f} {ppl:>10.4f} "
-              f"{(nll_sum / scored) / math.log(2):>9.4f}")
-    if grand_toks:
-        pooled = math.exp(grand_nll / grand_toks)
-        print(f"{'POOLED':<28} {grand_toks:>10} {grand_nll / grand_toks:>10.4f} {pooled:>10.4f} "
-              f"{(grand_nll / grand_toks) / math.log(2):>9.4f}")
-        print(f"\nrun summary: PPL @ {args.model.split('/')[-1]}")
-        for k, v in total.items():
-            print(f"  {Path(k).name:<28} {v:.4f}")
-        print(f"  {'POOLED':<28} {pooled:.4f}")
-    return 0
+    close = getattr(model, "close", None)
+    try:
+        print(f"{'file':<28} {'tokens':>10} {'NLL/token':>10} {'PPL':>10} {'bits/tok':>9}")
+        total: dict[str, float] = {}
+        grand_nll = grand_toks = 0
+        for path in args.files:
+            nll_sum, scored = score_file(model, tokenizer, Path(path), args.chunk)
+            if not scored:
+                continue
+            ppl = math.exp(nll_sum / scored)
+            total[path] = ppl
+            grand_nll += nll_sum
+            grand_toks += scored
+            print(f"{Path(path).name:<28} {scored:>10} {nll_sum / scored:>10.4f} {ppl:>10.4f} "
+                  f"{(nll_sum / scored) / math.log(2):>9.4f}")
+        if grand_toks:
+            pooled = math.exp(grand_nll / grand_toks)
+            print(f"{'POOLED':<28} {grand_toks:>10} {grand_nll / grand_toks:>10.4f} {pooled:>10.4f} "
+                  f"{(grand_nll / grand_toks) / math.log(2):>9.4f}")
+            print(f"\nrun summary: PPL @ {args.model.split('/')[-1]}")
+            for k, v in total.items():
+                print(f"  {Path(k).name:<28} {v:.4f}")
+            print(f"  {'POOLED':<28} {pooled:.4f}")
+        return 0
+    finally:
+        if close is not None:
+            close()
 
 
 if __name__ == "__main__":
