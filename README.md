@@ -142,6 +142,27 @@ CORPUS_FILE=bundles/generic.txt scripts/omlx_oq4e.sh Qwen/Qwen3.8-Flash-Next arm
 5. Verify. Each script self-checks the report (corpus used, fresh cache, entries) and the config (trunk bits, N-gram `{bits: 8, group_size: 32}`), and writes `<out>/build.json` — source snapshot, bundle sha256, corpus + oMLX commits — the record that survives an overwrite and what the stock reuse check reads. Read `~/oqup/oq<level>e-<version>.log` and the imatrix `expert_coverage` (p05 ≥ 16 is the bar).
 6. Serve + evaluate. Symlink the output into `~/.omlx/models` (or `omlx serve --model-dir ~/models-out`), then score heldouts plus LiveCodeBench before calling any version good. Pair at eval time, always: `[stock, arm-b-generic, <current build>]` — current-vs-B isolates the corpus text (same pipeline, different text), current-vs-stock is the headline question (the whole custom pipeline vs out-of-the-box oMLX).
 
+## DeepSeek V4.1 Flash-1017 — oQ2.5e/oQ3e/oQ4e
+
+DeepSeek V4.1 uses the same corpus and control-arm philosophy, but a separate builder because the source, report layout, Engram widths and calibration behavior differ from Qwen4-Exp. The source must be the **original** `deepseek-ai/DeepSeek-V4.1-Flash-1017` checkpoint (FP4/FP8 projections), not an oMLX-converted or MLX-quantized copy. The scripts resolve the newest cached snapshot, or take `--src`:
+
+```bash
+scripts/omlx_deepseek_v41_oq25e.sh deepseek-ai/DeepSeek-V4.1-Flash-1017 se-q25-ngram8 8
+scripts/omlx_deepseek_v41_oq3e.sh  deepseek-ai/DeepSeek-V4.1-Flash-1017 se-q3-ngram8 8
+scripts/omlx_deepseek_v41_oq4e.sh  deepseek-ai/DeepSeek-V4.1-Flash-1017 se-q4-ngram8 8
+```
+
+The trailing width is the Engram table: `2 3 4 6 8`, default `8`. There is no 5-bit width. oQ4e keeps the source FP4/FP8 projection precision and does no imatrix or sensitivity pass, so the corpus cannot change its projection bits — it is a source-precision export with an 8-bit table, useful as the high-quality anchor. oQ2.5e and oQ3e do the calibrated mixed-bit allocation; they stream one decoder block at a time from the source shards by default, so the ~307 GB non-Engram source is never resident. `STREAM_CALIBRATION=0` restores the resident path (and warns), `STREAM_CALIBRATION=1` forces streaming. Both passes use this repo's bundle for `calib_dataset` and `sensitivity_calib_dataset`.
+
+DeepSeek outputs are hundreds of GB, so the stock baseline is **not** built by default here (`OQ_SKIP_STOCK=1`). Build it once with `OQ_SKIP_STOCK=0`; it uses oMLX's default calibration corpus and the default 4-bit Engram width. Same-name `<version>` reruns overwrite in place, `arm-*` versions are protected, and `build.json` records the source snapshot, bundle sha256, corpus/omLX commits, Engram width, MTP setting and streaming mode. Control arm B works exactly as for Qwen:
+
+```bash
+CORPUS_FILE=bundles/generic.txt scripts/omlx_deepseek_v41_oq3e.sh \
+  deepseek-ai/DeepSeek-V4.1-Flash-1017 arm-b-generic 8
+```
+
+Heldout PPL runs after a completed build through the V4.1 loader (Engram SSD offload, default routed-expert resident fraction `0.25`; override with `OQ_PPL_EXPERT_FRACTION`). Keep the oMLX server stopped during scoring. `OQ_SKIP_PPL=1` skips it.
+
 ## Layout
 
 ```text
