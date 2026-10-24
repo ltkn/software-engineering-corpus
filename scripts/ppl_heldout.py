@@ -45,6 +45,11 @@ rebuild the anchors. The omlx_oq4e.sh build tail automates this: it
 content-addresses the anchor under $OQUP and builds it on first use, then
 reuses it for every later build.
 
+Add ``--json out.json`` to write machine-readable results;
+``scripts/ppl_verdict.py`` turns them into a ship/no-ship card (vs the source
+floor and vs the accepted baseline) and appends the run to
+``eval/history.jsonl``. Baseline promotion is manual (``--write-baseline``).
+
 The script needs the quant host's `~/dev/omlx` venv python (it imports
 `omlx` and `mlx_vlm`, both pinned there). Only PPL deltas between runs
 matter: same chunking for both models, and the first pair should use the
@@ -208,6 +213,7 @@ def score_file(model, tokenizer, path: Path, chunk: int, *, teacher=None, collec
     col_targets: list[np.ndarray] = []
     col_argmax: list[np.ndarray] = []
     col_nll: list[np.ndarray] = []
+    col_teacher_nll: list[np.ndarray] = []
     t0 = time.time()
     for start in range(0, max(len(ids) - 1, 0), chunk):
         window = ids[start : start + chunk]
@@ -220,10 +226,11 @@ def score_file(model, tokenizer, path: Path, chunk: int, *, teacher=None, collec
         nll_sum += s
         scored += targets.shape[0]
 
+        col_nll.append(np.array(tok_nll, dtype=np.float64))
+
         if collect:
             col_targets.append(np.asarray(window[1:], dtype=np.int32))
             col_argmax.append(np.array(mx.argmax(logp, axis=-1), dtype=np.int32))
-            col_nll.append(np.array(tok_nll, dtype=np.float64))
 
         if teacher is not None:
             n = targets.shape[0]
@@ -237,6 +244,7 @@ def score_file(model, tokenizer, path: Path, chunk: int, *, teacher=None, collec
             t_nll = teacher["nll"][t_off : t_off + n]
             teacher_nll += float(t_nll.sum())
             agree += int(mx.sum(mx.argmax(logp, axis=-1) == mx.array(t_am)).item())
+            col_teacher_nll.append(np.asarray(t_nll, dtype=np.float64))
             t_off += n
 
         if scored % (chunk * 8) < chunk:
@@ -249,14 +257,18 @@ def score_file(model, tokenizer, path: Path, chunk: int, *, teacher=None, collec
             f"bits/token {(nll_sum / scored) / math.log(2):.4f}",
             file=sys.stderr,
         )
-    extra: dict[str, object] = {}
+    extra: dict[str, object] = {
+        "tok_nll": np.concatenate(col_nll) if col_nll else np.zeros(0, np.float64),
+    }
     if teacher is not None:
         extra["teacher_nll"] = teacher_nll
         extra["agree"] = agree
+        extra["teacher_tok_nll"] = (
+            np.concatenate(col_teacher_nll) if col_teacher_nll else np.zeros(0, np.float64)
+        )
     if collect:
         extra["targets"] = np.concatenate(col_targets) if col_targets else np.zeros(0, np.int32)
         extra["argmax"] = np.concatenate(col_argmax) if col_argmax else np.zeros(0, np.int32)
-        extra["nll"] = np.concatenate(col_nll) if col_nll else np.zeros(0, np.float64)
     return nll_sum, scored, extra
 
 
@@ -283,6 +295,11 @@ def main() -> int:
         "--teacher-save",
         metavar="NPZ",
         help="write per-token teacher anchors for --model (run once on the source checkpoint)",
+    )
+    ap.add_argument(
+        "--json",
+        metavar="PATH",
+        help="write machine-readable results (consumed by scripts/ppl_verdict.py)",
     )
     args = ap.parse_args()
 
@@ -335,6 +352,7 @@ def main() -> int:
         grand_teacher = grand_agree = 0.0
         save_meta: dict[str, object] = {"model": args.model, "chunk": args.chunk, "files": []}
         saved: dict[str, np.ndarray] = {}
+        json_files: list[dict] = []
         for path_like in args.files:
             path = Path(path_like)
             sha = file_sha256(path)
@@ -370,7 +388,7 @@ def main() -> int:
                 i = len(save_meta["files"])
                 saved[f"f{i}_targets"] = extra["targets"]
                 saved[f"f{i}_argmax"] = extra["argmax"]
-                saved[f"f{i}_nll"] = extra["nll"]
+                saved[f"f{i}_nll"] = extra["tok_nll"]
                 save_meta["files"].append({"name": path.name, "sha256": sha})
             ppl = math.exp(nll_sum / scored)
             mean_nll = nll_sum / scored
@@ -394,6 +412,21 @@ def main() -> int:
             else:
                 print(f"{path.name:<28} {scored:>10} {mean_nll:>10.4f} {ppl:>10.4f} "
                       f"{mean_nll / math.log(2):>9.4f}")
+            entry = {
+                "name": path.name,
+                "path": str(path.resolve()),
+                "sha256": sha,
+                "tokens": scored,
+                "nll": nll_sum,
+                "nll_per_token": [round(float(v), 5) for v in extra["tok_nll"]],
+            }
+            if anchor_meta is not None:
+                entry["teacher_nll"] = extra["teacher_nll"]
+                entry["agree"] = extra["agree"]
+                entry["teacher_nll_per_token"] = [
+                    round(float(v), 5) for v in extra["teacher_tok_nll"]
+                ]
+            json_files.append(entry)
         if grand_toks:
             pooled = math.exp(grand_nll / grand_toks)
             if anchor_meta is not None:
@@ -417,6 +450,36 @@ def main() -> int:
                 for k, (delta, pct) in total_delta.items():
                     print(f"  {Path(k).name:<28} dNLL {delta:+.4f} ({pct:+.2f}%)  "
                           f"top-1 {total_top1[k]:.4f}")
+        if args.json:
+            payload = {
+                "schema": 1,
+                "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "model": args.model,
+                "chunk": args.chunk,
+                "teacher": (
+                    {
+                        "anchors": str(Path(args.teacher).expanduser()) if args.teacher else None,
+                        "source": anchor_meta.get("model"),
+                        "chunk": anchor_meta["chunk"],
+                    }
+                    if anchor_meta is not None
+                    else None
+                ),
+                "files": json_files,
+                "pooled": {
+                    "tokens": grand_toks,
+                    "nll": grand_nll,
+                    **(
+                        {"teacher_nll": grand_teacher, "agree": grand_agree}
+                        if anchor_meta is not None
+                        else {}
+                    ),
+                },
+            }
+            outj = Path(args.json).expanduser()
+            outj.parent.mkdir(parents=True, exist_ok=True)
+            outj.write_text(json.dumps(payload, indent=1) + "\n", encoding="utf-8")
+            print(f"\nresults json: {outj}", file=sys.stderr)
         if args.teacher_save is not None and saved:
             saved["meta"] = np.array(json.dumps(save_meta))
             out = Path(args.teacher_save).expanduser()
