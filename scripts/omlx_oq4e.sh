@@ -26,9 +26,11 @@
 # After a completed build the heldout PPL runs automatically via
 # scripts/ppl_heldout.py — eval/heldout-se2.txt + heldout-se.txt +
 # heldout-general.txt at chunk 2048 (the stock baseline too, but only when
-# it actually rebuilds). Keep the oMLX server stopped while the script
-# runs; scoring shares the host with serving. Numbers also persist under
-# $OQUP/ppl-*.log.
+# it actually rebuilds). scripts/ppl_verdict.py then prints the
+# ship/no-ship card (vs source floor and vs the accepted baseline) and
+# appends the run to eval/history.jsonl. Keep the oMLX server stopped while
+# the script runs; scoring shares the host with serving. Numbers also
+# persist under $OQUP/ppl-*.log and $OQUP/ppl-*.json.
 #
 # Nothing in the llama.cpp flow (README, SPEC, manifest, other scripts) is
 # involved: this file is additive only.
@@ -85,6 +87,9 @@
 #   PPL_FILES     heldout files to score, relative to eval/ (default:
 #                 heldout-se2.txt heldout-se.txt heldout-general.txt).
 #   PPL_CHUNK     PPL scoring window, default 2048.
+#   PPL_BASELINE  accepted-build baseline for the verdict card, default
+#                 <repo>/eval/baseline.json.
+#   PPL_HISTORY   append-only run ledger, default <repo>/eval/history.jsonl.
 #   PPL_TEACHER   teacher-anchor control for absolute (vs source) scoring.
 #                 unset/auto: content-addressed anchors in $OQUP, built
 #                 automatically from $SRC on first use and reused after -
@@ -350,7 +355,8 @@ teacher_key() { # <chunk> <heldout-file...>; content-addresses an anchor file
     } | shasum -a 256 | awk '{print substr($1, 1, 12)}'
 }
 
-run_heldout_ppl() { # <quant-dir> <ppl-log-path>
+run_heldout_ppl() { # <quant-dir> <ppl-log-path> [verdict]
+    local with_verdict="${3:-0}"
     if [ "${OQ_SKIP_PPL:-0}" = "1" ]; then
         echo "== heldout PPL skipped (OQ_SKIP_PPL=1) =="
         return 0
@@ -401,6 +407,8 @@ run_heldout_ppl() { # <quant-dir> <ppl-log-path>
     fi
 
     local cmd=( "$VENV_PY" "$ppl_script" --model "$1" --files "${args[@]}" --chunk "$PPL_CHUNK" )
+    local jpath="${2%.log}.json"
+    cmd+=(--json "$jpath")
     local have_teacher=0
     if [ -n "$teacher" ]; then
         cmd+=(--teacher "$teacher")
@@ -412,6 +420,14 @@ run_heldout_ppl() { # <quant-dir> <ppl-log-path>
         echo "   teacher anchors: $teacher"
     fi
     if "${cmd[@]}" > "$2" 2>&1; then
+        local verdict_py="$CORPUS_REPO/scripts/ppl_verdict.py"
+        if [ "$with_verdict" = "1" ] && [ -f "$verdict_py" ] && [ -f "$jpath" ]; then
+            if ! "$VENV_PY" "$verdict_py" --results "$jpath" \
+                --baseline "${PPL_BASELINE:-$CORPUS_REPO/eval/baseline.json}" \
+                --history "${PPL_HISTORY:-$CORPUS_REPO/eval/history.jsonl}" >> "$2" 2>&1; then
+                echo "WARNING: verdict failed; raw scores above are still valid" >&2
+            fi
+        fi
         cat "$2"
         echo "== heldout PPL recorded: $2 =="
     else
@@ -651,5 +667,5 @@ rm -f "$PIDFILE"
 echo "== quantize returned, verifying =="
 "$VENV_PY" "$VERIFY_PY" "$OUT" "$BUNDLE" "$OQ_LEVEL" "$NGRAM_VERIFY" "custom"
 write_build_json "$OUT" custom-bundle "$NGRAM_LABEL" "$BUNDLE" "$OQ_SAMPLES" "$OQ_SEQLEN"
-run_heldout_ppl "$OUT" "$OQUP/ppl-$MODEL_TAG-oQ${OQ_LEVEL}e-$VERSION.log"
+run_heldout_ppl "$OUT" "$OQUP/ppl-$MODEL_TAG-oQ${OQ_LEVEL}e-$VERSION.log" verdict
 echo "== done: $OUT =="
