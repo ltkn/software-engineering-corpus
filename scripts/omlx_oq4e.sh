@@ -85,11 +85,14 @@
 #   PPL_FILES     heldout files to score, relative to eval/ (default:
 #                 heldout-se2.txt heldout-se.txt heldout-general.txt).
 #   PPL_CHUNK     PPL scoring window, default 2048.
-#   PPL_TEACHER   path to a teacher-anchor .npz built once from the source
-#                 checkpoint (ppl_heldout.py --teacher-save). When set, the
-#                 post-build scores also report teacher NLL, NLL delta and
-#                 top-1 agreement against the source model. Unset = relative
-#                 scoring only. Build the anchors once on the quant host:
+#   PPL_TEACHER   teacher-anchor control for absolute (vs source) scoring.
+#                 unset/auto: content-addressed anchors in $OQUP, built
+#                 automatically from $SRC on first use and reused after -
+#                 the source and a quant never co-reside in RAM;
+#                 off: disable source comparison; <path>: use/build exactly
+#                 that file. Anchors are keyed by heldout shas x chunk x
+#                 source config/index, so heldout edits get fresh anchors.
+#                 Manual one-time build (optional):
 #                   $VENV_PY scripts/ppl_heldout.py --model <source> \
 #                     --files eval/heldout-se2.txt eval/heldout-se.txt \
 #                             eval/heldout-general.txt \
@@ -323,6 +326,30 @@ write_build_json() { # <out-dir> <calib-intent> <ngram-label> <bundle-or-""> [sa
 EOF
 }
 
+teacher_key() { # <chunk> <heldout-file...>; content-addresses an anchor file
+    local chunk="$1"; shift
+    {
+        printf 'chunk %s\n' "$chunk"
+        local p
+        for p in "$@"; do
+            if [ -f "$p" ]; then
+                shasum -a 256 "$p"
+            else
+                printf 'missing %s\n' "$p"
+            fi
+        done
+        # Cheap source identity. Swapping weights in place without touching
+        # config.json/index.json is not detected; delete the npz (or point
+        # PPL_TEACHER at a fresh path) in that case.
+        if [ -f "$SRC/config.json" ]; then
+            shasum -a 256 "$SRC/config.json"
+        fi
+        if [ -f "$SRC/model.safetensors.index.json" ]; then
+            shasum -a 256 "$SRC/model.safetensors.index.json"
+        fi
+    } | shasum -a 256 | awk '{print substr($1, 1, 12)}'
+}
+
 run_heldout_ppl() { # <quant-dir> <ppl-log-path>
     if [ "${OQ_SKIP_PPL:-0}" = "1" ]; then
         echo "== heldout PPL skipped (OQ_SKIP_PPL=1) =="
@@ -339,20 +366,50 @@ run_heldout_ppl() { # <quant-dir> <ppl-log-path>
         args+=("$p")
     done
     PPL_CHUNK="${PPL_CHUNK:-2048}"
+
+    # Teacher anchors: absolute scoring against the source checkpoint. Anchors
+    # are content-addressed and built once on first use, then reused by every
+    # later build (the source and a quant never co-reside in RAM).
+    local teacher="${PPL_TEACHER:-auto}"
+    case "$teacher" in
+        0|off|none|no) teacher="" ;;
+        auto)
+            if [ -d "$SRC" ]; then
+                teacher="$OQUP/teacher-anchors-$(teacher_key "$PPL_CHUNK" "${args[@]}").npz"
+            else
+                echo "WARNING: no local source dir ($SRC); scoring without source comparison" >&2
+                teacher=""
+            fi ;;
+    esac
+    if [ -n "$teacher" ] && [ ! -f "$teacher" ]; then
+        if [ -d "$SRC" ]; then
+            local tlog="$OQUP/ppl-teacher-$MODEL_TAG-oQ${OQ_LEVEL}e.log"
+            echo "== teacher anchors missing: building once from $SRC =="
+            if "$VENV_PY" "$ppl_script" --model "$SRC" --files "${args[@]}" \
+                --chunk "$PPL_CHUNK" --teacher-save "$teacher" > "$tlog" 2>&1; then
+                echo "   teacher anchors: $teacher"
+                cat "$tlog"
+            else
+                echo "WARNING: teacher-anchor build failed; scoring without source comparison" >&2
+                tail -n 8 "$tlog" >&2 || true
+                teacher=""
+            fi
+        else
+            echo "WARNING: teacher anchor missing and no local source: $teacher" >&2
+            teacher=""
+        fi
+    fi
+
     local cmd=( "$VENV_PY" "$ppl_script" --model "$1" --files "${args[@]}" --chunk "$PPL_CHUNK" )
     local have_teacher=0
-    if [ -n "${PPL_TEACHER:-}" ]; then
-        if [ -f "$PPL_TEACHER" ]; then
-            cmd+=(--teacher "$PPL_TEACHER")
-            have_teacher=1
-        else
-            echo "WARNING: PPL_TEACHER missing ($PPL_TEACHER); scoring without source comparison" >&2
-        fi
+    if [ -n "$teacher" ]; then
+        cmd+=(--teacher "$teacher")
+        have_teacher=1
     fi
     echo "== heldout PPL (chunk $PPL_CHUNK; keep the oMLX server stopped) =="
     echo "   files: ${args[*]}"
     if [ "$have_teacher" = "1" ]; then
-        echo "   teacher anchors: $PPL_TEACHER"
+        echo "   teacher anchors: $teacher"
     fi
     if "${cmd[@]}" > "$2" 2>&1; then
         cat "$2"
