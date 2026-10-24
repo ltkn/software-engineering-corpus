@@ -84,6 +84,8 @@
 #               VENDOR_SLICES is ignored. Control arms use bundles/generic.txt.
 #   OQ_SKIP_STOCK set to 1 to skip ensuring the stock baseline this run.
 #   OQ_SKIP_PPL   set to 1 to skip the post-build heldout PPL scoring.
+#   OQ_SCORE_ONLY set to 1 to re-score an existing build (verdict card +
+#                 ledger) without re-quantizing; the output dir must exist.
 #   PPL_FILES     heldout files to score, relative to eval/ (default:
 #                 heldout-se2.txt heldout-se.txt heldout-general.txt).
 #   PPL_CHUNK     PPL scoring window, default 2048.
@@ -437,6 +439,19 @@ run_heldout_ppl() { # <quant-dir> <ppl-log-path> [verdict]
     return 0
 }
 
+# Re-score an existing quant without touching it. The scoring stack changes
+# far more often than the weights, so this is the cheap path after a pull:
+# it builds/reuses the teacher anchors and prints the same verdict card.
+if [ "${OQ_SCORE_ONLY:-0}" = "1" ]; then
+    if [ ! -d "$OUT" ]; then
+        echo "OQ_SCORE_ONLY=1: missing quant dir: $OUT" >&2
+        exit 1
+    fi
+    [ -f "$VENV_PY" ] || { echo "missing venv python: $VENV_PY" >&2; exit 1; }
+    run_heldout_ppl "$OUT" "$OQUP/ppl-$MODEL_TAG-oQ${OQ_LEVEL}e-$VERSION.log" verdict
+    exit 0
+fi
+
 ensure_stock() {
     # Arm A — the stock oMLX baseline: the tool's own default calibration
     # (oqe_code_multilingual built-in corpus; code_multilingual sensitivity
@@ -445,15 +460,17 @@ ensure_stock() {
     # reuse check reads <out>/build.json. Only preserve_mtp deviates from a
     # truly-default run, matched so serving comparisons stay apples-to-apples.
     if [ -f "$STOCK_OUT/build.json" ] && [ -f "$STOCK_OUT/oq_imatrix_report.json" ]; then
-        if "$VENV_PY" - "$STOCK_OUT" "$SRC" "$OQ_LEVEL" "$PRESERVE_MTP" <<'PY'
+        if "$VENV_PY" - "$STOCK_OUT" "$SRC" "$OQ_LEVEL" "$PRESERVE_MTP" \
+            "$(git -C "$OMLX_REPO" rev-parse HEAD 2>/dev/null || true)" <<'PY'
 import json, sys
 
-out, src, level, mtp = sys.argv[1:5]
+out, src, level, mtp, omlx = sys.argv[1:6]
 b = json.load(open(f"{out}/build.json"))
 ok = (
     b.get("src") == src
     and b.get("oq_level") == int(level)
     and b.get("preserve_mtp") == int(mtp)
+    and b.get("omlx_commit") == omlx
     and b.get("calib_dataset_intent") == "stock-default"
 )
 print("stock reuse check:", "OK" if ok else "STALE")
@@ -463,7 +480,7 @@ PY
             echo "== stock baseline exists (reusing): $STOCK_OUT =="
             return 0
         fi
-        echo "== stock baseline is stale (source or params changed) — rebuilding =="
+        echo "== stock baseline is stale (source, params or oMLX commit changed) — rebuilding =="
     elif [ -e "$STOCK_OUT" ]; then
         echo "== stock dir exists without build metadata — rebuilding =="
     fi
