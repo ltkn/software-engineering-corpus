@@ -2,9 +2,10 @@
 # omlx_deepseek_v41_oq4e.sh — DeepSeek V4.1 Flash-1017 oQ4e with this corpus.
 #
 # Builds an oQ4e export from the ORIGINAL DeepSeek V4.1 checkpoint, using
-# calibration/*.txt as both the imatrix corpus and the sensitivity corpus, and
-# an 8-bit Engram table. scripts/omlx_deepseek_v41_oq25e.sh and
-# ..._oq3e.sh are thin wrappers around this file.
+# calibration/*.txt as both the imatrix corpus and the sensitivity corpus.
+# Engram defaults to an 8-bit affine table; PRESERVE_NGRAM_TABLE=1 keeps the
+# official FP8 tables byte-for-byte instead. scripts/omlx_deepseek_v41_oq25e.sh
+# and ..._oq3e.sh are thin wrappers around this file.
 #
 # DeepSeek V4.1 is not Qwen4-Exp: the source must be the original checkpoint
 # (not an oMLX-converted or MLX-quantized copy), Engram widths are
@@ -46,6 +47,7 @@
 #               snapshot, e.g. deepseek-ai/DeepSeek-V4.1-Flash-1017
 #   <version>   experiment suffix, e.g. se-coder-q4-ngram8-mtp.
 #   [ngram_bits] Engram table width: 2 3 4 6 8 (default 8). There is no 5.
+#               Ignored when PRESERVE_NGRAM_TABLE=1.
 #
 # Env overrides:
 #   OMLX_REPO   omlx checkout on feat/custom-corpus-ngram-q8
@@ -54,6 +56,10 @@
 #   OQUP        logs + imatrix caches (default: ~/oqup)
 #   MODELS_OUT  quant outputs, one subdir per version (default: ~/models-out)
 #   NGRAM_BITS  Engram width, default 8
+#   PRESERVE_NGRAM_TABLE  set 1 to copy the official FP8 Engram tables
+#               unchanged (lossless, ~same size as 8-bit affine) instead of
+#               re-quantizing them. Preferred for DeepSeek V4.1; conflicts
+#               with the ngram_bits positional.
 #   OQ_LEVEL    oQ base level, default 4. Wrappers set 2.5 / 3.
 #   OQ_SAMPLES  imatrix samples, default 99999 (every calibration window)
 #   OQ_SEQLEN   imatrix sequence length, default 2048
@@ -164,9 +170,19 @@ OQ_SAMPLES="${OQ_SAMPLES:-99999}"
 OQ_SEQLEN="${OQ_SEQLEN:-2048}"
 PRESERVE_MTP="${PRESERVE_MTP:-1}"
 if [ "$PRESERVE_MTP" = "1" ]; then MTP_PY=True; else MTP_PY=False; fi
-if [ "${PRESERVE_NGRAM_TABLE:-0}" = "1" ]; then
-    echo "PRESERVE_NGRAM_TABLE is not supported for DeepSeek V4.1; use ngram_bits" >&2
-    exit 2
+PRESERVE_NGRAM="${PRESERVE_NGRAM_TABLE:-0}"
+if [ "$PRESERVE_NGRAM" = "1" ]; then
+    if [ -n "$NGRAM_ARG" ]; then
+        echo "PRESERVE_NGRAM_TABLE=1 conflicts with the ngram_bits positional" >&2
+        exit 2
+    fi
+    NGRAM_LINE="    preserve_ngram_table=True,"
+    NGRAM_VERIFY="preserved"
+    NGRAM_LABEL="preserved"
+else
+    NGRAM_LINE="    ngram_bits=$NGRAM_BITS,"
+    NGRAM_VERIFY="quantized:$NGRAM_BITS"
+    NGRAM_LABEL="$NGRAM_BITS"
 fi
 VENDOR_SLICES_EXPLICIT=0
 if [ -n "${VENDOR_SLICES+x}" ]; then VENDOR_SLICES_EXPLICIT=1; fi
@@ -354,16 +370,18 @@ run_heldout_ppl() { # <quant-dir> <ppl-log-path>
 
 ensure_stock() {
     if [ -f "$STOCK_OUT/build.json" ] && [ -f "$STOCK_OUT/quantization_report.json" ]; then
-        if "$VENV_PY" - "$STOCK_OUT" "$SRC" "$OQ_LEVEL" "$PRESERVE_MTP" <<'PY'
+        if "$VENV_PY" - "$STOCK_OUT" "$SRC" "$OQ_LEVEL" "$PRESERVE_MTP" \
+            "$(git -C "$OMLX_REPO" rev-parse HEAD 2>/dev/null || true)" <<'PY'
 import json, sys
 
-out, src, level, mtp = sys.argv[1:5]
+out, src, level, mtp, omlx = sys.argv[1:6]
 b = json.load(open(f"{out}/build.json"))
 ok = (
     b.get("family") == "deepseek_v41"
     and b.get("src") == src
     and float(b.get("oq_level")) == float(level)
     and b.get("preserve_mtp") == int(mtp)
+    and b.get("omlx_commit") == omlx
     and b.get("calib_dataset_intent") == "stock-default"
 )
 print("stock reuse check:", "OK" if ok else "STALE")
@@ -373,7 +391,7 @@ PY
             echo "== stock baseline exists (reusing): $STOCK_OUT =="
             return 0
         fi
-        echo "== stock baseline is stale (source or params changed) — rebuilding =="
+        echo "== stock baseline is stale (source, params or oMLX commit changed) — rebuilding =="
     elif [ -e "$STOCK_OUT" ]; then
         echo "== stock dir exists without build metadata — rebuilding =="
     fi
@@ -416,7 +434,11 @@ echo "omlx repo   : $OMLX_REPO ($(git -C "$OMLX_REPO" rev-parse --abbrev-ref HEA
 echo "source      : $SRC"
 echo "output      : $OUT"
 echo "imatrix     : $NPZ"
-echo "engram      : ${NGRAM_BITS}-bit (group 32)"
+if [ "$PRESERVE_NGRAM" = "1" ]; then
+    echo "engram      : source FP8 (preserved)"
+else
+    echo "engram      : ${NGRAM_BITS}-bit (group 32)"
+fi
 echo "stream      : $STREAM_LABEL"
 echo "stock       : $STOCK_OUT (OQ_SKIP_STOCK default 1)"
 
@@ -480,26 +502,41 @@ print(f"engram tables        : {len(tables)}")
 print(f"quantized modules    : {len(quantized)}")
 print(f"allocation           : {allocation}")
 print(f"imatrix entries      : {len(applied)}")
-print(f"engram bits          : {engram.get('bits')} (override {report.get('engram_bits_override')})")
+print(f"engram storage       : {engram.get('precision') or engram.get('bits')} "
+      f"(override {report.get('engram_bits_override')})")
 print(f"calibration          : {report.get('calibration')}")
 
-if ngram_spec == "default":
+if ngram_spec == "preserved":
+    expected_bits = None
+elif ngram_spec == "default":
     expected_bits = max(int(level), 4)
 else:
     expected_bits = int(ngram_spec.split(":")[1])
-ngram_ok = (
-    bool(tables)
-    and engram.get("bits") == expected_bits
-    and all(
-        t.get("bits") == expected_bits and t.get("group_size") == 32
-        for t in tables.values()
+
+if ngram_spec == "preserved":
+    # The FP8 passthrough leaves no per-tensor quantization entry; verify the
+    # budget report says source precision and every table has no affine bits.
+    ngram_ok = (
+        bool(tables)
+        and engram.get("precision") == "source"
+        and all(t.get("bits") is None for t in tables.values())
     )
-)
-check("engram width", ngram_ok, f"expected {expected_bits}")
+    ngram_detail = "source FP8"
+else:
+    ngram_ok = (
+        bool(tables)
+        and engram.get("bits") == expected_bits
+        and all(
+            t.get("bits") == expected_bits and t.get("group_size") == 32
+            for t in tables.values()
+        )
+    )
+    ngram_detail = f"expected {expected_bits}"
+check("engram width", ngram_ok, ngram_detail)
 
 override_ok = (
     report.get("engram_bits_override") is None
-    if ngram_spec == "default"
+    if ngram_spec in ("default", "preserved")
     else report.get("engram_bits_override") == expected_bits
 )
 check("engram override", override_ok)
@@ -592,7 +629,7 @@ quantize_oq_streaming(
     preserve_mtp=$MTP_PY,
     calib_dataset="$BUNDLE",
     sensitivity_calib_dataset="$BUNDLE",
-    ngram_bits=$NGRAM_BITS,
+$NGRAM_LINE
 $STREAM_LINE
     imatrix_cache_path="$NPZ",
     imatrix_reuse_cache=False,
@@ -611,8 +648,8 @@ echo "== launching (log: $LOG) =="
 "$VENV_PY" "$RUNNER" > "$LOG" 2>&1
 rm -f "$PIDFILE"
 echo "== quantize returned, verifying =="
-"$VENV_PY" "$VERIFY_PY" "$OUT" "$BUNDLE" "$OQ_LEVEL" "quantized:$NGRAM_BITS" "custom" \
+"$VENV_PY" "$VERIFY_PY" "$OUT" "$BUNDLE" "$OQ_LEVEL" "$NGRAM_VERIFY" "custom" \
     "$PRESERVE_MTP" "$STREAM_LABEL"
-write_build_json "$OUT" "custom-bundle" "$NGRAM_BITS" "$BUNDLE" "$OQ_SAMPLES" "$OQ_SEQLEN" "$STREAM_LABEL"
+write_build_json "$OUT" "custom-bundle" "$NGRAM_LABEL" "$BUNDLE" "$OQ_SAMPLES" "$OQ_SEQLEN" "$STREAM_LABEL"
 run_heldout_ppl "$OUT" "$OQUP/ppl-$TAG-$VERSION.log"
 echo "== done: $OUT =="
