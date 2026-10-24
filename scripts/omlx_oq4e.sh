@@ -85,6 +85,15 @@
 #   PPL_FILES     heldout files to score, relative to eval/ (default:
 #                 heldout-se2.txt heldout-se.txt heldout-general.txt).
 #   PPL_CHUNK     PPL scoring window, default 2048.
+#   PPL_TEACHER   path to a teacher-anchor .npz built once from the source
+#                 checkpoint (ppl_heldout.py --teacher-save). When set, the
+#                 post-build scores also report teacher NLL, NLL delta and
+#                 top-1 agreement against the source model. Unset = relative
+#                 scoring only. Build the anchors once on the quant host:
+#                   $VENV_PY scripts/ppl_heldout.py --model <source> \
+#                     --files eval/heldout-se2.txt eval/heldout-se.txt \
+#                             eval/heldout-general.txt \
+#                     --chunk 2048 --teacher-save ~/oqup/teacher-anchors-se2-2048.npz
 #
 # Examples:
 #   scripts/omlx_oq4e.sh Qwen/Qwen3.8-Flash-Next coder-8bit-ngram-mtp 8
@@ -330,9 +339,22 @@ run_heldout_ppl() { # <quant-dir> <ppl-log-path>
         args+=("$p")
     done
     PPL_CHUNK="${PPL_CHUNK:-2048}"
+    local cmd=( "$VENV_PY" "$ppl_script" --model "$1" --files "${args[@]}" --chunk "$PPL_CHUNK" )
+    local have_teacher=0
+    if [ -n "${PPL_TEACHER:-}" ]; then
+        if [ -f "$PPL_TEACHER" ]; then
+            cmd+=(--teacher "$PPL_TEACHER")
+            have_teacher=1
+        else
+            echo "WARNING: PPL_TEACHER missing ($PPL_TEACHER); scoring without source comparison" >&2
+        fi
+    fi
     echo "== heldout PPL (chunk $PPL_CHUNK; keep the oMLX server stopped) =="
     echo "   files: ${args[*]}"
-    if "$VENV_PY" "$ppl_script" --model "$1" --files "${args[@]}" --chunk "$PPL_CHUNK" > "$2" 2>&1; then
+    if [ "$have_teacher" = "1" ]; then
+        echo "   teacher anchors: $PPL_TEACHER"
+    fi
+    if "${cmd[@]}" > "$2" 2>&1; then
         cat "$2"
         echo "== heldout PPL recorded: $2 =="
     else
