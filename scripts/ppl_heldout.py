@@ -41,7 +41,9 @@ models never have to co-reside in RAM (they cannot on a 128 GB host). The
 student run reports teacher NLL/token, the NLL delta against it, and top-1
 agreement with the teacher's argmax — the absolute preservation measure.
 Anchors are keyed by file sha256 and chunk width; either changing means
-rebuild the anchors.
+rebuild the anchors. The omlx_oq4e.sh build tail automates this: it
+content-addresses the anchor under $OQUP and builds it on first use, then
+reuses it for every later build.
 
 The script needs the quant host's `~/dev/omlx` venv python (it imports
 `omlx` and `mlx_vlm`, both pinned there). Only PPL deltas between runs
