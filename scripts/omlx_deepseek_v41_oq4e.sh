@@ -7,8 +7,11 @@
 # official FP8 tables byte-for-byte instead. scripts/omlx_deepseek_v41_oq25e.sh
 # and ..._oq3e.sh are thin wrappers around this file.
 #
-# Allocation: our omlx branch keeps the pre-#4776 plan (Q8 mandatory
-# head/embedding patterns). V4.1's own allocator still keeps its head and
+# Allocation: our accepted baselines use the pre-#4776 plan — lm_head and
+# the token embeddings are pinned at Q8, and the dense/MoE always-on ladder
+# is off. Upstream keeps its newer base-width sizing as the default; this
+# script opts into the legacy layout for BOTH arms (OQ_LEGACY_ALLOCATION=0
+# tests upstream instead). V4.1's own allocator still keeps its head and
 # embeddings at source precision and boosts sensitive projections.
 #
 # DeepSeek V4.1 is not Qwen4-Exp: the source must be the original checkpoint
@@ -60,6 +63,9 @@
 #   OQUP        logs + imatrix caches (default: ~/oqup)
 #   MODELS_OUT  quant outputs, one subdir per version (default: ~/models-out)
 #   NGRAM_BITS  Engram width, default 8
+#   OQ_LEGACY_ALLOCATION  default 1: pre-#4776 layout with lm_head and
+#               embeddings fixed at Q8. Set 0 to follow upstream's current
+#               base-width head sizing.
 #   PRESERVE_NGRAM_TABLE  set 1 to copy the official FP8 Engram tables
 #               unchanged (lossless, ~same size as 8-bit affine) instead of
 #               re-quantizing them. Preferred for DeepSeek V4.1; conflicts
@@ -187,6 +193,25 @@ else
     NGRAM_LINE="    ngram_bits=$NGRAM_BITS,"
     NGRAM_VERIFY="quantized:$NGRAM_BITS"
     NGRAM_LABEL="$NGRAM_BITS"
+fi
+
+# oQ allocation. 1 (default) pins lm_head/embeddings at Q8 and skips the
+# dense/MoE always-on ladder, matching the accepted pre-#4776 baselines.
+# 0 follows upstream's current base-width head sizing.
+LEGACY_ALLOCATION="${OQ_LEGACY_ALLOCATION:-1}"
+case "$LEGACY_ALLOCATION" in
+    0|1) ;;
+    *)
+        echo "invalid OQ_LEGACY_ALLOCATION '$LEGACY_ALLOCATION' (0 or 1)" >&2
+        exit 2
+        ;;
+esac
+if [ "$LEGACY_ALLOCATION" = "1" ]; then
+    LEGACY_PY=True
+    LEGACY_LABEL="legacy-q8"
+else
+    LEGACY_PY=False
+    LEGACY_LABEL="upstream"
 fi
 VENDOR_SLICES_EXPLICIT=0
 if [ -n "${VENDOR_SLICES+x}" ]; then VENDOR_SLICES_EXPLICIT=1; fi
@@ -329,6 +354,8 @@ write_build_json() { # <out> <intent> <ngram-label> <bundle> <samples> <seqlen> 
   "enhanced": true,
   "ngram_bits": "$nlabel",
   "preserve_mtp": $PRESERVE_MTP,
+  "legacy_allocation": $LEGACY_PY,
+  "allocation": "$LEGACY_LABEL",
   "stream_calibration": "$stream_label",
   "imatrix_samples": $samples,
   "imatrix_seq_length": $seqlen,
@@ -375,16 +402,18 @@ run_heldout_ppl() { # <quant-dir> <ppl-log-path>
 ensure_stock() {
     if [ -f "$STOCK_OUT/build.json" ] && [ -f "$STOCK_OUT/quantization_report.json" ]; then
         if "$VENV_PY" - "$STOCK_OUT" "$SRC" "$OQ_LEVEL" "$PRESERVE_MTP" \
-            "$(git -C "$OMLX_REPO" rev-parse HEAD 2>/dev/null || true)" <<'PY'
+            "$(git -C "$OMLX_REPO" rev-parse HEAD 2>/dev/null || true)" \
+            "$LEGACY_PY" <<'PY'
 import json, sys
 
-out, src, level, mtp, omlx = sys.argv[1:6]
+out, src, level, mtp, omlx, legacy = sys.argv[1:7]
 b = json.load(open(f"{out}/build.json"))
 ok = (
     b.get("family") == "deepseek_v41"
     and b.get("src") == src
     and float(b.get("oq_level")) == float(level)
     and b.get("preserve_mtp") == int(mtp)
+    and b.get("legacy_allocation") is (legacy == "True")
     and b.get("omlx_commit") == omlx
     and b.get("calib_dataset_intent") == "stock-default"
 )
@@ -410,6 +439,7 @@ quantize_oq_streaming(
     output_path="$STOCK_OUT",
     oq_level=$OQ_LEVEL, enhanced=True,
     preserve_mtp=$MTP_PY,
+    legacy_allocation=$LEGACY_PY,
     imatrix_cache_path="$STOCK_NPZ",
     imatrix_reuse_cache=False,
 )
@@ -444,6 +474,7 @@ else
     echo "engram      : ${NGRAM_BITS}-bit (group 32)"
 fi
 echo "stream      : $STREAM_LABEL"
+echo "allocation  : $LEGACY_LABEL"
 echo "stock       : $STOCK_OUT (OQ_SKIP_STOCK default 1)"
 
 [ -f "$VENV_PY" ] || { echo "missing venv python: $VENV_PY" >&2; exit 1; }
@@ -631,6 +662,7 @@ quantize_oq_streaming(
     output_path="$OUT",
     oq_level=$OQ_LEVEL, enhanced=True,
     preserve_mtp=$MTP_PY,
+    legacy_allocation=$LEGACY_PY,
     calib_dataset="$BUNDLE",
     sensitivity_calib_dataset="$BUNDLE",
 $NGRAM_LINE
