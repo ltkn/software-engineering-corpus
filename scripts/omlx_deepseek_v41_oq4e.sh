@@ -208,9 +208,11 @@ case "$LEGACY_ALLOCATION" in
 esac
 if [ "$LEGACY_ALLOCATION" = "1" ]; then
     LEGACY_PY=True
+    LEGACY_JSON=true
     LEGACY_LABEL="legacy-q8"
 else
     LEGACY_PY=False
+    LEGACY_JSON=false
     LEGACY_LABEL="upstream"
 fi
 VENDOR_SLICES_EXPLICIT=0
@@ -354,7 +356,7 @@ write_build_json() { # <out> <intent> <ngram-label> <bundle> <samples> <seqlen> 
   "enhanced": true,
   "ngram_bits": "$nlabel",
   "preserve_mtp": $PRESERVE_MTP,
-  "legacy_allocation": $LEGACY_PY,
+  "legacy_allocation": $LEGACY_JSON,
   "allocation": "$LEGACY_LABEL",
   "stream_calibration": "$stream_label",
   "imatrix_samples": $samples,
