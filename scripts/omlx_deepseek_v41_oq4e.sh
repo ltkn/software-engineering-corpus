@@ -7,6 +7,10 @@
 # official FP8 tables byte-for-byte instead. scripts/omlx_deepseek_v41_oq25e.sh
 # and ..._oq3e.sh are thin wrappers around this file.
 #
+# Allocation: our omlx branch keeps the pre-#4776 plan (Q8 mandatory
+# head/embedding patterns). V4.1's own allocator still keeps its head and
+# embeddings at source precision and boosts sensitive projections.
+#
 # DeepSeek V4.1 is not Qwen4-Exp: the source must be the original checkpoint
 # (not an oMLX-converted or MLX-quantized copy), Engram widths are
 # 2/3/4/6/8, and the report lives in quantization_report.json under
