@@ -5,9 +5,11 @@
 # this repo's calibration/*.txt, launches quantize_oq_streaming with the
 # custom corpus + Q8 N-gram table, then verifies the report and config.
 #
-# Allocation: our omlx branch keeps the pre-#4776 plan — lm_head and the
-# token embeddings are pinned at Q8. Upstream's base-width head sizing is
-# reverted and must stay off for runs comparable to the accepted baseline.
+# Allocation: our accepted baselines use the pre-#4776 plan — lm_head and
+# the token embeddings are pinned at Q8. Upstream keeps its newer base-width
+# sizing as the default; this script opts into the legacy layout for BOTH
+# arms (OQ_LEGACY_ALLOCATION=0 tests upstream instead), so corpus and N-gram
+# width remain the only differences in the comparison.
 #
 # Control arms (README "Building oQ quants"):
 #   Arm A — stock baseline, ensured automatically before the requested
@@ -72,6 +74,9 @@
 #               activation statistics now cover positions 0-2047 (the
 #               long-context/QSA-indexer regime the 512 windows never saw).
 #               Pass 512 to reproduce the pre-2048 builds bit-for-bit.
+#   OQ_LEGACY_ALLOCATION  default 1: pre-#4776 layout with lm_head and
+#               embeddings fixed at Q8. Set 0 to follow upstream's current
+#               base-width head sizing.
 #   PRESERVE_MTP  keep the native MTP draft head (Lightning MTP), default 1.
 #               Set to 0 for MTP-free outputs (reproduces pre-MTP runs).
 #   PRESERVE_NGRAM_TABLE  keep the PLE N-gram table unquantized (BF16
@@ -214,6 +219,25 @@ else
     NGRAM_LABEL="$NGRAM_BITS"
 fi
 
+# oQ allocation. 1 (default) pins lm_head/embeddings at Q8 and skips the
+# dense/MoE always-on ladder, matching the accepted pre-#4776 baselines.
+# 0 follows upstream's current base-width head sizing.
+LEGACY_ALLOCATION="${OQ_LEGACY_ALLOCATION:-1}"
+case "$LEGACY_ALLOCATION" in
+    0|1) ;;
+    *)
+        echo "invalid OQ_LEGACY_ALLOCATION '$LEGACY_ALLOCATION' (0 or 1)" >&2
+        exit 2
+        ;;
+esac
+if [ "$LEGACY_ALLOCATION" = "1" ]; then
+    LEGACY_PY=True
+    LEGACY_LABEL="legacy-q8"
+else
+    LEGACY_PY=False
+    LEGACY_LABEL="upstream"
+fi
+
 HUB="${HF_HUB_CACHE:-$HOME/.cache/huggingface/hub}"
 
 if [ -n "${REPO:-}" ] && [ -z "$SRC" ]; then
@@ -323,6 +347,8 @@ write_build_json() { # <out-dir> <calib-intent> <ngram-label> <bundle-or-""> [sa
   "oq_level": $OQ_LEVEL,
   "ngram_bits": "$nlabel",
   "preserve_mtp": $PRESERVE_MTP,
+  "legacy_allocation": $LEGACY_PY,
+  "allocation": "$LEGACY_LABEL",
   "imatrix_samples": $samples,
   "imatrix_seq_length": $seqlen,
   "calib_dataset_intent": "$intent",
@@ -460,20 +486,23 @@ ensure_stock() {
     # Arm A — the stock oMLX baseline: the tool's own default calibration
     # (oqe_code_multilingual built-in corpus; code_multilingual sensitivity
     # set; default N-gram table width), no custom corpus, no vendor slices.
-    # Built once per (source model, level, MTP setting), then reused; the
-    # reuse check reads <out>/build.json. Only preserve_mtp deviates from a
-    # truly-default run, matched so serving comparisons stay apples-to-apples.
+    # Built once per (source model, level, MTP setting, allocation), then
+    # reused; the reuse check reads <out>/build.json. The pinned allocation
+    # matches the custom arm so corpus and N-gram width remain the only
+    # differences in the comparison.
     if [ -f "$STOCK_OUT/build.json" ] && [ -f "$STOCK_OUT/oq_imatrix_report.json" ]; then
         if "$VENV_PY" - "$STOCK_OUT" "$SRC" "$OQ_LEVEL" "$PRESERVE_MTP" \
-            "$(git -C "$OMLX_REPO" rev-parse HEAD 2>/dev/null || true)" <<'PY'
+            "$(git -C "$OMLX_REPO" rev-parse HEAD 2>/dev/null || true)" \
+            "$LEGACY_PY" <<'PY'
 import json, sys
 
-out, src, level, mtp, omlx = sys.argv[1:6]
+out, src, level, mtp, omlx, legacy = sys.argv[1:7]
 b = json.load(open(f"{out}/build.json"))
 ok = (
     b.get("src") == src
     and b.get("oq_level") == int(level)
     and b.get("preserve_mtp") == int(mtp)
+    and b.get("legacy_allocation") is (legacy == "True")
     and b.get("omlx_commit") == omlx
     and b.get("calib_dataset_intent") == "stock-default"
 )
@@ -499,6 +528,7 @@ quantize_oq_streaming(
     output_path="$STOCK_OUT",
     oq_level=$OQ_LEVEL, enhanced=True,
     preserve_mtp=$MTP_PY,
+    legacy_allocation=$LEGACY_PY,
     imatrix_cache_path="$STOCK_NPZ",
     imatrix_reuse_cache=False,
 )
@@ -527,6 +557,7 @@ echo "omlx repo   : $OMLX_REPO ($(git -C "$OMLX_REPO" rev-parse --abbrev-ref HEA
 echo "source      : $SRC"
 echo "output      : $OUT"
 echo "imatrix     : $NPZ"
+echo "allocation  : $LEGACY_LABEL"
 echo "stock       : $STOCK_OUT (arm A, ensured once, reused after)"
 
 [ -f "$SRC/config.json" ] || { echo "missing $SRC/config.json" >&2; exit 1; }
@@ -666,6 +697,7 @@ quantize_oq_streaming(
     output_path="$OUT",
     oq_level=$OQ_LEVEL, enhanced=True,
     preserve_mtp=$MTP_PY,
+    legacy_allocation=$LEGACY_PY,
     calib_dataset="$BUNDLE",
     sensitivity_calib_dataset="$BUNDLE",
 $NGRAM_LINE
