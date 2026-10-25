@@ -5,6 +5,10 @@
 # this repo's calibration/*.txt, launches quantize_oq_streaming with the
 # custom corpus + Q8 N-gram table, then verifies the report and config.
 #
+# Allocation: our omlx branch keeps the pre-#4776 plan — lm_head and the
+# token embeddings are pinned at Q8. Upstream's base-width head sizing is
+# reverted and must stay off for runs comparable to the accepted baseline.
+#
 # Control arms (README "Building oQ quants"):
 #   Arm A — stock baseline, ensured automatically before the requested
 #           build: <model>-oQ<level>e-stock, oMLX's own default calibration
