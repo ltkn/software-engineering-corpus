@@ -109,7 +109,7 @@ Follow in order, rerun earlier steps when later ones move. The steps assume the 
 
 ## Building oQ quants with oMLX — step order (Apple Silicon, custom corpus + Q8 N-gram)
 
-Same corpus, different toolchain: MLX safetensors quants (`oQ3e/oQ4e/oQ5e`) with the PLE N-gram table held at Q8 and the pre-#4776 fixed-Q8 head/embedding layout. The scripts pass `legacy_allocation=True`; upstream's newer base-width sizing remains the library default. Run on the quant host (128 GB); develop on any Mac.
+Same corpus, different toolchain: MLX safetensors quants (`oQ3e/oQ4e/oQ5e`) with the PLE N-gram table held at Q8. Head and embedding widths come from the oMLX allocator — the scripts pass no allocation override. Run on the quant host (128 GB); develop on any Mac.
 
 1. Host env. Apple Silicon, macOS 15+, full Xcode optional (quant needs no custom kernels). Python 3.11–3.13 only (3.14 will not install the pinned MLX):
 ```bash
@@ -126,20 +126,20 @@ python -m pytest tests/test_oq_custom_corpus.py -q   # expect 12 passed
 ```bash
 ls ~/.cache/huggingface/hub/models--Qwen--Qwen3.8-Flash-Next/snapshots/
 ```
-4. Launch. Each run first ensures the stock baseline — `<model>-oQ<level>e-stock`, oMLX's own default calibration (the built-in `oqe_code_multilingual` corpus at the tool's default sample settings, default N-gram table width, no vendor slices) with the same pinned Q8 allocation as the custom arm. It is built once per (source model, level, MTP setting, allocation); later runs reuse it, checked against the source snapshot and params recorded in `<out>/build.json`. The requested quant itself: same-name `<version>` reruns overwrite in place (previous log moves to `*.log.prev`, `build.json` re-records what went in); `stock` is a reserved name and `arm-*` comparators are protected from overwrite:
+4. Launch. Each run first ensures the stock baseline — `<model>-oQ<level>e-stock`, oMLX's own default calibration (the built-in `oqe_code_multilingual` corpus at the tool's default sample settings, default N-gram table width, no vendor slices) on the same allocator widths as the custom arm. It is built once per (source model, level, MTP setting); later runs reuse it, checked against the source snapshot and params recorded in `<out>/build.json`. The requested quant itself: same-name `<version>` reruns overwrite in place (previous log moves to `*.log.prev`, `build.json` re-records what went in); `stock` is a reserved name and `arm-*` comparators are protected from overwrite:
 ```bash
 scripts/omlx_oq4e.sh Qwen/Qwen3.8-Flash-Next coder-8bit-ngram-mtp 8
 scripts/omlx_oq3e.sh Qwen/Qwen3.8-Flash-Next coder-q3-ngram8 8      # Q3 trunk, Q8 table
 scripts/omlx_oq5e.sh Qwen/Qwen3.8-Flash-Next coder-q5-ngram8 8      # Q5 trunk, Q8 table
 scripts/omlx_oq6e.sh Qwen/Qwen3.8-Flash-Next coder-q6-ngram8 8      # Q6 trunk, Q8 table (reference tier)
 ```
-Variants: omit the trailing `8` for the default Q8 table; `OQ_LEGACY_ALLOCATION=0` follows upstream's base-width head sizing instead of the pinned Q8 layout; `PRESERVE_NGRAM_TABLE=1` keeps the table unquantized (bench baseline); `PRESERVE_MTP=0` strips the draft head; `VENDOR_SLICES=chat,tool_calling,reasoning` drops a vendored slice for ablations, `VENDOR_SLICES=` skips the append entirely (authored-only arm). `CORPUS_FILE=<bundle.txt>` replaces the assembled bundle — that is how control arms run. Arm B, generic text through the custom pipeline (built once, then protected from overwrite):
+Variants: omit the trailing `8` for the default Q8 table; `PRESERVE_NGRAM_TABLE=1` keeps the table unquantized (bench baseline); `PRESERVE_MTP=0` strips the draft head; `VENDOR_SLICES=chat,tool_calling,reasoning` drops a vendored slice for ablations, `VENDOR_SLICES=` skips the append entirely (authored-only arm). `CORPUS_FILE=<bundle.txt>` replaces the assembled bundle — that is how control arms run. Arm B, generic text through the custom pipeline (built once, then protected from overwrite):
 ```bash
 python3 scripts/make_bundles.py ~/dev/omlx/omlx/oqe_calibration_data.json  # once → bundles/generic.txt
 CORPUS_FILE=bundles/generic.txt scripts/omlx_oq4e.sh Qwen/Qwen3.8-Flash-Next arm-b-generic 8
 ```
 `nohup ... &` for the multi-hour runs; the very first run on a fresh host builds stock first, so expect roughly twice the usual time once.
-5. Verify. Each script self-checks the report (corpus used, fresh cache, entries) and the config (trunk bits, N-gram `{bits: 8, group_size: 32}`), and writes `<out>/build.json` — source snapshot, bundle sha256, corpus + oMLX commits, allocation — the record that survives an overwrite and what the stock reuse check reads. Read `~/oqup/oq<level>e-<version>.log` and the imatrix `expert_coverage` (p05 ≥ 16 is the bar).
+5. Verify. Each script self-checks the report (corpus used, fresh cache, entries) and the config (trunk bits, N-gram `{bits: 8, group_size: 32}`), and writes `<out>/build.json` — source snapshot, bundle sha256, corpus + oMLX commits — the record that survives an overwrite and what the stock reuse check reads. Read `~/oqup/oq<level>e-<version>.log` and the imatrix `expert_coverage` (p05 ≥ 16 is the bar).
 6. Serve + evaluate. Symlink the output into `~/.omlx/models` (or `omlx serve --model-dir ~/models-out`), then score heldouts plus LiveCodeBench before calling any version good. Pair at eval time, always: `[stock, arm-b-generic, <current build>]` — current-vs-B isolates the corpus text (same pipeline, different text), current-vs-stock is the headline question (the whole custom pipeline vs out-of-the-box oMLX).
 
 ## DeepSeek V4.1 Flash-1017 — oQ2.5e/oQ3e/oQ4e
@@ -147,14 +147,17 @@ CORPUS_FILE=bundles/generic.txt scripts/omlx_oq4e.sh Qwen/Qwen3.8-Flash-Next arm
 DeepSeek V4.1 uses the same corpus and control-arm philosophy, but a separate builder because the source, report layout, Engram widths and calibration behavior differ from Qwen4-Exp. The source must be the **original** `deepseek-ai/DeepSeek-V4.1-Flash-1017` checkpoint (FP4/FP8 projections), not an oMLX-converted or MLX-quantized copy. The scripts resolve the newest cached snapshot, or take `--src`:
 
 ```bash
-scripts/omlx_deepseek_v41_oq25e.sh deepseek-ai/DeepSeek-V4.1-Flash-1017 se-q25-ngram8 8
-scripts/omlx_deepseek_v41_oq3e.sh  deepseek-ai/DeepSeek-V4.1-Flash-1017 se-q3-ngram8 8
-scripts/omlx_deepseek_v41_oq4e.sh  deepseek-ai/DeepSeek-V4.1-Flash-1017 se-q4-ngram8 8
+scripts/omlx_deepseek_v41_oq25e.sh deepseek-ai/DeepSeek-V4.1-Flash-1017 se-q25
+scripts/omlx_deepseek_v41_oq3e.sh  deepseek-ai/DeepSeek-V4.1-Flash-1017 se-q3
+scripts/omlx_deepseek_v41_oq4e.sh  deepseek-ai/DeepSeek-V4.1-Flash-1017 se-q4
+scripts/omlx_deepseek_v41_oq3e.sh  deepseek-ai/DeepSeek-V4.1-Flash-1017 se-q3-ngram4 4
 ```
 
-The trailing width is the Engram table: `2 3 4 6 8`, default `8`. There is no 5-bit width. oQ4e keeps the source FP4/FP8 projection precision and does no imatrix or sensitivity pass, so the corpus cannot change its projection bits — it is a source-precision export with an 8-bit table, useful as the high-quality anchor. oQ2.5e and oQ3e do the calibrated mixed-bit allocation; they stream one decoder block at a time from the source shards by default, so the ~307 GB non-Engram source is never resident. `STREAM_CALIBRATION=0` restores the resident path (and warns), `STREAM_CALIBRATION=1` forces streaming. Both passes use this repo's bundle for `calib_dataset` and `sensitivity_calib_dataset`.
+With no width argument the Engram tables are **copied byte-for-byte**. That is what the stock checkpoint holds: FP8 — E4M3 values with one E8M0 scale per 32 channels, the same storage as the dense weights — so the copy adds no error and the two tables together come to 188.8 GiB (202.8 GB of 196,613,849,600 parameters at 1.03 B each). A trailing width (`2 3 4 6 8`; there is no 5) re-quantizes them as affine group-32 instead, trading fidelity for size: 4 bits is 114.4 GiB, while 8 bits is 206.0 GiB — 9.1% *larger* than the source it re-encodes, and still lossy. Asking for a copy and a width at once, through `PRESERVE_NGRAM_TABLE=1` plus `NGRAM_BITS` or the positional, exits with an error instead of picking one; `PRESERVE_NGRAM_TABLE=0` with no width keeps the 8-bit affine behaviour. The stock arm gets the same Engram setting as the custom arm, so corpus text is the only difference between them.
 
-DeepSeek outputs are hundreds of GB, so the stock baseline is **not** built by default here (`OQ_SKIP_STOCK=1`). Build it once with `OQ_SKIP_STOCK=0`; it uses oMLX's default calibration corpus, the default 4-bit Engram width, and the same pinned Q8 allocation as the custom arm. Same-name `<version>` reruns overwrite in place, `arm-*` versions are protected, and `build.json` records the source snapshot, bundle sha256, corpus/omLX commits, Engram width, MTP setting, allocation and streaming mode. Set `OQ_LEGACY_ALLOCATION=0` to follow upstream's current base-width head sizing instead. Control arm B works exactly as for Qwen:
+oQ4e keeps the source FP4/FP8 projection precision and does no imatrix or sensitivity pass, so the corpus cannot change its projection bits — it is a source-precision export, useful as the high-quality anchor. oQ2.5e and oQ3e do the calibrated mixed-bit allocation; they stream one decoder block at a time from the source shards by default, so the ~307 GB non-Engram source is never resident. `STREAM_CALIBRATION=0` restores the resident path (and warns), `STREAM_CALIBRATION=1` forces streaming. Both passes use this repo's bundle for `calib_dataset` and `sensitivity_calib_dataset`.
+
+DeepSeek outputs are hundreds of GB, so the stock baseline is **not** built by default here (`OQ_SKIP_STOCK=1`). Build it once with `OQ_SKIP_STOCK=0`; it uses oMLX's default calibration corpus, and the same Engram setting and allocator widths as the custom arm. Same-name `<version>` reruns overwrite in place, `arm-*` versions are protected, and `build.json` records the source snapshot, bundle sha256, corpus/omLX commits, Engram width, MTP setting and streaming mode. The stock arm is reused only while every one of those still matches, so changing the Engram width rebuilds it. Control arm B works exactly as for Qwen:
 
 ```bash
 CORPUS_FILE=bundles/generic.txt scripts/omlx_deepseek_v41_oq3e.sh \

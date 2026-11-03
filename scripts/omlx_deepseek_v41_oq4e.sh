@@ -3,16 +3,16 @@
 #
 # Builds an oQ4e export from the ORIGINAL DeepSeek V4.1 checkpoint, using
 # calibration/*.txt as both the imatrix corpus and the sensitivity corpus.
-# Engram defaults to an 8-bit affine table; PRESERVE_NGRAM_TABLE=1 keeps the
-# official FP8 tables byte-for-byte instead. scripts/omlx_deepseek_v41_oq25e.sh
-# and ..._oq3e.sh are thin wrappers around this file.
+# Engram defaults to the official tables copied byte-for-byte: the checkpoint
+# stores them as FP8 (E4M3 values with one E8M0 scale per 32 channels), so a
+# copy adds no error and sits about 9% below an 8-bit affine re-quantization of
+# the same values. Pass a width (2/3/4/6/8) to trade that for a smaller table.
+# scripts/omlx_deepseek_v41_oq25e.sh and ..._oq3e.sh are thin wrappers here.
 #
-# Allocation: our accepted baselines use the pre-#4776 plan — lm_head and
-# the token embeddings are pinned at Q8, and the dense/MoE always-on ladder
-# is off. Upstream keeps its newer base-width sizing as the default; this
-# script opts into the legacy layout for BOTH arms (OQ_LEGACY_ALLOCATION=0
-# tests upstream instead). V4.1's own allocator still keeps its head and
-# embeddings at source precision and boosts sensitive projections.
+# Allocation: the oMLX allocator decides the head, embedding and always-on
+# widths, so nothing here pins them. V4.1's own plan keeps its head and
+# embeddings at source precision and boosts the projections calibration
+# measures as sensitive.
 #
 # DeepSeek V4.1 is not Qwen4-Exp: the source must be the original checkpoint
 # (not an oMLX-converted or MLX-quantized copy), Engram widths are
@@ -24,7 +24,7 @@
 #
 # Control arms (same philosophy as omlx_oq4e.sh):
 #   Arm A — stock baseline: <model>-oQ<level>e-stock, oMLX's default
-#           calibration corpus + default Engram width, no custom corpus.
+#           calibration corpus, no custom corpus, same Engram setting as here.
 #           Auto-building it is OFF by default here because a V4.1 output is
 #           hundreds of GB; set OQ_SKIP_STOCK=0 to build/reuse it.
 #   Arm B — generic text through the same pipeline:
@@ -52,9 +52,10 @@
 #
 #   <org/model> huggingface repo pair, resolved to the newest cached original
 #               snapshot, e.g. deepseek-ai/DeepSeek-V4.1-Flash-1017
-#   <version>   experiment suffix, e.g. se-coder-q4-ngram8-mtp.
-#   [ngram_bits] Engram table width: 2 3 4 6 8 (default 8). There is no 5.
-#               Ignored when PRESERVE_NGRAM_TABLE=1.
+#   <version>   experiment suffix, e.g. se-coder-q4-mtp.
+#   [ngram_bits] Engram table width: 2 3 4 6 8. There is no 5. Omit it to copy
+#               the official FP8 tables unchanged; passing one together with
+#               PRESERVE_NGRAM_TABLE=1 is an error.
 #
 # Env overrides:
 #   OMLX_REPO   omlx checkout on feat/custom-corpus-ngram-q8
@@ -62,14 +63,11 @@
 #   VENV_PY     branch venv python (default: $OMLX_REPO/.venv-3.12/bin/python)
 #   OQUP        logs + imatrix caches (default: ~/oqup)
 #   MODELS_OUT  quant outputs, one subdir per version (default: ~/models-out)
-#   NGRAM_BITS  Engram width, default 8
-#   OQ_LEGACY_ALLOCATION  default 1: pre-#4776 layout with lm_head and
-#               embeddings fixed at Q8. Set 0 to follow upstream's current
-#               base-width head sizing.
-#   PRESERVE_NGRAM_TABLE  set 1 to copy the official FP8 Engram tables
-#               unchanged (lossless, ~same size as 8-bit affine) instead of
-#               re-quantizing them. Preferred for DeepSeek V4.1; conflicts
-#               with the ngram_bits positional.
+#   NGRAM_BITS  Engram width, one of 2 3 4 6 8. Unset copies the source tables.
+#   PRESERVE_NGRAM_TABLE  default 1: copy the official FP8 Engram tables
+#               unchanged, which is lossless and about 9% below an 8-bit affine
+#               table. Set 0 for the 8-bit affine behaviour. Combining it with
+#               an explicit width, from env or position, is an error.
 #   OQ_LEVEL    oQ base level, default 4. Wrappers set 2.5 / 3.
 #   OQ_SAMPLES  imatrix samples, default 99999 (every calibration window)
 #   OQ_SEQLEN   imatrix sequence length, default 2048
@@ -86,11 +84,12 @@
 #   PPL_FILES / PPL_CHUNK / OQ_PPL_EXPERT_FRACTION  see above.
 #
 # Examples:
-#   scripts/omlx_deepseek_v41_oq25e.sh deepseek-ai/DeepSeek-V4.1-Flash-1017 se-q25-ngram8 8
-#   scripts/omlx_deepseek_v41_oq3e.sh  deepseek-ai/DeepSeek-V4.1-Flash-1017 se-q3-ngram8 8
-#   scripts/omlx_deepseek_v41_oq4e.sh  deepseek-ai/DeepSeek-V4.1-Flash-1017 se-q4-ngram8 8
+#   scripts/omlx_deepseek_v41_oq25e.sh deepseek-ai/DeepSeek-V4.1-Flash-1017 se-q25
+#   scripts/omlx_deepseek_v41_oq3e.sh  deepseek-ai/DeepSeek-V4.1-Flash-1017 se-q3
+#   scripts/omlx_deepseek_v41_oq4e.sh  deepseek-ai/DeepSeek-V4.1-Flash-1017 se-q4
+#   scripts/omlx_deepseek_v41_oq3e.sh  deepseek-ai/DeepSeek-V4.1-Flash-1017 se-q3-ngram4 4
 #   OQ_SKIP_STOCK=0 scripts/omlx_deepseek_v41_oq3e.sh se-q3-stock-control
-#   nohup scripts/omlx_deepseek_v41_oq25e.sh deepseek-ai/DeepSeek-V4.1-Flash-1017 se-q25 8 \
+#   nohup scripts/omlx_deepseek_v41_oq25e.sh deepseek-ai/DeepSeek-V4.1-Flash-1017 se-q25 \
 #       > ~/oqup/deepseek-q25-driver.log 2>&1 &
 set -euo pipefail
 
@@ -138,17 +137,24 @@ OMLX_REPO="${OMLX_REPO:-$HOME/dev/omlx}"
 VENV_PY="${VENV_PY:-$OMLX_REPO/.venv-3.12/bin/python}"
 OQUP="${OQUP:-$HOME/oqup}"
 MODELS_OUT="${MODELS_OUT:-$HOME/models-out}"
-NGRAM_BITS="${NGRAM_BITS:-8}"
-if [ -n "$NGRAM_ARG" ]; then
-    NGRAM_BITS="$NGRAM_ARG"
+# Engram width. Both spellings below are explicit choices; no width at all
+# means the operator did not choose, and the source tables are copied.
+NGRAM_WIDTH=""
+if [ -n "${NGRAM_BITS+x}" ]; then
+    NGRAM_WIDTH="$NGRAM_BITS"
 fi
-case " 2 3 4 6 8 " in
-    *" $NGRAM_BITS "*) ;;
-    *)
-        echo "invalid Engram bits '$NGRAM_BITS' (DeepSeek V4.1 supports 2 3 4 6 8; no 5)" >&2
-        exit 2
-        ;;
-esac
+if [ -n "$NGRAM_ARG" ]; then
+    NGRAM_WIDTH="$NGRAM_ARG"
+fi
+if [ -n "$NGRAM_WIDTH" ]; then
+    case " 2 3 4 6 8 " in
+        *" $NGRAM_WIDTH "*) ;;
+        *)
+            echo "invalid Engram bits '$NGRAM_WIDTH' (DeepSeek V4.1 supports 2 3 4 6 8; no 5)" >&2
+            exit 2
+            ;;
+    esac
+fi
 OQ_LEVEL="${OQ_LEVEL:-4}"
 case " 2.5 3 4 " in
     *" $OQ_LEVEL "*) ;;
@@ -180,41 +186,46 @@ OQ_SAMPLES="${OQ_SAMPLES:-99999}"
 OQ_SEQLEN="${OQ_SEQLEN:-2048}"
 PRESERVE_MTP="${PRESERVE_MTP:-1}"
 if [ "$PRESERVE_MTP" = "1" ]; then MTP_PY=True; else MTP_PY=False; fi
-PRESERVE_NGRAM="${PRESERVE_NGRAM_TABLE:-0}"
-if [ "$PRESERVE_NGRAM" = "1" ]; then
+# Copy or re-quantize, never both: keeping the source quietly while a width was
+# asked for would misrecord what the output holds. An explicit width is a
+# choice, so it wins over an unset PRESERVE_NGRAM_TABLE; asking for both is an
+# error rather than a silent pick. Empty means the operator said nothing.
+PRESERVE_NGRAM=""
+if [ -n "${PRESERVE_NGRAM_TABLE+x}" ]; then
+    case "$PRESERVE_NGRAM_TABLE" in
+        1|true) PRESERVE_NGRAM=1 ;;
+        0|false) PRESERVE_NGRAM=0 ;;
+        *)
+            echo "invalid PRESERVE_NGRAM_TABLE '$PRESERVE_NGRAM_TABLE' (0 or 1)" >&2
+            exit 2
+            ;;
+    esac
+fi
+if [ "$PRESERVE_NGRAM" = "1" ] && [ -n "$NGRAM_WIDTH" ]; then
     if [ -n "$NGRAM_ARG" ]; then
         echo "PRESERVE_NGRAM_TABLE=1 conflicts with the ngram_bits positional" >&2
-        exit 2
+    else
+        echo "PRESERVE_NGRAM_TABLE=1 conflicts with NGRAM_BITS=$NGRAM_WIDTH" >&2
     fi
+    exit 2
+fi
+if [ -n "$NGRAM_WIDTH" ]; then
+    NGRAM_LINE="    ngram_bits=$NGRAM_WIDTH,"
+    NGRAM_VERIFY="quantized:$NGRAM_WIDTH"
+    NGRAM_LABEL="$NGRAM_WIDTH"
+    NGRAM_DISPLAY="${NGRAM_WIDTH}-bit (group 32)"
+elif [ "$PRESERVE_NGRAM" = "0" ]; then
+    NGRAM_LINE="    ngram_bits=8,"
+    NGRAM_VERIFY="quantized:8"
+    NGRAM_LABEL="8"
+    NGRAM_DISPLAY="8-bit (group 32)"
+else
     NGRAM_LINE="    preserve_ngram_table=True,"
     NGRAM_VERIFY="preserved"
     NGRAM_LABEL="preserved"
-else
-    NGRAM_LINE="    ngram_bits=$NGRAM_BITS,"
-    NGRAM_VERIFY="quantized:$NGRAM_BITS"
-    NGRAM_LABEL="$NGRAM_BITS"
+    NGRAM_DISPLAY="source FP8 (copied)"
 fi
 
-# oQ allocation. 1 (default) pins lm_head/embeddings at Q8 and skips the
-# dense/MoE always-on ladder, matching the accepted pre-#4776 baselines.
-# 0 follows upstream's current base-width head sizing.
-LEGACY_ALLOCATION="${OQ_LEGACY_ALLOCATION:-1}"
-case "$LEGACY_ALLOCATION" in
-    0|1) ;;
-    *)
-        echo "invalid OQ_LEGACY_ALLOCATION '$LEGACY_ALLOCATION' (0 or 1)" >&2
-        exit 2
-        ;;
-esac
-if [ "$LEGACY_ALLOCATION" = "1" ]; then
-    LEGACY_PY=True
-    LEGACY_JSON=true
-    LEGACY_LABEL="legacy-q8"
-else
-    LEGACY_PY=False
-    LEGACY_JSON=false
-    LEGACY_LABEL="upstream"
-fi
 VENDOR_SLICES_EXPLICIT=0
 if [ -n "${VENDOR_SLICES+x}" ]; then VENDOR_SLICES_EXPLICIT=1; fi
 VENDOR_SLICES="${VENDOR_SLICES-code,tool_calling,chat,reasoning}"
@@ -356,8 +367,6 @@ write_build_json() { # <out> <intent> <ngram-label> <bundle> <samples> <seqlen> 
   "enhanced": true,
   "ngram_bits": "$nlabel",
   "preserve_mtp": $PRESERVE_MTP,
-  "legacy_allocation": $LEGACY_JSON,
-  "allocation": "$LEGACY_LABEL",
   "stream_calibration": "$stream_label",
   "imatrix_samples": $samples,
   "imatrix_seq_length": $seqlen,
@@ -401,28 +410,46 @@ run_heldout_ppl() { # <quant-dir> <ppl-log-path>
     return 0
 }
 
-ensure_stock() {
-    if [ -f "$STOCK_OUT/build.json" ] && [ -f "$STOCK_OUT/quantization_report.json" ]; then
-        if "$VENV_PY" - "$STOCK_OUT" "$SRC" "$OQ_LEVEL" "$PRESERVE_MTP" \
-            "$(git -C "$OMLX_REPO" rev-parse HEAD 2>/dev/null || true)" \
-            "$LEGACY_PY" <<'PY'
+stock_reuse_ok() { # 0 when the recorded stock build matches this run's inputs
+    "$VENV_PY" - "$STOCK_OUT" "$SRC" "$OQ_LEVEL" "$PRESERVE_MTP" \
+        "$(git -C "$OMLX_REPO" rev-parse HEAD 2>/dev/null || true)" \
+        "$NGRAM_LABEL" <<'PY'
 import json, sys
 
-out, src, level, mtp, omlx, legacy = sys.argv[1:7]
+out, src, level, mtp, omlx, ngram_label = sys.argv[1:7]
 b = json.load(open(f"{out}/build.json"))
 ok = (
     b.get("family") == "deepseek_v41"
     and b.get("src") == src
     and float(b.get("oq_level")) == float(level)
     and b.get("preserve_mtp") == int(mtp)
-    and b.get("legacy_allocation") is (legacy == "True")
     and b.get("omlx_commit") == omlx
     and b.get("calib_dataset_intent") == "stock-default"
+    and str(b.get("ngram_bits")) == ngram_label
 )
 print("stock reuse check:", "OK" if ok else "STALE")
 sys.exit(0 if ok else 1)
 PY
-        then
+}
+
+write_stock_runner() { # arm A's request: this run's Engram setting, stock corpus
+    cat > "$STOCK_RUNNER" <<EOF
+from omlx.oq import quantize_oq_streaming
+quantize_oq_streaming(
+    model_path="$SRC",
+    output_path="$STOCK_OUT",
+    oq_level=$OQ_LEVEL, enhanced=True,
+    preserve_mtp=$MTP_PY,
+$NGRAM_LINE
+    imatrix_cache_path="$STOCK_NPZ",
+    imatrix_reuse_cache=False,
+)
+EOF
+}
+
+ensure_stock() {
+    if [ -f "$STOCK_OUT/build.json" ] && [ -f "$STOCK_OUT/quantization_report.json" ]; then
+        if stock_reuse_ok; then
             echo "== stock baseline exists (reusing): $STOCK_OUT =="
             return 0
         fi
@@ -434,18 +461,7 @@ PY
         rm -rf "$STOCK_OUT"
     fi
     echo "== ensuring stock baseline (V4.1 output may be hundreds of GB) =="
-    cat > "$STOCK_RUNNER" <<EOF
-from omlx.oq import quantize_oq_streaming
-quantize_oq_streaming(
-    model_path="$SRC",
-    output_path="$STOCK_OUT",
-    oq_level=$OQ_LEVEL, enhanced=True,
-    preserve_mtp=$MTP_PY,
-    legacy_allocation=$LEGACY_PY,
-    imatrix_cache_path="$STOCK_NPZ",
-    imatrix_reuse_cache=False,
-)
-EOF
+    write_stock_runner
     echo "$$" > "$STOCK_PIDFILE"
     if [ -f "$STOCK_LOG" ]; then mv "$STOCK_LOG" "$STOCK_LOG.prev"; fi
     echo "== launching stock build (log: $STOCK_LOG) =="
@@ -457,9 +473,9 @@ EOF
     fi
     rm -f "$STOCK_PIDFILE"
     echo "== stock built, verifying =="
-    "$VENV_PY" "$VERIFY_PY" "$STOCK_OUT" "$BUNDLE" "$OQ_LEVEL" "default" "stock" \
+    "$VENV_PY" "$VERIFY_PY" "$STOCK_OUT" "$BUNDLE" "$OQ_LEVEL" "$NGRAM_VERIFY" "stock" \
         "$PRESERVE_MTP" "auto"
-    write_build_json "$STOCK_OUT" "stock-default" "default" "" 128 512 "auto"
+    write_build_json "$STOCK_OUT" "stock-default" "$NGRAM_LABEL" "" 128 512 "auto"
     run_heldout_ppl "$STOCK_OUT" "$OQUP/ppl-stock-$TAG.log"
     echo "== stock baseline ready: $STOCK_OUT =="
 }
@@ -470,13 +486,8 @@ echo "omlx repo   : $OMLX_REPO ($(git -C "$OMLX_REPO" rev-parse --abbrev-ref HEA
 echo "source      : $SRC"
 echo "output      : $OUT"
 echo "imatrix     : $NPZ"
-if [ "$PRESERVE_NGRAM" = "1" ]; then
-    echo "engram      : source FP8 (preserved)"
-else
-    echo "engram      : ${NGRAM_BITS}-bit (group 32)"
-fi
+echo "engram      : $NGRAM_DISPLAY"
 echo "stream      : $STREAM_LABEL"
-echo "allocation  : $LEGACY_LABEL"
 echo "stock       : $STOCK_OUT (OQ_SKIP_STOCK default 1)"
 
 [ -f "$VENV_PY" ] || { echo "missing venv python: $VENV_PY" >&2; exit 1; }
@@ -545,8 +556,6 @@ print(f"calibration          : {report.get('calibration')}")
 
 if ngram_spec == "preserved":
     expected_bits = None
-elif ngram_spec == "default":
-    expected_bits = max(int(level), 4)
 else:
     expected_bits = int(ngram_spec.split(":")[1])
 
@@ -573,7 +582,7 @@ check("engram width", ngram_ok, ngram_detail)
 
 override_ok = (
     report.get("engram_bits_override") is None
-    if ngram_spec in ("default", "preserved")
+    if ngram_spec == "preserved"
     else report.get("engram_bits_override") == expected_bits
 )
 check("engram override", override_ok)
@@ -620,11 +629,13 @@ PY
 
 if [ "$DRY_RUN" -eq 1 ]; then
     if [ -f "$STOCK_OUT/build.json" ] && [ -f "$STOCK_OUT/quantization_report.json" ]; then
-        echo "dry run: stock baseline exists (would reuse): $STOCK_OUT"
+        # Report the decision a real run would take, without taking it.
+        stock_reuse_ok || true
     elif [ "${OQ_SKIP_STOCK:-1}" = "1" ]; then
         echo "dry run: stock baseline skipped by default (OQ_SKIP_STOCK=1)"
     else
-        echo "dry run: stock baseline missing — the next real run builds it first: $STOCK_OUT"
+        write_stock_runner
+        echo "dry run: stock runner written, not launched: $STOCK_RUNNER"
     fi
 elif [ "${OQ_SKIP_STOCK:-1}" = "1" ]; then
     echo "OQ_SKIP_STOCK=1 (DeepSeek default): not ensuring the stock baseline"
@@ -664,7 +675,6 @@ quantize_oq_streaming(
     output_path="$OUT",
     oq_level=$OQ_LEVEL, enhanced=True,
     preserve_mtp=$MTP_PY,
-    legacy_allocation=$LEGACY_PY,
     calib_dataset="$BUNDLE",
     sensitivity_calib_dataset="$BUNDLE",
 $NGRAM_LINE
