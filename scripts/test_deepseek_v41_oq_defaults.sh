@@ -63,7 +63,14 @@ assert_says() { # <label> <output file> <needle>
 }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/dsv41-defaults.XXXXXX")"
-cleanup() { rm -rf "$WORK"; }
+LIVE_PID=""
+cleanup() {
+    if [ -n "$LIVE_PID" ]; then
+        kill "$LIVE_PID" 2>/dev/null
+        wait "$LIVE_PID" 2>/dev/null
+    fi
+    rm -rf "$WORK"
+}
 trap cleanup EXIT
 
 SRC="$WORK/src"
@@ -234,6 +241,138 @@ JSON
         "stock reuse check: OK"
     assert_exit "the reuse check does not abort the run" 0 "$DRY_EXIT"
 fi
+
+printf '== the run lock is owned, not decorative ==\n'
+# A live pid stands in for a build that is hours into a ~200 GB quant. No
+# invocation may delete that owner's lock, and the lock has to be held before
+# anything destructive runs, so the stock arm is exercised with a fake venv
+# python that records what it sees when it is launched.
+sleep 300 &
+LIVE_PID=$!
+OQ4E=scripts/omlx_deepseek_v41_oq4e.sh
+pid_holds_pid() { # <pidfile> <pid>
+    [ -f "$1" ] && [ "$(cat "$1" 2>/dev/null)" = "$2" ]
+}
+
+# 1. A dry run is a read: it claims no lock, so it cannot free the lock of the
+#    build that is actually running.
+LIVE_PIDFILE="$OQUP/oq4e-t2-lock-dry.pid"
+printf '%s\n' "$LIVE_PID" > "$LIVE_PIDFILE"
+dry_run omlx_deepseek_v41_oq4e.sh t2-lock-dry
+assert_exit "a dry run succeeds while another build holds the version lock" 0 "$DRY_EXIT"
+if pid_holds_pid "$LIVE_PIDFILE" "$LIVE_PID"; then
+    pass "a dry run leaves the live version pidfile alone"
+else
+    fail "a dry run leaves the live version pidfile alone ($(cat "$LIVE_PIDFILE" 2>/dev/null || echo "it was deleted"))"
+fi
+
+# 2. A duplicate real run is refused, and the refusal is not allowed to release
+#    the owner's lock on its way out.
+mkdir -p "$MODELS_OUT/src-oQ4e-t2-lock-real"
+LIVE_PIDFILE2="$OQUP/oq4e-t2-lock-real.pid"
+printf '%s\n' "$LIVE_PID" > "$LIVE_PIDFILE2"
+( cd "$REPO" && bash "$OQ4E" t2-lock-real --src "$SRC" ) > "$WORK/t2-lock-real.out" 2>&1
+DUP_EXIT=$?
+assert_exit "a duplicate run of a live version is refused" 1 "$DUP_EXIT"
+assert_says "the refusal names the running build" "$WORK/t2-lock-real.out" "already running"
+if pid_holds_pid "$LIVE_PIDFILE2" "$LIVE_PID"; then
+    pass "a refused run leaves the live version pidfile alone"
+else
+    fail "a refused run leaves the live version pidfile alone ($(cat "$LIVE_PIDFILE2" 2>/dev/null || echo "it was deleted"))"
+fi
+
+# 3. The lock must already be held when the stock arm launches: that arm can
+#    take hours, and a second invocation that arrives inside it would otherwise
+#    see no lock at all.
+FAKE_PY="$WORK/fake-venv-python.sh"
+cat > "$FAKE_PY" <<FAKE
+#!/usr/bin/env bash
+# Stand-in for the MLX venv python. The stock-reuse check is a stdin script
+# and needs real json, so '-' runs the real interpreter; a runner launch only
+# records whether this version's lock was already held at launch time.
+if [ "\$1" = "-" ]; then exec $CHECK_PY "\$@"; fi
+if [ -n "\${LOCK_PROBE_FILE:-}" ] && [ -f "\${LOCK_PROBE_FILE}" ]; then
+    echo "lock at launch: held pid=\$(cat "\$LOCK_PROBE_FILE")"
+else
+    echo "lock at launch: none"
+fi
+exit 1
+FAKE
+chmod +x "$FAKE_PY"
+
+# The stock arm only rebuilds when the reuse check says stale, so the fixture
+# carries metadata with a label this run does not use.
+STOCK_LIVE_DIR="$MODELS_OUT/src-oQ4e-stock"
+SRC_CANON="$(cd "$SRC" && pwd)"
+if [ -z "$CHECK_PY" ]; then
+    skip "the version lock during the stock arm (no python3 on PATH)"
+    skip "a refused stock arm never deletes a live stock output (no python3 on PATH)"
+    skip "a refused stock arm leaves the live stock pidfile alone (no python3 on PATH)"
+    skip "the stock refusal names the running stock build (no python3 on PATH)"
+else
+    mkdir -p "$STOCK_LIVE_DIR"
+    printf '{}\n' > "$STOCK_LIVE_DIR/quantization_report.json"
+    cat > "$STOCK_LIVE_DIR/build.json" <<JSON
+{
+  "family": "deepseek_v41",
+  "src": "$SRC_CANON",
+  "oq_level": 4,
+  "preserve_mtp": 1,
+  "omlx_commit": "",
+  "calib_dataset_intent": "stock-default",
+  "ngram_bits": "8"
+}
+JSON
+    rm -f "$OQUP/oq4e-src-stock.pid"
+    ( cd "$REPO" && env VENV_PY="$FAKE_PY" OQ_SKIP_STOCK=0 \
+        LOCK_PROBE_FILE="$OQUP/oq4e-t2-lock-order.pid" \
+        bash "$OQ4E" t2-lock-order --src "$SRC" ) > "$WORK/t2-lock-order.out" 2>&1
+    assert_says "the version lock is held before the stock arm launches" \
+        "$OQUP/oq4e-src-stock.log" "lock at launch: held"
+
+    # 4. The stock output is shared by every version of the same model and
+    #    level, so it needs a lock of its own: the loser must leave it alone.
+    rm -rf "$STOCK_LIVE_DIR"
+    mkdir -p "$STOCK_LIVE_DIR"
+    printf 'do not touch\n' > "$STOCK_LIVE_DIR/model-00001-of-00001.safetensors"
+    printf '%s\n' "$LIVE_PID" > "$OQUP/oq4e-src-stock.pid"
+    ( cd "$REPO" && env VENV_PY="$FAKE_PY" OQ_SKIP_STOCK=0 \
+        bash "$OQ4E" t2-lock-stock --src "$SRC" ) > "$WORK/t2-lock-stock.out" 2>&1
+    if [ -f "$STOCK_LIVE_DIR/model-00001-of-00001.safetensors" ]; then
+        pass "a refused stock arm never deletes a live stock output"
+    else
+        fail "a refused stock arm never deletes a live stock output (the directory was wiped)"
+    fi
+    if pid_holds_pid "$OQUP/oq4e-src-stock.pid" "$LIVE_PID"; then
+        pass "a refused stock arm leaves the live stock pidfile alone"
+    else
+        fail "a refused stock arm leaves the live stock pidfile alone ($(cat "$OQUP/oq4e-src-stock.pid" 2>/dev/null || echo "it was deleted"))"
+    fi
+    assert_says "the stock refusal names the running stock build" "$WORK/t2-lock-stock.out" "already running"
+fi
+
+# 5. A lock left by a crash must not block the version forever. The stand-in
+# quantizer always fails, so what is checked is that the run gets past the lock.
+sleep 0.2 &
+DEAD_PID=$!
+wait "$DEAD_PID" 2>/dev/null
+STALE_PIDFILE="$OQUP/oq4e-t2-lock-stale.pid"
+printf '%s\n' "$DEAD_PID" > "$STALE_PIDFILE"
+( cd "$REPO" && bash "$OQ4E" t2-lock-stale --src "$SRC" ) > "$WORK/t2-lock-stale.out" 2>&1
+if grep -qF "already running" "$WORK/t2-lock-stale.out"; then
+    fail "a stale pidfile is reclaimed (the run was refused)"
+else
+    pass "a stale pidfile is reclaimed"
+fi
+assert_says "reclaiming says so" "$WORK/t2-lock-stale.out" "stale pidfile"
+if [ -e "$STALE_PIDFILE" ]; then
+    fail "a finished run releases its lock ($STALE_PIDFILE survives)"
+else
+    pass "a finished run releases its lock"
+fi
+kill "$LIVE_PID" 2>/dev/null
+wait "$LIVE_PID" 2>/dev/null
+LIVE_PID=""
 
 printf '== summary ==\n'
 if [ "$FAILURES" -eq 0 ]; then
