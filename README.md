@@ -157,11 +157,11 @@ With no width argument the Engram tables are **copied byte-for-byte**. That is w
 
 oQ4e keeps the source FP4/FP8 projection precision and does no imatrix or sensitivity pass, so the corpus cannot change its projection bits — it is a source-precision export, useful as the high-quality anchor. oQ2.5e and oQ3e do the calibrated mixed-bit allocation; they stream one decoder block at a time from the source shards by default, so the ~307 GB non-Engram source is never resident. `STREAM_CALIBRATION=0` restores the resident path (and warns), `STREAM_CALIBRATION=1` forces streaming. Both passes use this repo's bundle for `calib_dataset` and `sensitivity_calib_dataset`.
 
-DeepSeek outputs are hundreds of GB, so the stock baseline is **not** built by default here (`OQ_SKIP_STOCK=1`). Build it once with `OQ_SKIP_STOCK=0`; it uses oMLX's default calibration corpus, and the same Engram setting and allocator widths as the custom arm. Same-name `<version>` reruns overwrite in place, `arm-*` versions are protected, and `build.json` records the source snapshot, bundle sha256, corpus/omLX commits, Engram width, MTP setting and streaming mode. The stock arm is reused only while every one of those still matches, so changing the Engram width rebuilds it. Control arm B works exactly as for Qwen:
+DeepSeek outputs are hundreds of GB, so the stock baseline is **not** built by default here (`OQ_SKIP_STOCK=1`). Build it once with `OQ_SKIP_STOCK=0`; it uses oMLX's default calibration corpus, and the same Engram setting and allocator widths as the custom arm. Same-name `<version>` reruns overwrite in place, `arm-*` versions are protected, and `build.json` records the source snapshot, bundle sha256, corpus/omLX commits, Engram width, MTP setting and streaming mode. The stock arm is reused only while every one of those still matches, so changing the Engram width rebuilds it. Control arm B works exactly as for Qwen — and takes no width either, so it copies the same stock Engram tables the custom arm copies and corpus text stays the only difference between them:
 
 ```bash
 CORPUS_FILE=bundles/generic.txt scripts/omlx_deepseek_v41_oq3e.sh \
-  deepseek-ai/DeepSeek-V4.1-Flash-1017 arm-b-generic 8
+  deepseek-ai/DeepSeek-V4.1-Flash-1017 arm-b-generic
 ```
 
 Heldout PPL runs after a completed build through the V4.1 loader (Engram SSD offload, default routed-expert resident fraction `0.25`; override with `OQ_PPL_EXPERT_FRACTION`). Keep the oMLX server stopped during scoring. `OQ_SKIP_PPL=1` skips it.

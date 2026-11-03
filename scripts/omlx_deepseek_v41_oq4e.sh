@@ -35,8 +35,11 @@
 # Output policy: same-name <version> reruns overwrite in place (previous log
 # moves to *.log.prev; <out>/build.json records the source snapshot, bundle
 # sha256, corpus + oMLX commits, Engram width and imatrix settings).
-# 'stock' is reserved and arm-* versions refuse overwrite. A pidfile in
-# $OQUP refuses concurrent runs of the same version.
+# 'stock' is reserved and arm-* versions refuse overwrite. Concurrency is
+# guarded by lock files in $OQUP, claimed with O_EXCL at start-up — before any
+# output is deleted, and held until the run ends — so two runs of one version
+# cannot share an output, and the shared stock baseline has its own lock. A
+# --dry-run deletes nothing and therefore claims nothing.
 #
 # After a completed build the heldout PPL runs automatically via
 # scripts/ppl_heldout.py. Keep the oMLX server stopped while scoring:
@@ -347,7 +350,52 @@ STOCK_LOG="$OQUP/oq${OQ_LEVEL}e-$MODEL_TAG-stock.log"
 STOCK_RUNNER="$OQUP/run_oq${OQ_LEVEL}e_${MODEL_TAG}_stock.py"
 STOCK_PIDFILE="$OQUP/oq${OQ_LEVEL}e-$MODEL_TAG-stock.pid"
 PIDFILE="$OQUP/oq${OQ_LEVEL}e-$VERSION.pid"
-trap 'rm -f "$PIDFILE" "$STOCK_PIDFILE"' EXIT
+# Concurrency locks, not a pidfile-as-note. A V4.1 output is a few hundred GB
+# and the work before it (bundle assembly, a stock rebuild) runs for hours, so
+# checking early and writing late guards nothing: the file is claimed here with
+# O_EXCL, before anything destructive, and only the run that won a claim may
+# ever remove it. flock has no macOS port, hence noclobber.
+LOCK_HELD=""
+STOCK_LOCK_HELD=""
+trap 'if [ -n "$LOCK_HELD" ]; then rm -f "$PIDFILE"; fi
+      if [ -n "$STOCK_LOCK_HELD" ]; then rm -f "$STOCK_PIDFILE"; fi' EXIT
+
+claim_lock() { # <pidfile> <what it guards>; 0 when this run now owns it
+    local pf="$1" label="$2" pid=""
+    if [ -e "$pf" ]; then
+        pid="$(cat "$pf" 2>/dev/null || true)"
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            echo "refusing: $label appears to be already running (pid $pid)" >&2
+            echo "pidfile: $pf — if no such build is running, remove it and retry" >&2
+            return 1
+        fi
+        # Left by a crash or a kill: its owner is gone, so it guards nothing.
+        echo "== removing stale pidfile (pid ${pid:-unreadable} is not running): $pf =="
+        rm -f "$pf"
+    fi
+    if ! ( set -o noclobber; printf '%s\n' "$$" > "$pf" ) 2>/dev/null; then
+        echo "refusing: $label was claimed by another run at the same moment" >&2
+        echo "pidfile: $pf" >&2
+        return 1
+    fi
+    return 0
+}
+
+release_stock_lock() { # drop the stock arm's claim, never another run's
+    [ -n "$STOCK_LOCK_HELD" ] || return 0
+    rm -f "$STOCK_PIDFILE"
+    STOCK_LOCK_HELD=""
+    return 0
+}
+
+mkdir -p "$OQUP"
+if [ "$DRY_RUN" -ne 1 ]; then
+    # The lock is held for the whole run, post-build verify and scoring
+    # included: a second invocation during that window would delete a finished
+    # output the same way it would delete one still being written.
+    claim_lock "$PIDFILE" "'$VERSION' ($TAG)" || exit 1
+    LOCK_HELD=1
+fi
 
 write_build_json() { # <out> <intent> <ngram-label> <bundle> <samples> <seqlen> <stream-label>
     local out="$1" intent="$2" nlabel="$3" bundle="${4:-}" samples="$5" seqlen="$6" stream_label="$7"
@@ -457,26 +505,33 @@ ensure_stock() {
     elif [ -e "$STOCK_OUT" ]; then
         echo "== stock dir exists without build metadata — rebuilding =="
     fi
+    # The stock output belongs to every version of this model and level, so it
+    # is claimed on its own terms, and claimed before the delete below: a run
+    # that loses the claim leaves the live baseline alone.
+    if ! claim_lock "$STOCK_PIDFILE" "the stock baseline $STOCK_OUT"; then
+        echo "         Leaving $STOCK_OUT untouched; suppress retries with OQ_SKIP_STOCK=1." >&2
+        return 1
+    fi
+    STOCK_LOCK_HELD=1
     if [ -e "$STOCK_OUT" ]; then
         rm -rf "$STOCK_OUT"
     fi
     echo "== ensuring stock baseline (V4.1 output may be hundreds of GB) =="
     write_stock_runner
-    echo "$$" > "$STOCK_PIDFILE"
     if [ -f "$STOCK_LOG" ]; then mv "$STOCK_LOG" "$STOCK_LOG.prev"; fi
     echo "== launching stock build (log: $STOCK_LOG) =="
     if ! "$VENV_PY" "$STOCK_RUNNER" > "$STOCK_LOG" 2>&1; then
         echo "WARNING: stock baseline build failed (see $STOCK_LOG)." >&2
         echo "         Continuing without it; suppress retries with OQ_SKIP_STOCK=1." >&2
-        rm -f "$STOCK_PIDFILE"
+        release_stock_lock
         return 1
     fi
-    rm -f "$STOCK_PIDFILE"
     echo "== stock built, verifying =="
     "$VENV_PY" "$VERIFY_PY" "$STOCK_OUT" "$BUNDLE" "$OQ_LEVEL" "$NGRAM_VERIFY" "stock" \
         "$PRESERVE_MTP" "auto"
     write_build_json "$STOCK_OUT" "stock-default" "$NGRAM_LABEL" "" 128 512 "auto"
     run_heldout_ppl "$STOCK_OUT" "$OQUP/ppl-stock-$TAG.log"
+    release_stock_lock
     echo "== stock baseline ready: $STOCK_OUT =="
 }
 
@@ -494,12 +549,6 @@ echo "stock       : $STOCK_OUT (OQ_SKIP_STOCK default 1)"
 BRANCH="$(git -C "$OMLX_REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 if [ "$BRANCH" != "feat/custom-corpus-ngram-q8" ]; then
     echo "WARNING: omlx repo is on '$BRANCH', expected feat/custom-corpus-ngram-q8" >&2
-fi
-
-if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-    echo "refusing: '$VERSION' appears to be already running (pid $(cat "$PIDFILE"))" >&2
-    echo "pidfile: $PIDFILE — if no such build is running, remove it and retry" >&2
-    exit 1
 fi
 
 case "$VERSION" in
@@ -690,11 +739,9 @@ if [ "$DRY_RUN" -eq 1 ]; then
     exit 0
 fi
 
-echo "$$" > "$PIDFILE"
 if [ -f "$LOG" ]; then mv "$LOG" "$LOG.prev"; fi
 echo "== launching (log: $LOG) =="
 "$VENV_PY" "$RUNNER" > "$LOG" 2>&1
-rm -f "$PIDFILE"
 echo "== quantize returned, verifying =="
 "$VENV_PY" "$VERIFY_PY" "$OUT" "$BUNDLE" "$OQ_LEVEL" "$NGRAM_VERIFY" "custom" \
     "$PRESERVE_MTP" "$STREAM_LABEL"
