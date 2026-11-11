@@ -882,7 +882,10 @@ def plan_requests(prompts: list[dict], args) -> list[dict]:
             effort = next(name for name, cut_ in mix if u < cut_)
             items.append({"prompt": p, "sample": k, "effort": effort,
                           "order": _unit(args.seed, "order", p["id"], p["sha"], k)})
-    items.sort(key=lambda it: it["order"])
+    # Coverage first: every prompt's first answer comes before any prompt's
+    # second one, so a budget that cannot cover everything still buys the most
+    # distinct prompts (new activations) instead of repeats of the same ones.
+    items.sort(key=lambda it: (it["sample"], it["order"]))
     return items
 
 
