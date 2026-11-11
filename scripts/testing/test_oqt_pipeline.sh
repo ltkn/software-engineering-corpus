@@ -82,4 +82,13 @@ assert set(g["tokens_by_group"]) == {"generic", "broad"}, g["tokens_by_group"]
 PYCHECK
 [ -f "$T/models-out/Qwen3.8-Flash-Next-oQ4t-g/oqt_report.json" ] || fail "generic arm quant not built"
 pass "generic arm: no corpus prompts, shared cache reused ($(count generate) new answers)"
+reset; OQT_MIX=corpus=100 BUDGET_TOKENS=3000 "$P" 4 c >/dev/null 2>&1 || fail "corpus-only run failed"
+grep -q "seed: skipped" "$T/oqup/runs/c/pipeline.log" || fail "corpus-only run did not skip the seed stage"
+[ "$(count seed)" = 0 ] || fail "corpus-only run sent seed requests"
+python3 - "$T/oqup/runs/c/prep/answers/Qwen3.8-Flash-Next-oQ5e-gen/generate-profile.json" <<'PYCHECK' || fail "corpus-only run used seed prompts"
+import json, sys
+assert set(json.load(open(sys.argv[1]))["tokens_by_group"]) == {"corpus"}
+PYCHECK
+pass "corpus-only mix: seed stage skipped, corpus prompts only"
+
 echo "all pipeline checks passed"

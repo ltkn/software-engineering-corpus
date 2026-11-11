@@ -55,6 +55,14 @@ OQT_PROFILE="${OQT_PROFILE:-profile}"
 OQT_MIX="${OQT_MIX:-corpus=50,generic=25,broad=25}"
 PROMPTS_PER_SEED="${PROMPTS_PER_SEED:-8}"
 case "$OQT_PROFILE" in profile|generic) ;; *) echo "OQT_PROFILE must be profile or generic" >&2; exit 2 ;; esac
+# Seed prompts are needed only when the mix gives weight to generic or broad
+# prompts (OQT_MIX=corpus=100 means corpus prompts only, and no seed stage).
+NEED_SEEDS="$(python3 -c '
+import sys
+w = {k.strip(): float(v) for k, _, v in (p.partition("=") for p in sys.argv[1].split(",")) if v}
+groups = ("generic", "broad") if sys.argv[2] == "generic" else ("corpus", "generic", "broad")
+print(1 if any(w.get(g, 0) > 0 for g in ("generic", "broad") if g in groups) else 0)
+' "$OQT_MIX" "$OQT_PROFILE")"
 export OMLX_REPO VENV_PY OQUP MODELS_OUT
 
 usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
@@ -319,13 +327,18 @@ start_server() {
 # ------------------------------------------------------------------ stages
 run_stage extract "$D_EXTRACT" python3 "$PREP" extract --out "$PREP_OUT"
 
-if ! is_done derive "$D_DERIVE" || ! is_done seed "$D_SEED" || ! is_done generate "$D_GENERATE"; then
+if ! is_done derive "$D_DERIVE" || { [ "$NEED_SEEDS" = 1 ] && ! is_done seed "$D_SEED"; } \
+        || ! is_done generate "$D_GENERATE"; then
     start_server
 fi
 run_stage derive "$D_DERIVE" python3 "$PREP" derive --out "$PREP_OUT" --cache-root "$CACHE_ROOT" \
     --model "$GEN_ID" --server "$SERVER" --concurrency "$CONCURRENCY"
-run_stage seed "$D_SEED" python3 "$PREP" seed --out "$PREP_OUT" --cache-root "$CACHE_ROOT" \
-    --model "$GEN_ID" --server "$SERVER" --concurrency "$CONCURRENCY" --prompts-per-seed "$PROMPTS_PER_SEED"
+if [ "$NEED_SEEDS" = 1 ]; then
+    run_stage seed "$D_SEED" python3 "$PREP" seed --out "$PREP_OUT" --cache-root "$CACHE_ROOT" \
+        --model "$GEN_ID" --server "$SERVER" --concurrency "$CONCURRENCY" --prompts-per-seed "$PROMPTS_PER_SEED"
+else
+    log "seed: skipped (OQT_MIX gives no weight to generic or broad prompts)"
+fi
 run_stage generate "$D_GENERATE" python3 "$PREP" generate --out "$PREP_OUT" --cache-root "$CACHE_ROOT" \
     --profile "$OQT_PROFILE" --mix "$OQT_MIX" \
     --model "$GEN_ID" --server "$SERVER" --concurrency "$CONCURRENCY" \

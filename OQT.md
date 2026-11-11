@@ -50,6 +50,8 @@ The stages are: `extract` → `derive` → `seed` → `generate` → `render` �
 
 The pipeline mixes three kinds of prompts: your corpus, **generic** software tasks outside your stack (`seeds/generic.txt`), and **broad** non-coding tasks including several languages and tool calling (`seeds/broad.txt`). The generic and broad prompts keep experts your domain rarely uses from being starved.
 
+Only one quant is built per run. The comparison arm below is optional: it is a second full build (hours), so run it only when you want the answer.
+
 To see what your corpus adds, build a second quant without it:
 
 ```bash
@@ -97,7 +99,7 @@ Put them in front of the command, for example `BUDGET_TOKENS=500000 scripts/oqt_
 | `EFFORT_MIX` | `max=70,medium=15,low=15` | Thinking levels. `max` is the model's top level, whatever it's called |
 | `CONCURRENCY` | `4` | Parallel requests while generating |
 | `OQT_PROFILE` | `profile` | `profile`: your corpus plus generic and broad prompts. `generic`: no corpus (the comparison arm) |
-| `OQT_MIX` | `corpus=50,generic=25,broad=25` | Share of the generated text per prompt group |
+| `OQT_MIX` | `corpus=50,generic=25,broad=25` | Share of the generated text per prompt group. `OQT_MIX=corpus=100` uses only your corpus and skips the seed stage |
 | `PROMPTS_PER_SEED` | `8` | Prompts the model writes per seed in `seeds/generic.txt` and `seeds/broad.txt` |
 | `OQT_COMPARE=1` | off | Also build a plain oQe quant from the same text and score both |
 | `OQT_REFINE_EXPERTS=1` | off | Also polish the routed experts' rounding (always on for the other tensors). Better, but about 8 extra hours on Qwen3.8-Flash-Next |
