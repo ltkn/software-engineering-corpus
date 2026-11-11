@@ -56,6 +56,24 @@ Two parts of the calibration text are there specifically for agentic coding:
 
 To add your own task: copy a folder in `agent_tasks/tasks`, change `task.json` and `repo/`, add the fixed files under `solution/`, and run `agent_tasks/verify_tasks.sh <task-id>`.
 
+## How close is the quant to the original? (M3)
+
+After each build, the score stage compares the quant with the **original BF16 model**:
+
+- **KL**: how far the quant's next-token probabilities are from the original's (lower is better; the main number)
+- **top-1**: how often it picks the same most likely token
+- **route / flips**: how much router probability moved to other experts, and on what share of tokens the expert set changed
+
+The original model's outputs are recorded once by streaming the BF16 source block by block over the heldout files (it never has to fit in memory; expect one to two hours) and cached in `~/oqup/anchors/`. Every later quant is scored against the same reference in minutes, split by heldout file.
+
+Compare all your quants side by side:
+
+```bash
+~/dev/omlx/.venv-3.12/bin/python scripts/score_vs_bf16.py compare ~/oqup/m3-*.json
+```
+
+Turn it off with `OQT_M3=0`. Low KL means close to the original; it does not prove the quant solves tasks, so keep looking at the heldout and agent results too.
+
 ## Does the corpus help? Build the comparison arm
 
 The pipeline mixes three kinds of prompts: your corpus, **generic** software tasks outside your stack (`seeds/generic.txt`), and **broad** non-coding tasks including several languages and tool calling (`seeds/broad.txt`). The generic and broad prompts keep experts your domain rarely uses from being starved.
@@ -115,6 +133,8 @@ Put them in front of the command, for example `BUDGET_TOKENS=500000 scripts/oqt_
 | `AGENT_SAMPLES` | `2` | Agent sessions per task in `agent_tasks/tasks` |
 | `OQT_LONG_SHARE` | `0.25` | Share of calibration tokens in long windows (`0` = off) |
 | `OQT_LONG_LEN` | `32768` | Long window length in tokens |
+| `OQT_M3=0` | on | Skip scoring against the original model |
+| `M3_SEQ`, `M3_MAX_WINDOWS` | `2048`, `64` | M3 window length and windows per heldout file |
 | `OQT_COMPARE=1` | off | Also build a plain oQe quant from the same text and score both |
 | `OQT_REFINE_EXPERTS=1` | off | Also polish the routed experts' rounding (always on for the other tensors). Better, but about 8 extra hours on Qwen3.8-Flash-Next |
 | `OQT_ROUTING=0` | on | Turn off routing protection |
@@ -153,7 +173,7 @@ The pipeline log says which stage failed and shows the last lines of that stage'
 - Resume is per request (answers), per layer (oQ-T sweep) and per output shard (file writing). One step still restarts from its own beginning if interrupted: oMLX's imatrix pass. Its duration on your Mac decides whether it's worth making resumable.
 - Expert tiers (more bits for popular experts) need a change in oMLX's serving code; they will be built only if your builds show a strong tiering signal.
 - The variation pass from `PREP_PLAN.md` is not in yet. Agent tasks cover 7 languages so far (no Spring/Postgres/Kafka services, Godot or embedded builds yet).
-- Not yet: scoring against the original model with full KL and routing flips, routing-aware bits, expert tiers, DeepSeek V4.1.
+- Not yet: expert tiers (runtime), DeepSeek V4.1, sealed agent tasks for behavioral scoring.
 
 ## Lower-level: build from a text file directly
 

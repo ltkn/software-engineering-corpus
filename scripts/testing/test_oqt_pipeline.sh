@@ -10,8 +10,8 @@ REPO="$(cd "$HERE/../.." && pwd)"
 export OMLX_REPO="${OMLX_REPO:-$HOME/dev/omlx}"
 VPY="$OMLX_REPO/.venv-3.12/bin/python"
 T="$(mktemp -d "${TMPDIR:-/tmp}/oqt-pipeline-test.XXXXXX")"
-trap 'pkill -f "stub_omlx.py .* $T/" 2>/dev/null || true; rm -rf "$T"' EXIT
-fail() { echo "FAIL: $*" >&2; exit 1; }
+trap 'pkill -f "stub_omlx.py .* $T/" 2>/dev/null || true; [ "${KEEP:-0}" = 1 ] || rm -rf "$T"' EXIT
+fail() { echo "FAIL: $*" >&2; echo "kept for inspection: $T" >&2; KEEP=1; exit 1; }
 pass() { echo "ok   $*"; }
 count() { python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get(sys.argv[2],0))" "$T/counter.json" "$1"; }
 
@@ -28,6 +28,8 @@ printf '%s' '{"id": "answer-42", "domain": "test", "image": "unused", "prompt": 
 export OQT_AGENT_TASKS="$T/agent-tasks" OQT_AGENT_SANDBOX=local AGENT_SAMPLES=2
 # Long windows scaled to the tiny model: 64-token windows over 32 x 8-token short ones.
 export OQT_LONG_LEN=64 OQT_LONG_SHARE=0.25
+# M3 scoring scaled to the tiny model.
+export M3_SEQ=16 M3_MAX_WINDOWS=4
 export OQT_SERVE_CMD="python3 -I $HERE/stub_omlx.py \$PORT $T/counter.json"
 P="$REPO/scripts/oqt_pipeline.sh"
 reset() { echo '{}' > "$T/counter.json"; }
@@ -49,6 +51,18 @@ assert agent["kept"] == 2 and agent["solved"] == 2, agent
 PYCHECK
 grep -q "answer.txt" "$T/oqup/runs/t/bundle.txt" || fail "agent sessions not in the calibration bundle"
 pass "agent sessions solved and rendered; long documents packed into long windows"
+M3J="$(ls "$T"/oqup/m3-*-oQ4-t-oqt.json 2>/dev/null | head -1 || true)"
+[ -n "$M3J" ] || fail "no M3 score file"
+python3 - "$M3J" <<'PYCHECK' || fail "M3 score incomplete"
+import json, sys
+r = json.load(open(sys.argv[1]))
+o = r["overall"]
+assert o["kl"] >= 0 and 0 <= o["top1"] <= 1 and o["tokens"] > 0, o
+assert r["routing_by_layer"], "no routing stats"
+assert {"heldout-se", "heldout-general"} <= set(r["slices"]), r["slices"].keys()
+PYCHECK
+ls "$T"/oqup/anchors/m3-*.npz >/dev/null 2>&1 || fail "M3 reference not cached"
+pass "M3: quant scored against the streamed original (KL, top-1, routing per slice)"
 
 reset; BUDGET_TOKENS=3000 "$P" 4 t >/dev/null 2>&1 || fail "identical rerun failed"
 [ "$(count generate)" = 0 ] && [ "$(count derive)" = 0 ] || fail "identical rerun sent requests"

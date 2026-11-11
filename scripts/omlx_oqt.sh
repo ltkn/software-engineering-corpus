@@ -32,6 +32,9 @@
 #   PRESERVE_MTP=1     keep the MTP draft head
 #   OQ_SKIP_PPL=1      skip heldout scoring
 #   OQT_SCORE_ONLY=1   only (re)score an existing build
+#   OQT_M3=0           skip M3 scoring (KL / top-1 / routing flips vs the BF16 source;
+#                      the reference is a one-time streamed pass, cached in ~/oqup/anchors)
+#   M3_FILES, M3_SEQ=2048, M3_MAX_WINDOWS=64   M3 evaluation text and windows
 #   OQT_REFINE_EXPERTS=1  also run the rounding refinement (M6) on routed experts
 #                      (better, but roughly 8 extra hours on Qwen3.8-Flash-Next)
 #   OQT_ROUTING=0      turn off routing protection (M4)
@@ -140,7 +143,33 @@ echo "log        : $LOG"
 echo "machine    : ${ram_gb} GB RAM, ${free_gb:-?} GB free"
 
 # ---------------------------------------------------------------- heldouts
+m3_score() { # <quant-dir> <label>: KL / top-1 / routing flips vs the original BF16 model
+    [ "${OQT_M3:-1}" = "1" ] || { echo "M3 scoring skipped (OQT_M3=0)"; return 0; }
+    local files=() p
+    for p in ${M3_FILES:-heldout-se2.txt heldout-se.txt heldout-general.txt heldout-reasoning.txt}; do
+        [[ "$p" == /* ]] || p="$CORPUS_REPO/eval/$p"; [ -f "$p" ] && files+=("$p")
+    done
+    local key; key="$( { printf 'seq %s max %s\n' "${M3_SEQ:-2048}" "${M3_MAX_WINDOWS:-64}"
+                       shasum -a 256 "${files[@]}" "$SRC/config.json"
+                       [ -f "$SRC/model.safetensors.index.json" ] && shasum -a 256 "$SRC/model.safetensors.index.json"
+                     } | shasum -a 256 | awk '{print substr($1,1,12)}')"
+    local ref="$OQUP/anchors/m3-$MODEL_TAG-$key.npz"
+    mkdir -p "$OQUP/anchors"
+    if [ ! -f "$ref" ]; then
+        say "M3 reference: streaming the BF16 source once (reused for every quant)"
+        "$VENV_PY" "$CORPUS_REPO/scripts/score_vs_bf16.py" reference --src "$SRC" --files "${files[@]}" \
+            --out "$ref" --seq "${M3_SEQ:-2048}" --max-windows "${M3_MAX_WINDOWS:-64}" \
+            || { echo "WARNING: M3 reference failed; skipping M3 scoring" >&2; return 0; }
+    fi
+    local json="$OQUP/m3-$MODEL_TAG-oQ${LEVEL}-$VERSION-$2.json"
+    say "M3 score: $2 vs the original model"
+    "$VENV_PY" "$CORPUS_REPO/scripts/score_vs_bf16.py" score --model "$1" --reference "$ref" --json "$json" \
+        || echo "WARNING: M3 scoring failed (the quant itself is fine)" >&2
+    echo "compare quants: $VENV_PY $CORPUS_REPO/scripts/score_vs_bf16.py compare $OQUP/m3-$MODEL_TAG-*.json"
+}
+
 score() { # <quant-dir> <label>
+    m3_score "$1" "$2"
     if [ "${OQ_SKIP_PPL:-0}" = "1" ]; then echo "heldout scoring skipped (OQ_SKIP_PPL=1)"; return 0; fi
     local files=() p
     for p in ${PPL_FILES:-heldout-se2.txt heldout-se.txt heldout-general.txt}; do
@@ -158,7 +187,6 @@ score() { # <quant-dir> <label>
 }
 if [ "${OQT_SCORE_ONLY:-0}" = "1" ]; then
     [ -d "$OUT" ] || die "OQT_SCORE_ONLY=1 but there is no build at $OUT"
-    OQ_SKIP_PPL=0
     score "$OUT" oqt
     [ -d "$CMP_OUT" ] && score "$CMP_OUT" oqe-cmp
     exit 0

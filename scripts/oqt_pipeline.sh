@@ -401,13 +401,14 @@ D_BUILD="$(printf '%s|%s|%s|%s|%s|%s|%s|%s|%s' "$(hash_of < "$BUNDLE")" "$LEVEL"
     "$(hash_of < "$CORPUS_REPO/scripts/omlx_oqt.sh")" \
     "${OQT_REFINE_EXPERTS:-0}/${OQT_ROUTING:-1}/${OQT_ROUTING_THRESHOLD:-0.02}/${OQT_ROUTING_MAX_LAYERS:-0.25}" \
     "$OQT_LONG_SHARE/$OQT_LONG_LEN/$( hash_of < "$RUN/bundle-long.jsonl" 2>/dev/null || echo none)" | hash_of)"
-run_stage build "$D_BUILD" env CORPUS_FILE="$BUNDLE" OQT_OVERWRITE=1 OQ_SKIP_PPL=1 \
+run_stage build "$D_BUILD" env CORPUS_FILE="$BUNDLE" OQT_OVERWRITE=1 OQ_SKIP_PPL=1 OQT_M3=0 \
     OQT_LONG_FILE="$RUN/bundle-long.jsonl" OQT_LONG_SHARE="$OQT_LONG_SHARE" OQT_LONG_LEN="$OQT_LONG_LEN" \
     "$CORPUS_REPO/scripts/omlx_oqt.sh" "$LEVEL" "$NAME"
 
-D_SCORE="$(printf '%s|%s' "$D_BUILD" "$(cat "$CORPUS_REPO"/eval/heldout-*.txt | hash_of)" | hash_of)"
-if [ "${OQ_SKIP_PPL:-0}" = "1" ]; then
-    log "score: skipped (OQ_SKIP_PPL=1)"
+D_SCORE="$(printf '%s|%s|%s|%s' "$D_BUILD" "$(cat "$CORPUS_REPO"/eval/heldout-*.txt | hash_of)" \
+    "${OQ_SKIP_PPL:-0}/${OQT_M3:-1}/${M3_SEQ:-2048}/${M3_MAX_WINDOWS:-64}" "$(hash_of < "$CORPUS_REPO/scripts/score_vs_bf16.py")" | hash_of)"
+if [ "${OQ_SKIP_PPL:-0}" = "1" ] && [ "${OQT_M3:-1}" = "0" ]; then
+    log "score: skipped (OQ_SKIP_PPL=1 and OQT_M3=0)"
 else
     run_stage score "$D_SCORE" env OQT_SCORE_ONLY=1 "$CORPUS_REPO/scripts/omlx_oqt.sh" "$LEVEL" "$NAME"
 fi
