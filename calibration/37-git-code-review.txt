@@ -1,0 +1,312 @@
+Goal: Rebase my feature branch onto the latest main and get through the conflicts without breaking the migration order.
+Context: users-svc, Spring Boot 4.1. My branch feat/cursor-pagination is 14 commits behind main. Rebase stops on:
+CONFLICT (content): Merge conflict in pom.xml
+CONFLICT (add/add): Merge conflict in src/main/resources/db/migration/V42__add_cursor_index.sql
+main already has its own V42__orders_status_enum.sql, merged yesterday.
+Acceptance: rebase finished, pom.xml keeps both dependency changes, my migration renumbered so Flyway validates on a fresh database and on staging, branch pushed without clobbering anyone else's work.
+Reference: resolve pom.xml by keeping both sides; rename the branch's file to the next free version (V43) instead of editing main's V42; run flywayValidate/migrate on a clean DB; push with --force-with-lease.
+
+---
+
+Goal: Clean up my branch history before review: fold the "fix typo" and "address review" commits into the commits they fix.
+Context: git log --oneline origin/main..HEAD
+a91c3f2 address review: rename cursor param
+7b2e0d1 fix typo in CursorCodec
+5c88a10 add CursorCodec with HMAC signing
+41de7b9 add keyset repository method
+2f0a6c3 expose cursor in UserController
+The branch is already pushed and one teammate has it checked out to test.
+Acceptance: three commits, each building and passing tests on its own; the teammate is told how to update their copy; no force push that could drop their work.
+
+---
+
+Goal: I maintain a stack of three dependent branches. When I rebase the bottom one, update the two above it automatically.
+Context: main <- feat/schema <- feat/repository <- feat/api. Every time I rebase feat/schema on main, I spend twenty minutes rebasing the other two by hand with --onto.
+Acceptance: one command rebases the whole stack; explain what it does to the intermediate branch refs and what to push afterwards.
+Reference: git rebase --update-refs from the top branch (or rebase.updateRefs=true); then push each moved branch with --force-with-lease.
+
+---
+
+Goal: Find which commit made GET /users p95 jump from 40 ms to 900 ms, automatically.
+Context: Somewhere in the last ~300 commits on main. A script ./perf-check.sh builds the service, seeds 50k users in a Testcontainers Postgres and exits 0 if p95 < 100 ms, 1 otherwise. About 10% of runs fail the Docker pull with "TLS handshake timeout", unrelated to the code.
+Acceptance: git bisect finds the commit without me sitting there; flaky infrastructure failures must not be blamed on a commit.
+Reference: git bisect start BAD GOOD; git bisect run a wrapper that returns 125 (skip) on infrastructure failure, 0/1 otherwise; git bisect log to keep the trail.
+
+---
+
+Goal: I ran git reset --hard on the wrong branch and lost two hours of commits. Get them back.
+Context: Commits were never pushed. Terminal history shows:
+git switch feat/rate-limit
+git reset --hard origin/main
+Acceptance: the lost commits are back on feat/rate-limit, and I understand how long this safety net lasts.
+
+---
+
+Goal: Backport the null-tenant fix from main to the release/4.1 branch.
+Context: The fix is commit 9d41e2a on main ("reject requests with empty tenant claim"). release/4.1 does not have the TenantResolver refactor from three weeks ago, so the cherry-pick conflicts in TenantFilter.java.
+Acceptance: the fix applied to release/4.1 with a trail back to the original commit, the conflict resolved against the old code shape, tests from the original fix ported and passing.
+
+---
+
+Goal: We merged a feature branch that broke checkout. Undo it on main now, and make sure we can merge the fixed version later.
+Context: The merge commit is e4f17c0 (merge of feat/new-pricing into main). Others have already pulled main, so no history rewriting. Next week the fixed feat/new-pricing will come back.
+Acceptance: main is back to working state through a new commit; explain why re-merging the branch later will silently skip the original changes, and what to do about it.
+Reference: git revert -m 1 e4f17c0; before re-merging later, revert the revert (or rebase the branch so its commits are new), otherwise git considers those changes already merged.
+
+---
+
+Goal: A teammate committed a production database password three commits ago and pushed it. Handle it properly.
+Context: The repo is private on GitHub, 12 people have cloned it, CI has run on that commit. The password is for the orders read replica.
+Acceptance: the order of operations is right (the credential is treated as compromised first), the history cleanup is done with a current tool, everyone's clones are dealt with, and something prevents a repeat.
+Reference: rotate the password first; then rewrite with git filter-repo (not filter-branch), force-push, ask GitHub support/cached views cleanup if needed, everyone re-clones; add a secret scanner in pre-commit and CI.
+
+---
+
+Goal: Someone committed a 1.2 GB test dataset two months ago. Clones are slow and CI checkout takes four minutes.
+Context: The file is fixtures/orders-dump.sql.gz, deleted in a later commit but still in history. We do still need some large fixtures going forward.
+Acceptance: history no longer carries the blob, the repo size drops, future large fixtures go somewhere appropriate, and the team knows what to do with their existing clones.
+
+---
+
+Goal: git blame is useless on UserService.java since we ran the formatter over the whole codebase. Make it show the real authors again.
+Context: The reformat was one commit, c0ffee1 "apply google-java-format to all sources". People use both the CLI and GitHub's blame view.
+Acceptance: blame skips the reformat commit in the CLI and on GitHub, for everyone, without each person configuring it by hand.
+Reference: add the commit to .git-blame-ignore-revs at the repo root (GitHub reads it automatically); for the CLI, git config blame.ignoreRevsFile .git-blame-ignore-revs (can be set in a setup script).
+
+---
+
+Goal: Find out when and why the token expiry check in JwtValidator.validate() was changed.
+Context: The method is about 40 lines and has moved files once (from auth/ to security/). I want the history of that function only, not the whole file.
+Acceptance: the commits that touched that function, with their diffs, across the rename; plus how to find the commit that removed the string "clockSkew".
+
+---
+
+Goal: I'm mid-way through a big refactor on my branch and a production hotfix just came in. Work on both without stashing everything.
+Context: Working tree has ~40 modified files, some not compiling. The hotfix must branch from release/4.1. My IDE indexes slowly, so I'd rather not switch branches in place.
+Acceptance: a second working directory on release/4.1 sharing the same repository, hotfix done and pushed there, then cleaned up; my refactor untouched.
+
+---
+
+Goal: Our monorepo checkout is huge. I only work on services/users and libs/auth. Make my clone and day-to-day git commands fast.
+Context: The repo is 9 GB with full history; git status takes 6 seconds. CI also clones it for every job.
+Acceptance: a setup for my machine (only the directories I need, fast status) and a separate recommendation for CI clones; explain what breaks or gets slower with each option.
+
+---
+
+Goal: We maintain a long-lived integration branch and resolve the same conflicts in application.yml every week. Stop doing that by hand.
+Context: Every Monday we merge main into integration/partner-api; the same three hunks in application.yml conflict each time and we resolve them identically.
+Acceptance: git remembers and replays our resolutions; explain how to check what it replayed before committing, and how to forget a resolution that was wrong.
+
+---
+
+Goal: A contributor force-pushed a new version of their PR. Show me exactly what changed between the version I reviewed and the new one.
+Context: I reviewed at commit range main..4a1b2c3 (5 commits). After their rebase and changes the PR is main..9e8f7d6 (6 commits). GitHub's "compare" view is noisy because main moved too.
+Acceptance: a per-commit comparison of the old and new series that ignores the base change, and how to read its output.
+Reference: git range-diff main..4a1b2c3 main..9e8f7d6 (or old-base..old new-base..new); lines prefixed by ! changed, < dropped, > added.
+
+---
+
+Goal: Write the commit message for this change.
+Context: diff --git a/src/main/java/acme/users/UserController.java b/src/main/java/acme/users/UserController.java
+@@ -41,9 +41,14 @@ public class UserController {
+-    @GetMapping("/users/{id}")
+-    public UserDto get(@PathVariable UUID id) {
+-        return users.findById(id).map(UserDto::from).orElseThrow(NotFound::new);
++    @GetMapping("/users/{id}")
++    public UserDto get(@PathVariable UUID id, @AuthenticationPrincipal Jwt jwt) {
++        var tenant = TenantId.from(jwt);
++        return users.findByIdAndTenant(id, tenant)
++            .map(UserDto::from)
++            .orElseThrow(NotFound::new);
+     }
+The repo uses Conventional Commits. A test was added in the same commit.
+Acceptance: subject under 72 characters with the right type and scope, a body that says why (the security impact), and nothing the diff does not support.
+
+---
+
+Goal: Write the PR description for my change so reviewers can review it in one pass.
+Context: The PR adds cursor pagination to GET /users: new composite index migration, keyset repository method, opaque HMAC-signed cursor, the offset parameters kept for backward compatibility, frontend hook updated. Load test: p95 900 ms -> 35 ms at page 400. Not done yet: removing offset parameters (planned for v5 of the API).
+Acceptance: summary, why, what changed by area, how it was tested, risks and rollout, what is out of scope; short enough to read in two minutes.
+
+---
+
+Goal: Review this diff and write the review comments you would leave.
+Context: diff --git a/src/main/java/acme/orders/OrderController.java
++    @GetMapping("/orders/{orderId}/invoice")
++    public ResponseEntity<byte[]> invoice(@PathVariable long orderId) {
++        Order order = orders.findById(orderId).orElseThrow(NotFound::new);
++        byte[] pdf = invoices.render(order);
++        return ResponseEntity.ok()
++            .header("Content-Disposition", "attachment; filename=" + order.getCustomerName() + ".pdf")
++            .body(pdf);
++    }
+Acceptance: each comment points at a line, says what is wrong and why it matters, and proposes a fix; blocking issues are clearly separated from nits.
+Reference: blocking: no ownership/tenant check (BOLA) on orderId; customer name in Content-Disposition is header injection / unsafe filename. Nit: sequential long ids are enumerable.
+
+---
+
+Goal: Review this migration before it runs on production.
+Context: -- V57__add_billing_country.sql
+ALTER TABLE orders ADD COLUMN billing_country text NOT NULL;
+UPDATE orders SET billing_country = 'FR' WHERE billing_country IS NULL;
+CREATE INDEX idx_orders_billing_country ON orders (billing_country);
+orders has 180 million rows on Postgres 18 and takes writes all day.
+Acceptance: what fails or locks and for how long, and a rewritten migration sequence that is safe to run during business hours.
+
+---
+
+Goal: Review this Vue component change for security issues.
+Context: <template>
+  <div class="comment" v-html="comment.body"></div>
+  <a :href="comment.authorUrl">{{ comment.author }}</a>
+</template>
+comment.body comes from the API and is written by other users; authorUrl is a free-text profile field.
+Acceptance: each risk named with how it would be exploited, and the concrete change to make; mention what CSP would and would not catch.
+
+---
+
+Goal: Review this Kafka consumer change. Something about it worries me but I can't name it.
+Context: + consumer.subscribe(List.of("orders.paid"));
++ while (running) {
++     var records = consumer.poll(Duration.ofMillis(500));
++     consumer.commitSync();
++     for (var r : records) {
++         invoices.create(parse(r.value()));
++     }
++ }
+Acceptance: name the delivery-guarantee problem precisely, show what happens on a crash mid-batch, and suggest the corrected loop plus how invoices.create should behave on a redelivery.
+
+---
+
+Goal: Rewrite these review comments so they are useful instead of hostile.
+Context: Comments left on a junior developer's PR:
+"This is wrong."
+"Why would you ever do it this way??"
+"We don't use Optional like this here. Read the codebase."
+"Tests?"
+Acceptance: each comment rewritten to state the problem, the reason, and a concrete next step; keep them short; keep the bar where it was (do not water down the substance).
+
+---
+
+Goal: I've been asked to review a 2,300-line PR that touches 61 files. How do I handle it?
+Context: It mixes a framework upgrade (Spring Boot 4.0 to 4.1), a package rename, and a new feature (bulk user import). The author is senior and in a hurry.
+Acceptance: what to ask for and how to phrase it, how to split the PR without losing the work, and what to review first if splitting is refused.
+
+---
+
+Goal: Propose a branch and merge policy for a team of eight working on one service.
+Context: Today people merge main into their branches whenever, history is a web of merge commits, and bisect is painful. We deploy main continuously. GitHub, with branch protection available.
+Acceptance: a written policy covering how branches stay current, how PRs land (merge, squash or rebase), what happens when two PRs pass CI separately but break together, and the branch protection settings that enforce it.
+
+---
+
+Goal: Make commit signing mandatory on main and set it up on my laptop.
+Context: GitHub. Most of the team already has SSH keys for pushing; nobody wants to manage GPG.
+Acceptance: my commits show as verified on GitHub, signing works without typing a passphrase every commit, and main rejects unsigned commits; explain what a signature does and does not prove.
+
+---
+
+Goal: CI fails on Linux with "/usr/bin/env: 'bash\r': No such file or directory" but the script runs fine on my machine.
+Context: scripts/migrate.sh was last edited by a teammate on Windows. The repo has no .gitattributes. Some other files (.bat) must keep CRLF.
+Acceptance: the immediate fix, a repo-level rule so it cannot happen again for shell scripts while .bat files keep CRLF, and the command that renormalizes files already committed.
+
+---
+
+Goal: Our CI checkout keeps failing on the vendored proto submodule. Decide whether to fix the submodule setup or replace it.
+Context: Error in CI: fatal: remote error: upload-pack: not our ref 7be1c0d... ; fatal: Fetched in submodule path 'proto', but it did not contain 7be1c0d. The proto repo had a force-push last week. Three services consume the protos.
+Acceptance: why the error happens, how to fix it now, and a comparison with alternatives (published artifact, subtree, Buf registry) for three consumers.
+
+---
+
+Goal: Derive the build version from git tags in CI.
+Context: Tags look like v4.1.0, v4.1.1. CI builds every commit on main and needs versions like 4.1.1-12-g3f2a1b0 between releases, and exactly 4.1.1 on the tagged commit. The CI checkout is shallow and in detached HEAD. Some tags were created as lightweight tags by mistake.
+Acceptance: the git command, the CI checkout settings it needs, and why lightweight tags give surprising results.
+
+---
+
+Goal: We keep leaking API keys into commits. Set up a check that catches them before they reach GitHub.
+Context: Mixed team on macOS and Linux, repo has Java, TypeScript and Terraform. People sometimes use --no-verify when a hook is slow.
+Acceptance: a client-side hook that runs fast, a server-side or CI check that cannot be skipped, and a policy line on --no-verify; explain why the hook alone is not enough.
+
+---
+
+Goal: Resolve a conflict in pnpm-lock.yaml after rebasing.
+Context: Both main and my branch added dependencies. The conflict markers are spread over 300 lines of the lockfile. package.json merged cleanly.
+Acceptance: the lockfile regenerated correctly instead of hand-merged, no unintended dependency upgrades, and a way to make this less painful next time.
+
+---
+
+Goal: I committed three commits directly to my local main by mistake. They should have been on a branch. Nothing is pushed yet.
+Context: git status says "Your branch is ahead of 'origin/main' by 3 commits."
+Acceptance: the three commits end up on a new branch feat/audit-log, local main matches origin/main again, nothing lost.
+
+---
+
+Goal: I pushed a commit with a broken config to the shared develop branch ten minutes ago. Fix it the right way.
+Context: Two other people have pulled develop since. The commit is the latest one on develop.
+Acceptance: develop is fixed without rewriting shared history; explain when a force push would have been acceptable instead.
+
+---
+
+Goal: Commit only part of my changes: the bug fix, not the debug logging I added in the same files.
+Context: UserService.java and TenantFilter.java each have both the fix and several log.debug lines I want to keep locally for now.
+Acceptance: one commit with only the fix, debug lines still in my working tree, and how to check exactly what is staged before committing.
+
+---
+
+Goal: git status takes 4 seconds and git log feels sluggish in our main repo. Speed it up.
+Context: 450k commits, 120k files, macOS laptops. Nobody has ever run maintenance on their clones.
+Acceptance: concrete settings and commands, which ones help status versus log/blame, and how to keep it fast without people remembering to run anything.
+
+---
+
+Goal: Make sure every change under services/payments gets a review from the payments team, automatically.
+Context: GitHub repository, monorepo. Payments team is @acme/payments; platform team owns .github/ and infra/. Today reviews are requested by hand and get forgotten.
+Acceptance: a working CODEOWNERS file, the branch protection setting that makes it binding, and the common mistake that makes a CODEOWNERS rule silently not apply.
+
+---
+
+Goal: Review this pull request opened by our coding agent.
+Context: Title: "Fix flaky OrderServiceTest". Diff summary: OrderServiceTest.java: -86 lines; OrderService.java: +3 -1 (timeout raised from 2s to 30s); build.gradle: test { retries = 3 } added. The PR description says "All tests pass now."
+Acceptance: what the PR actually does versus what it claims, what to ask for, and what a real fix for a flaky test would have looked like.
+
+---
+
+Goal: We squash-merge PRs and lose credit for people who paired on the work. Fix that.
+Context: Pairs often commit from one laptop. After squash, only the PR author shows up in history and in GitHub contributor stats.
+Acceptance: the trailer format that GitHub recognizes, where to put it so it survives a squash merge, and how to make it easy to add.
+
+---
+
+Goal: Explain this error and fix it: fatal: refusing to merge unrelated histories
+Context: I created a repo on GitHub with a README and a license, then tried to push my existing local project to it: git remote add origin ...; git pull origin main.
+Acceptance: why git refuses, the fix for this case, and why the flag that bypasses it is dangerous in other situations.
+
+---
+
+Goal: Generate the changelog for release 4.2.0 from the commits since 4.1.0.
+Context: Conventional Commits are used, mostly consistently. Tags v4.1.0 and v4.2.0-rc.1 exist. The changelog follows Keep a Changelog.
+Acceptance: the git command that lists the right commits (merges excluded, rc tag handled), grouped into Added / Changed / Fixed / Security, with breaking changes called out.
+
+---
+
+Goal: Review this pagination change; something feels off.
+Context: - var page = repo.findPage(tenant, cursor, limit);
+- return new Page(page, page.size() == limit ? encode(page.getLast()) : null);
++ var page = repo.findPage(tenant, cursor, limit + 1);
++ var hasMore = page.size() > limit;
++ return new Page(page, hasMore ? encode(page.get(limit)) : null);
+Acceptance: find the bug, explain what the client receives now and what would go wrong if someone only trimmed the list, and give the corrected lines plus the test that would have caught it.
+Reference: the look-ahead row leaks: every page returns limit+1 rows. Trimming the list but keeping encode(page.get(limit)) would then skip that row forever, since the next page starts after it. Return page.subList(0, limit) and encode page.get(limit - 1); test that concatenated pages equal the full ordered result with page size exactly limit.
+
+---
+
+Goal: Stash my work including new files, pull, and get my work back.
+Context: I have modified files and two new untracked files. git stash followed by git pull, then git stash pop gave conflicts in one file and my new files were never stashed.
+Acceptance: the correct stash command for next time, how to recover from the current state, and what git stash pop does when it conflicts (is the stash dropped?).
+
+---
+
+Goal: List the remote branches that are already merged into main and have had no commits for 90 days, so we can delete them.
+Context: GitHub repo with ~400 remote branches. Some release/* branches must never be deleted.
+Acceptance: a command that produces the list with last commit date and author, excludes protected patterns, and a separate, deliberate step that deletes them.

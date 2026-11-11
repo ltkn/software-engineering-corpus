@@ -48,6 +48,8 @@ BANDS = {
     "fenced 23, 25, 26": (["23", "25", "26"], 6.0),
     "adversarial-hygiene 27, 28": (["27", "28"], 3.0),
     "stack total 06-21 plus 31": ([f"0{i}" for i in range(6, 10)] + [str(i) for i in range(10, 22)] + ["31"], 66.0),
+    # Task-first engineering-workflow files (PREP_PLAN.md §14), added 2026-11-11.
+    "workflow 37-39": (["37", "38", "39"], 9.0),
 }
 
 KNOWN_BAND_GAPS = {

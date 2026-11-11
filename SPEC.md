@@ -795,6 +795,67 @@ Boundaries: the probe that finds the violation is 08, the mechanism is 06, the e
 
 ---
 
+## Scope: 37-git-code-review.txt
+
+Purpose: how an engineer and a coding agent move code through git and review, end to end — history surgery, recovery, archaeology, and reviews that catch real defects. Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
+
+Content, 5 kinds:
+
+1. History editing — rebase with conflicts (including migration-number clashes), autosquash, stacked branches with update-refs, cherry-pick backports with trails, merge reverts and re-merges.
+2. Recovery and hygiene — reflog recovery, misplaced commits, shared-branch fixes without force pushes, leaked secrets (rotate first, then filter-repo), large blobs, line endings, lockfile conflicts.
+3. Archaeology and scale — bisect run with skip codes, log -L and pickaxe, blame ignore-revs, worktrees, sparse/partial clones, rerere, maintenance.
+4. Review — diff reviews that find security, concurrency, migration and pagination defects; review tone; oversized PRs; agent-authored PRs; range-diff after force pushes.
+5. Team workflow — merge policy and queues, signing, CODEOWNERS, commit messages, PR descriptions, changelogs, co-author trailers.
+
+Shape per block: Goal → Context (pasted log, diff, error or situation) → Acceptance (what done looks like) → optional Reference (key point of a good answer; leakage check only, never calibration text).
+
+Budget: task-first, short. Bundle share 3.0. est ~3.8k tokens, 42 blocks (2026-11-11).
+
+Boundaries: CI pipelines are 39; shell tooling is 38; secret handling policy is 09 (37 covers the git mechanics of a leak).
+
+---
+
+## Scope: 38-shell-cli.txt
+
+Purpose: the shell an engineer and an agent actually run — scripts that fail loudly and clean up, text and JSON processing, and the portability traps between GNU, BSD and POSIX sh.
+
+Content, 5 kinds:
+
+1. Robust bash — strict mode and its traps (set -e with grep, SIGPIPE under pipefail, masked exit codes in local), ERR/EXIT traps, arrays for arguments, getopts, safe .env parsing, locking.
+2. Text and JSON — jq over kubectl and log streams, deep merges, awk over access logs, quoted CSV, process substitution, ripgrep.
+3. Files and hosts — find/xargs with odd names, parallel checks, rsync slash semantics, SSH fan-out with host-key checking, disk-full diagnosis.
+4. Portability — BSD vs GNU sed/date/stat, Alpine /bin/sh, Makefile tabs, heredoc quoting.
+5. Operations — cron to systemd timers, readiness waits, curl retries and timing, shellcheck findings, bats tests, when to leave bash for Python.
+
+Shape per block: Goal → Context (the script, command or output) → Acceptance → optional Reference.
+
+Budget: task-first, short. Bundle share 3.0. est ~2.9k tokens, 37 blocks (2026-11-11).
+
+Boundaries: Linux service configuration is 21; git commands are 37; CI YAML is 39.
+
+---
+
+## Scope: 39-cicd-iac.txt
+
+Purpose: delivery from commit to cluster — CI pipelines on GitHub Actions, Jenkins and GitLab, infrastructure as code with Terraform/OpenTofu, packaging with Helm and Kustomize, and the Kubernetes settings that decide whether a deploy is safe.
+
+Content, 6 kinds:
+
+1. GitHub Actions — least-privilege permissions, OIDC to cloud, concurrency, reusable workflows, matrices, environments and approvals, pull_request_target and script-injection risks, pipeline speed.
+2. Jenkins — declarative pipelines with Kubernetes pod agents, credentials without Groovy interpolation, shared libraries, Jenkinsfile linting, parallel stages, input outside agents, configuration as code, sandbox approvals, agent disk.
+3. GitLab CI — rules, needs, artifacts, duplicate pipelines.
+4. Terraform/OpenTofu — remote state with native locking, moved/import/check blocks, count vs for_each, plan-then-apply, drift detection, lock-file platforms, secrets in state, splitting root modules.
+5. Helm and Kustomize — values schemas, offline validation, stuck releases, migration hooks, overlays.
+6. Kubernetes and delivery — probes for slow-starting Spring Boot, JVM memory in containers, PDBs and spread, NetworkPolicy, RBAC for CI, HPA behavior, pod hardening, graceful shutdown, Gateway API, canaries with Argo Rollouts, image digests.
+
+Shape per block: Goal → Context (workflow, Jenkinsfile, HCL, manifest or error) → Acceptance → optional Reference.
+
+Budget: task-first, short. Bundle share 3.0. est ~3.9k tokens, 44 blocks (2026-11-11).
+
+Boundaries: Linux host configuration is 21; observability stacks are 20; supply-chain signing and SBOMs are 46; architecture decisions are 19.
+
+---
+
 ## Status
 Reasoning pass (2026-10-07), measured before and after by `scripts/reasoning_report.py`, which is now the instrument for this claim. Before, at `6098af6`: of 1410 blocks, 548 carried at least one reasoning mark (a killed hypothesis, competing hypotheses held against each other, a test chosen for its differing predictions, a named dead end, a sanity check, stated uncertainty, a question that had to go to a person) but only **4 carried three or more**, and 21 blocks exceeded 2000 characters. The corpus therefore showed the *result* of reasoning in 39% of blocks and the *process* in 0.3%, which is the shape that survives badly: the vocabulary is there, the trace is not, and a model at 4 bits keeps the fluent conclusion and drops the search.
 

@@ -230,6 +230,17 @@ def r_fixture(f: dict[str, Field], raw: str, spec: "Spec") -> Messages:
     return user(text)
 
 
+def r_task(f: dict[str, Field], raw: str, spec: "Spec") -> Messages:
+    """Task-first blocks (files 32+): Goal / Context / Acceptance."""
+    g, c, a = f.get("Goal"), f.get("Context"), f.get("Acceptance")
+    text = g.value if g else raw
+    if c:
+        text += f"\n\nContext: {c.value}"
+    if a:
+        text += f"\n\nDone when: {a.value}"
+    return user(text)
+
+
 def r_legacy(f: dict[str, Field], raw: str, spec: "Spec") -> Messages:
     leg = f.get("Legacy")
     return user(with_stack(
@@ -252,6 +263,7 @@ class Spec:
     cut_extra: str | None = None    # extra answer-start regex (e.g. 'Step 1.')
     starts: tuple[str, ...] = ()    # mixed-passage: labels that open a prompt block
     hint: str | None = None         # extra framing for derive
+    cut_optional: bool = False      # no answer label = the whole block is the prompt
 
 
 GOAL_CUT = ("Wiring", "Snippet", "Pattern", "Why", "Fix", "Config fragment", "Config")
@@ -297,6 +309,10 @@ SPECS: dict[str, Spec] = {
     "29-llm-integration": Spec("rule", ("Recommendation with conditions", "Recommendation"),
                                ("Decision context", "Options"), r_decision),
     "30-experimentation-and-flagging": Spec("rule", ("Minimal example", "Example"), ("What to test",), r_test),
+    # Task-first files (PREP_PLAN.md §3, §14): everything before Reference is the prompt.
+    "37-git-code-review": Spec("rule", ("Reference",), ("Goal", "Context", "Acceptance"), r_task, cut_optional=True),
+    "38-shell-cli": Spec("rule", ("Reference",), ("Goal", "Context", "Acceptance"), r_task, cut_optional=True),
+    "39-cicd-iac": Spec("rule", ("Reference",), ("Goal", "Context", "Acceptance"), r_task, cut_optional=True),
     "31-offensive-security": Spec(
         "derive", ctx="offensive security",
         hint="The developer is running an authorized penetration test of their own organisation's staging estate.",
@@ -342,6 +358,8 @@ def classify(stem: str, block: str, spec: Spec):
 
 def _rule(block: str, spec: Spec, reason: str):
     parts = cut(block, spec.cut, spec.cut_extra)
+    if parts is None and spec.cut_optional:
+        parts = (block, "")
     if parts is None:
         return "unaccounted", None, f"no answer label among {list(spec.cut)}"
     prompt_raw, _answer = parts

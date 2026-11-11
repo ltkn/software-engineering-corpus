@@ -1,0 +1,290 @@
+Goal: Write the GitHub Actions CI workflow for users-svc: build, test and publish the image, with least-privilege permissions.
+Context: Java 25, Maven wrapper, Testcontainers integration tests (need Docker), image pushed to GHCR on main only. PRs from forks must run tests but must never get push credentials.
+Acceptance: workflow-level permissions read-only with write granted only to the publishing job, Maven dependency cache, tests on every PR, image push only on main, actions pinned to full commit SHAs.
+
+---
+
+Goal: Our deploy workflow uses long-lived AWS access keys stored as repository secrets. Replace them with short-lived credentials.
+Context: GitHub Actions deploys to AWS (ECR push, EKS update). Keys were created two years ago and nobody knows who else uses them.
+Acceptance: OIDC federation with an IAM role whose trust policy is limited to this repo and the main branch (and the production environment), the workflow permission it needs, the configure step, and the plan for retiring the old keys.
+Reference: permissions id-token: write; IAM OIDC provider token.actions.githubusercontent.com; trust condition on aud sts.amazonaws.com and sub repo:acme/users-svc:environment:production (or ref:refs/heads/main); aws-actions/configure-aws-credentials with role-to-assume; then deactivate, watch CloudTrail for use, delete the keys.
+
+---
+
+Goal: Two pushes to main a minute apart deployed out of order and production ran the older build for an hour. Prevent it.
+Context: deploy.yml runs on push to main, builds (6 min) then deploys (3 min). Nothing coordinates parallel runs.
+Acceptance: deploys to the same environment never run at the same time and an older run cannot deploy after a newer one; explain the choice between cancelling in-progress runs and queueing them.
+
+---
+
+Goal: We copy the same 120-line build job into nine service repos. Make it reusable.
+Context: All repos are Maven services with the same build, test, image and scan steps; differences are the Java version and the image name. Secrets for the registry exist at organization level.
+Acceptance: a reusable workflow with typed inputs, how callers pass secrets, how callers pin a version of it, and what can and cannot be passed between caller and callee.
+
+---
+
+Goal: Run the test suite on Java 21 and 25, and on Postgres 17 and 18, but skip the combination we don't support.
+Context: Java 21 with Postgres 17 is not supported. Integration tests take 12 minutes, so the matrix should not wait for all jobs when one fails early... but we want all results on main.
+Acceptance: the matrix with the exclusion, fail-fast off on main and on for PRs, and readable job names.
+
+---
+
+Goal: Find the security problem in this workflow and fix it.
+Context: on: pull_request_target
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - run: echo "Checking ${{ github.event.pull_request.title }}"
+      - run: ./scripts/label-pr.sh
+        env:
+          GH_TOKEN: ${{ secrets.LABEL_BOT_TOKEN }}
+Acceptance: both vulnerabilities named with how an outside contributor would exploit them, and a safe version that still labels PRs from forks.
+
+---
+
+Goal: Add a manual approval before production deploys, and limit who can approve.
+Context: GitHub Actions; staging deploys automatically after merge; production should wait for one person from the release team. Production secrets must not be readable by the staging job.
+Acceptance: environments with protection rules, environment-scoped secrets, the workflow wiring, and what happens to waiting runs after the approval timeout.
+
+---
+
+Goal: Our CI takes 22 minutes. Make it faster without dropping tests.
+Context: Steps: checkout (1 min), Maven dependency download (4 min), compile (2 min), unit tests (3 min), Testcontainers integration tests (9 min, one job), Docker build (3 min, no layer cache).
+Acceptance: a prioritized list of changes with expected savings (dependency and Docker layer caching, splitting integration tests, test sharding, skipping unaffected work), and how to measure before and after.
+
+---
+
+Goal: Write a declarative Jenkinsfile for users-svc.
+Context: Jenkins with the Kubernetes plugin. Stages: build and unit test, integration tests (need Docker), image build and push (only on main), deploy to staging (only on main). Test reports must be published even when tests fail. Builds hang sometimes.
+Acceptance: agent as a pod template with a Maven and a Docker-capable container, when conditions for main, a global timeout, junit publishing in post always, and no concurrent builds of the same branch.
+
+---
+
+Goal: Our Jenkinsfile prints a warning about secrets and string interpolation. Explain it and fix the pipeline.
+Context: withCredentials([string(credentialsId: 'registry-token', variable: 'TOKEN')]) {
+    sh "docker login -u ci -p ${TOKEN} registry.acme.internal"
+}
+Jenkins says: "A secret was passed to "sh" using Groovy String interpolation, which is insecure."
+Acceptance: why Groovy interpolation leaks the secret (process listing, build log, replay), the corrected step using shell variables, and how to avoid putting the token on the command line at all.
+
+---
+
+Goal: Move the shared build steps of our 14 Jenkinsfiles into a shared library.
+Context: Each Jenkinsfile repeats the same Maven build, Sonar scan and image push with small differences. Teams change their copies and drift.
+Acceptance: library layout (vars/ and src/), a step like acmeMavenPipeline(imageName: 'users-svc') callable from a five-line Jenkinsfile, how teams pin a library version, and how library changes are tested before release.
+
+---
+
+Goal: Validate Jenkinsfiles in the pull request, before they reach Jenkins.
+Context: People push Jenkinsfile edits and only discover syntax errors when the multibranch job runs. Jenkins is reachable from CI with an API token.
+Acceptance: a check that sends the Jenkinsfile to Jenkins' declarative linter and fails the PR on errors, plus what the linter does not catch (shared library steps, runtime credentials).
+
+---
+
+Goal: Run the three test suites in parallel in Jenkins and stop the others as soon as one fails.
+Context: Unit (3 min), integration (9 min), contract tests (5 min). Each needs the build output from the build stage. Today they run sequentially.
+Acceptance: a parallel block with failFast, the build output shared between stages correctly (stash/unstash or a workspace approach), and test reports from all branches published.
+
+---
+
+Goal: Add a production approval step in Jenkins that doesn't hold an executor while waiting.
+Context: The pipeline waits on input "Deploy to production?" for hours, and the pod agent stays allocated the whole time. Only members of the release group may approve.
+Acceptance: the input outside any agent block, a timeout that aborts cleanly, submitter restricted to the group, and the approver's name recorded in the build.
+
+---
+
+Goal: Our Jenkins controller is configured by hand through the UI and nobody can rebuild it. Put its configuration in code.
+Context: Settings that matter: security realm (OIDC), authorization matrix, Kubernetes cloud, credentials (read from a secrets manager, not stored in git), shared library definition, global tool versions.
+Acceptance: a Jenkins Configuration as Code YAML covering those settings with secrets referenced, not inlined; how to export the current config as a starting point; how to apply changes and roll back.
+
+---
+
+Goal: Explain this Jenkins failure and fix it.
+Context: Build log:
+org.jenkinsci.plugins.scriptsecurity.sandbox.RejectedAccessException: Scripts not permitted to use method groovy.json.JsonSlurperClassic parseText java.lang.String
+The Jenkinsfile parses a JSON response from an internal API with new JsonSlurperClassic().parseText(response).
+Acceptance: why the sandbox blocks it, the options (script approval, a pipeline step that parses JSON, moving the logic to a trusted shared library), and which one to prefer for security.
+
+---
+
+Goal: Our Jenkins agents run out of disk and builds fail at random with "No space left on device".
+Context: Static VM agents, Docker builds, workspaces never cleaned, Maven repository per workspace.
+Acceptance: immediate cleanup, pipeline changes (workspace cleanup in post, shared Maven cache), Docker pruning policy, and the longer-term move to ephemeral Kubernetes agents with what it costs in build time.
+
+---
+
+Goal: Convert this GitLab CI job so it only runs when relevant files change, and only after the build job.
+Context: test:
+  stage: test
+  script: ./mvnw -q verify
+It runs for documentation-only changes and waits for unrelated stages.
+Acceptance: rules with changes, needs for the dependency, artifacts passed from build, and the rules gotcha on merge request versus branch pipelines (duplicate pipelines).
+
+---
+
+Goal: Set up the Terraform remote state for our AWS infrastructure with locking.
+Context: Three environments (dev, staging, prod), one AWS account each, a team of six running plan locally and CI running apply. Today state is a local file in someone's laptop.
+Acceptance: an S3 backend per environment with encryption, versioning and native lock files (no DynamoDB table needed on current Terraform and OpenTofu), the IAM permissions it needs, and the migration of the existing local state.
+Reference: backend "s3" { bucket, key, region, encrypt = true, use_lockfile = true }; bucket versioning on; terraform init -migrate-state; restrict state bucket access (it contains secrets).
+
+---
+
+Goal: We renamed a Terraform resource and plan now wants to destroy and recreate our production database. Stop that.
+Context: Changed resource "aws_db_instance" "main" to resource "aws_db_instance" "users" for clarity. Plan: 1 to add, 0 to change, 1 to destroy.
+Acceptance: the declarative way to tell Terraform it is the same object, the plan you should see afterwards, and a safeguard so a database can never be destroyed by an innocent-looking plan again.
+Reference: moved { from = aws_db_instance.main  to = aws_db_instance.users }; plan shows a move, 0 to destroy; lifecycle { prevent_destroy = true } plus deletion_protection on the instance.
+
+---
+
+Goal: Bring existing hand-made AWS resources under Terraform without recreating them.
+Context: An S3 bucket acme-invoices and its bucket policy were created in the console two years ago. We now want them in our Terraform code.
+Acceptance: import blocks in configuration (not the one-off CLI command), generating the starting configuration, reviewing the plan until it shows no changes, then removing the import blocks.
+
+---
+
+Goal: Explain why adding one subnet to this list makes Terraform want to recreate three others, and fix it.
+Context: resource "aws_subnet" "private" {
+  count      = length(var.private_cidrs)
+  cidr_block = var.private_cidrs[count.index]
+  ...
+}
+We inserted a new CIDR in the middle of the list.
+Acceptance: why count indexes cause the churn, the version with for_each keyed by something stable, and how to move existing state to the new addresses without downtime.
+
+---
+
+Goal: Make our CI apply exactly the plan that was reviewed, nothing else.
+Context: Today the PR shows a plan, then after merge CI runs terraform apply -auto-approve, which recalculates and once applied a change nobody had seen.
+Acceptance: plan saved as an artifact in the PR, the same plan file applied after approval, what happens when the state changed in between, and how to show the plan readably in the PR.
+
+---
+
+Goal: Detect drift: tell us every morning when someone changed infrastructure by hand.
+Context: Terraform for three environments. People sometimes "quick-fix" security groups in the console during incidents.
+Acceptance: a scheduled CI job that runs plan without applying, uses the exit code to tell no-change from drift from error, and posts the drifted resources somewhere visible; explain refresh-only plans.
+Reference: terraform plan -detailed-exitcode (0 = no changes, 1 = error, 2 = changes); -refresh-only to see drift without config changes; report and never auto-apply.
+
+---
+
+Goal: terraform init works on my Mac but fails in CI with a checksum error for the AWS provider.
+Context: Error: Failed to install provider ... the local package for registry.terraform.io/hashicorp/aws doesn't match any of the checksums previously recorded in the dependency lock file. CI runs on linux_amd64; I ran init on darwin_arm64 and committed .terraform.lock.hcl.
+Acceptance: why the lock file only has hashes for my platform, the command that records hashes for all platforms we use, and the policy for updating provider versions.
+
+---
+
+Goal: Store the database password for our RDS instance without it ending up in plaintext in Terraform state.
+Context: Today: resource "aws_db_instance" "users" { password = var.db_password }. The state bucket is readable by the whole platform team.
+Acceptance: what currently leaks and where, the options (provider-managed master password in a secrets manager, ephemeral or write-only values on current versions, OpenTofu state encryption), and the recommended setup with its trade-offs.
+
+---
+
+Goal: Split our 4,000-resource Terraform root module; plan takes 11 minutes and one change can touch everything.
+Context: One root module holds networking, EKS, databases, DNS and IAM for production. Several teams edit it.
+Acceptance: a split by lifecycle and ownership, how the new roots read each other's outputs, how to move resources between states without recreating them, and the order of the migration.
+
+---
+
+Goal: Add a check to our Terraform that warns when the TLS certificate of the public endpoint expires within 30 days.
+Context: Terraform manages the load balancer and the ACM certificate. We want the warning in every plan, without failing the plan.
+Acceptance: a check block with a scoped data source and an assertion, what the output looks like in plan, and how this differs from a variable validation or a precondition.
+
+---
+
+Goal: Write the Helm chart values schema so bad values fail before anything reaches the cluster.
+Context: Our chart takes image.tag, replicaCount, resources, and an ingress.hosts list. Last week someone set replicaCount: "3" (a string) and another time forgot image.tag, which deployed :latest.
+Acceptance: a values.schema.json that requires image.tag, types replicaCount as an integer with bounds, validates the hosts list, and where helm enforces it (install, upgrade, template, lint).
+
+---
+
+Goal: Validate our Helm charts and Kustomize overlays in CI without a cluster.
+Context: Charts under deploy/charts, overlays under deploy/overlays/{dev,staging,prod}. We have shipped manifests with wrong apiVersions and typos in field names before.
+Acceptance: render every chart and overlay, validate the output against Kubernetes schemas for our cluster version (CRDs included), and fail the PR with a readable message.
+
+---
+
+Goal: Our Helm upgrade failed halfway and the release is stuck in pending-upgrade. Recover, then make upgrades safer.
+Context: Error: UPGRADE FAILED: another operation (install/upgrade/rollback) is in progress. The previous helm upgrade was killed when the CI runner timed out.
+Acceptance: how to inspect the release history and recover safely, and the upgrade flags that roll back automatically on failure and wait for readiness.
+
+---
+
+Goal: Run database migrations as part of the Helm release, safely.
+Context: Today migrations run on application startup in every pod, and three pods race on startup. We want a single migration run before the new pods start.
+Acceptance: a pre-upgrade hook Job with the right hook annotations and delete policy, what happens to the release if the migration fails, and why the migration must be backward-compatible with the old pods still running.
+
+---
+
+Goal: Structure our Kustomize setup for three environments without copying manifests.
+Context: Base Deployment, Service and ConfigMap for users-svc. Differences: replicas, resource limits, image tag, one extra env variable in prod, and a NetworkPolicy only in prod.
+Acceptance: base plus three overlays with patches, the image tag set per overlay without editing YAML by hand in CI, and how to see the final rendered manifest for prod.
+
+---
+
+Goal: Configure the Kubernetes probes for users-svc correctly.
+Context: Spring Boot 4.1 with Actuator. The app takes 40-70 seconds to start (Flyway plus cache warmup). Today the liveness probe hits /actuator/health, kills pods during startup, and once restarted every pod at the same time when the database had a hiccup.
+Acceptance: startup, readiness and liveness probes with the Actuator health groups they should use, timings that survive a slow start, and why liveness must not depend on the database.
+Reference: startupProbe on /actuator/health/liveness with failureThreshold x periodSeconds above the slowest start; readiness on /actuator/health/readiness (may include DB); liveness on /actuator/health/liveness only (no external dependencies), otherwise a DB blip restarts the fleet.
+
+---
+
+Goal: Set CPU and memory requests and limits for our Java service and stop the OOMKills.
+Context: Pods have limits.memory: 1Gi and get OOMKilled under load; the JVM runs with -Xmx1g. CPU limit is 500m and p99 latency spikes during GC.
+Acceptance: explain why -Xmx equal to the container limit fails, JVM flags that size the heap from the container, a memory budget (heap, metaspace, threads, direct buffers), and whether to keep a CPU limit at all.
+
+---
+
+Goal: Make sure node drains during cluster upgrades never take users-svc fully down.
+Context: 3 replicas, all sometimes scheduled on the same node. Cluster upgrades drain nodes one by one.
+Acceptance: a PodDisruptionBudget with the right setting for 3 replicas, topology spread so replicas land on different nodes and zones, and what happens to a drain when the PDB cannot be satisfied.
+
+---
+
+Goal: Lock down network traffic in the shop namespace.
+Context: Pods: web (Vue SPA behind ingress), users-svc, orders-svc, and a Postgres outside the cluster at 10.20.0.15:5432. Only web is reachable from the ingress controller; users-svc and orders-svc talk to each other and to Postgres; everything needs DNS.
+Acceptance: default-deny ingress and egress, then explicit allow policies, the DNS rule people forget, and a way to test that a denied connection is really denied.
+
+---
+
+Goal: Give our CI deploy job the minimum Kubernetes permissions it needs.
+Context: Today CI uses a kubeconfig with cluster-admin. The job runs helm upgrade for users-svc in namespace shop: it creates and updates Deployments, Services, ConfigMaps, Secrets, Jobs and HPAs there, and reads Pods for rollout status.
+Acceptance: a ServiceAccount, a namespaced Role with only those verbs and resources, the RoleBinding, and how to verify with kubectl auth can-i what the account can and cannot do.
+
+---
+
+Goal: Autoscale users-svc on load without flapping.
+Context: Traffic doubles at 9:00 and drops at 18:00. CPU-based HPA scales up late and then oscillates between 4 and 9 replicas every few minutes. Pods take 60 seconds to become ready.
+Acceptance: an HPA with the right target, scale-up and scale-down behavior policies with stabilization windows, and when a request-rate metric would be a better signal than CPU.
+
+---
+
+Goal: Harden the pod spec of users-svc.
+Context: The container runs as root, the filesystem is writable, all Linux capabilities are kept, and the service account token is mounted though the app never calls the API server. The app writes temp files to /tmp.
+Acceptance: securityContext settings at pod and container level, an emptyDir for /tmp, token automount off, the namespace Pod Security level this passes, and how to check the app still starts.
+
+---
+
+Goal: Requests fail with 502 for a few seconds on every deploy. Make rolling updates graceful.
+Context: Spring Boot 4.1 behind an ingress. On rollout, old pods receive SIGTERM and stop at once; the ingress keeps sending them traffic for a moment.
+Acceptance: graceful shutdown in Spring, a preStop delay so endpoints are removed before the app stops, terminationGracePeriodSeconds sized for both, and how to verify there are zero errors during a rollout.
+
+---
+
+Goal: Move our ingress rules for users-svc to the Gateway API.
+Context: Today an Ingress routes /api/users to users-svc:8080 and /api/orders to orders-svc:8080 on shop.acme.example, with TLS. The platform team has installed a Gateway named public in namespace infra.
+Acceptance: HTTPRoute resources attached to the existing Gateway, path matching equivalent to the old Ingress, how cross-namespace attachment is permitted, and how to test before deleting the Ingress.
+
+---
+
+Goal: Replace our all-at-once deploy with a canary that rolls back automatically on errors.
+Context: Kubernetes with Argo Rollouts installed and Prometheus scraping http_server_requests_seconds_count with a status label. Steps wanted: 10% for 5 minutes, 50% for 10 minutes, then 100%. Roll back if the 5xx rate of the canary exceeds 1%.
+Acceptance: the Rollout spec with steps, an AnalysisTemplate with the Prometheus query, how the analysis result triggers rollback, and how this differs from doing the same with Flagger.
+
+---
+
+Goal: Our image tags are mutable and staging once ran a different image than production with the same tag. Make deployments reproducible.
+Context: CI builds users-svc:4.1.3 and sometimes rebuilds the same tag after a fix. Deployments reference the tag.
+Acceptance: immutable tags in the registry, deployments pinned by digest with the human-readable tag kept for reference, and how the digest flows from CI to the Helm values.

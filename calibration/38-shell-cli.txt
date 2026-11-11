@@ -1,0 +1,260 @@
+Goal: Write a bash script that dumps the users table from staging, compresses it and uploads it, and never leaves temp files or half-uploaded objects behind.
+Context: Runs from cron on a Linux box with pg_dump 18, zstd and the aws CLI. The dump is ~6 GB. If anything fails, the on-call wants a clear message in the log, not a silent partial file in the bucket.
+Acceptance: strict mode, a temp directory cleaned up on every exit path (success, error, Ctrl-C), upload to a temporary key then rename to the final key only on success, non-zero exit and one clear error line on failure.
+
+---
+
+Goal: My script stops halfway with no error message. Find out why.
+Context: #!/usr/bin/env bash
+set -euo pipefail
+count=$(grep -c "ERROR" /var/log/users-svc/app.log)
+echo "errors today: $count"
+if [ "$count" -gt 100 ]; then alert; fi
+On days with zero errors the script exits right after the grep line and prints nothing.
+Acceptance: explain exactly why set -e kills it there, fix it without dropping strict mode, and list two other everyday commands that return non-zero on "nothing found".
+
+---
+
+Goal: Explain why this pipeline exits with status 141 and fails my CI job.
+Context: set -o pipefail
+kubectl logs deploy/users-svc --since=1h | grep -i timeout | head -n 5
+The output looks fine (five lines) but the step is marked failed with exit code 141.
+Acceptance: what signal 141 is and which process got it, why pipefail surfaces it, and two correct ways to take the first five matches without failing the job.
+
+---
+
+Goal: Fix this loop; it breaks on file names with spaces.
+Context: for f in $(ls exports/*.csv); do
+  gzip "$f"
+done
+Files like "exports/orders 2026-10.csv" fail with "No such file or directory". Some file names may also contain newlines (uploaded by customers).
+Acceptance: a version that handles spaces, glob characters and newlines in names, plus the variant that works on a list coming from find across subdirectories.
+
+---
+
+Goal: Build a command's arguments conditionally without breaking on spaces or empty values.
+Context: Today the script does:
+OPTS=""
+[ -n "$PROFILE" ] && OPTS="$OPTS --profile $PROFILE"
+[ "$DRY_RUN" = 1 ] && OPTS="$OPTS --dryrun"
+aws s3 sync $OPTS "$SRC" "$DST"
+A profile name with a space broke it last week.
+Acceptance: rewritten with a bash array, correct quoting when expanding it, and works when no option is set at all (bash 3.2 on macOS included).
+
+---
+
+Goal: From kubectl's JSON, list the pods in namespace shop that restarted more than 3 times, with their restart count and the reason of the last termination.
+Context: kubectl get pods -n shop -o json. Pods have one or more containers; some never terminated so lastState is empty.
+Acceptance: one jq program that prints "pod container restarts reason" lines, handles missing fields without errors, and sorts by restarts descending.
+
+---
+
+Goal: Turn our JSON access logs into a per-route summary: request count, error count, and the slowest request.
+Context: One JSON object per line, for example:
+{"ts":"2026-11-02T09:00:01Z","route":"GET /users","status":200,"ms":41,"tenant":"acme"}
+{"ts":"2026-11-02T09:00:02Z","route":"POST /orders","status":503,"ms":1200,"tenant":"acme"}
+About 2 million lines per day; a few lines are truncated and not valid JSON.
+Acceptance: a jq command that streams the file without loading invalid lines, groups by route, and outputs TSV sorted by error count; explain how it treats the broken lines.
+
+---
+
+Goal: Merge a base JSON config with an environment override, deeply.
+Context: base.json has nested objects (db.pool.max, kafka.consumer.groupId). staging.json overrides a few nested keys and adds new ones. Arrays in the override should replace, not concatenate.
+Acceptance: a jq one-liner that deep-merges the two files, a sample output, and the one behavior of jq's merge operator that surprises people with arrays.
+
+---
+
+Goal: Sum the bytes sent per HTTP status class from an nginx access log, and show the top 10 client IPs by bytes.
+Context: Default combined log format:
+203.0.113.7 - - [02/Nov/2026:10:01:02 +0100] "GET /api/users?page=2 HTTP/2.0" 200 5123 "-" "Mozilla/5.0 ..."
+Some request lines contain spaces inside quotes (user agents), and some byte fields are "-".
+Acceptance: awk that gets the right fields despite the quoted user agent, treats "-" as 0, prints 2xx/3xx/4xx/5xx totals and the top 10 IPs.
+
+---
+
+Goal: My sed -i command works on Linux CI but fails on my Mac. Make it portable.
+Context: sed -i 's/^version=.*/version=4.2.0/' gradle.properties
+On macOS: sed: 1: "gradle.properties": invalid command code g
+Acceptance: why BSD and GNU sed differ here, a form that works on both, and when to stop using sed for this and use something else.
+
+---
+
+Goal: Find and delete log files older than 14 days that are bigger than 100 MB, safely.
+Context: Under /var/log/apps, many subdirectories, some file names have spaces. Files currently open by a running process must not be deleted mid-write. This will run nightly.
+Acceptance: a dry-run mode that only lists, the real deletion, handling of odd file names, and a note on why deleting an open log file does not free the disk space.
+
+---
+
+Goal: Health-check 300 service URLs in parallel and report which ones are failing.
+Context: urls.txt has one URL per line. Each check must time out after 5 seconds. I want at most 20 checks at a time and a summary at the end.
+Acceptance: xargs (or GNU parallel) based, correct exit status per URL, prints "OK/FAIL code url", and the overall script exits non-zero if any check failed.
+
+---
+
+Goal: Make our deploy script's curl calls robust: retry transient failures, fail on HTTP errors, and log timing.
+Context: curl -s -X POST "$API/deploys" -d @payload.json
+Today a 502 from the API is treated as success because curl exits 0, and a single network blip fails the whole deploy.
+Acceptance: the right curl flags for failing on 4xx/5xx while keeping the error body, retries with backoff that include connection errors, a total time limit, and timing output (DNS, connect, total) for the log.
+
+---
+
+Goal: Search the codebase for every place we call the old RestTemplate, excluding generated code and vendored files, and count hits per module.
+Context: Monorepo with services/*/src, build/ directories, node_modules, and a vendor/ directory. ripgrep is installed.
+Acceptance: an rg command with the right exclusions, then a per-module count sorted descending; explain why rg is skipping some files you might expect it to search.
+
+---
+
+Goal: Write a Makefile for the users-svc repo with the usual developer targets and a help target.
+Context: Targets wanted: build (./mvnw -q package), test, lint, up (docker compose up -d), down, migrate (Flyway via Maven), and help that lists targets with one-line descriptions. Some targets need several shell lines that share variables.
+Acceptance: phony targets declared, help generated from comments in the Makefile, multi-line recipes that behave as one shell, and variables overridable from the command line.
+
+---
+
+Goal: make fails with "Makefile:12: *** missing separator.  Stop." Fix it.
+Context: Lines 11-13:
+test:
+    ./mvnw -q test
+    ./scripts/coverage.sh
+The file was edited in an editor that converts tabs to spaces.
+Acceptance: the cause, the fix, an editorconfig rule so it does not recur, and the GNU make setting that allows a different recipe prefix if the team insists.
+
+---
+
+Goal: Add proper option parsing to my backup script.
+Context: Usage should be: backup.sh [-n] [-d DIR] [-k DAYS] TARGET. -n is dry run, -d the destination (default /backups), -k the retention in days (default 14). Today the script reads $1 $2 $3 positionally.
+Acceptance: getopts based, a usage message on -h or bad options, validation that -k is a number, and TARGET required after the options.
+
+---
+
+Goal: Load settings from a .env file in a bash script without executing whatever is in it.
+Context: Today we do set -a; source .env; set +a. The .env file is edited by several people and once contained a line with $(...) in a value, which ran during deploy.
+Acceptance: a parser that accepts KEY=value lines, ignores comments and blank lines, does not evaluate anything, and rejects malformed lines with the line number.
+
+---
+
+Goal: Our cron job sometimes runs twice in parallel when the previous run is slow. Prevent overlapping runs.
+Context: The job runs every 5 minutes on Linux and takes 1-12 minutes. The same script is also run by hand on macOS, where flock does not exist.
+Acceptance: a locking approach that cannot leave a stale lock after a crash on Linux, a fallback for macOS, and what the second instance should do (exit quietly or wait).
+
+---
+
+Goal: Replace this cron entry with a systemd timer.
+Context: 15 3 * * * /opt/users-svc/bin/reindex.sh >> /var/log/reindex.log 2>&1
+The server is sometimes off at 03:15 and the reindex should then run at next boot. Output should go to the journal.
+Acceptance: the .service and .timer units, the command to enable them, how to see the next run time and the last run's output, and how the missed-run behavior is configured.
+
+---
+
+Goal: Explain these shellcheck warnings and fix the code.
+Context: In deploy.sh line 8: local version=$(git describe --tags)  -> SC2155
+In deploy.sh line 14: rm -rf $BUILD_DIR/*  -> SC2086
+In deploy.sh line 20: for p in $(find . -name "*.yaml"); do  -> SC2044
+Acceptance: what each warning protects against (with the concrete failure, e.g. what rm does when BUILD_DIR is empty), and the corrected lines.
+
+---
+
+Goal: Our entrypoint script works locally but fails in the Alpine-based container.
+Context: #!/bin/sh
+if [[ "$ENV" == "prod" ]]; then
+  ARGS=(--spring.profiles.active=prod)
+fi
+exec java "${ARGS[@]}" -jar app.jar
+Error in the container: sh: [[: not found
+Acceptance: why it fails (which shell /bin/sh is there), a POSIX sh version of the same logic, and when it is reasonable to install bash in the image instead.
+
+---
+
+Goal: Generate an nginx config file from a script, with some variables expanded and some left for nginx.
+Context: The heredoc must insert $SERVER_NAME and $UPSTREAM from the script, but keep nginx variables like $host and $remote_addr literally in the output.
+Acceptance: a heredoc that does both correctly, an explanation of quoted versus unquoted delimiters, and a check (nginx -t) before the file replaces the live config.
+
+---
+
+Goal: Compare the list of users in two exports and show who was added and who was removed, without temp files.
+Context: export-old.csv and export-new.csv, header line, email in column 2, files are not sorted, ~500k lines each.
+Acceptance: a command using process substitution that prints added and removed emails, explains why sorting matters for comm, and handles the header line.
+
+---
+
+Goal: This function always reports success even when the command inside fails. Why?
+Context: get_token() {
+  local token=$(vault read -field=token secret/ci)
+  echo "$token"
+}
+token=$(get_token) || { echo "no token"; exit 1; }
+Vault was down and the script continued with an empty token.
+Acceptance: the exact reason the failure is masked, the fixed function, and a check that rejects an empty token even when the command succeeds.
+
+---
+
+Goal: When my bash script fails, print which line and which command failed.
+Context: Long provisioning script with set -euo pipefail. Today it just stops and we guess where.
+Acceptance: an ERR trap that prints the line number, the failed command and the exit code, works inside functions too, and does not fire twice.
+
+---
+
+Goal: Write tests for my shell script with bats.
+Context: scripts/rotate-keys.sh reads a JSON key list, deletes keys older than N days and prints the deleted key ids. It calls the aws CLI, which must not be called for real in tests.
+Acceptance: bats tests covering the happy path, no keys to delete, and an aws failure, with aws replaced by a stub on PATH; how to run them in CI.
+
+---
+
+Goal: Extract the third column from a CSV where some values contain commas inside quotes.
+Context: "1042","Dupont, Marie","marie@example.com","FR"
+awk -F, '{print $3}' prints Marie" for this line.
+Acceptance: why awk splitting is wrong here, a correct tool or command for quoted CSV, and how to keep it a one-liner.
+
+---
+
+Goal: Rename 4,000 invoice PDFs to a date-prefixed format, with a dry run first.
+Context: Files are named invoice_<id>.pdf; the date comes from the PDF's modification time. Target name: 2026-10-14_invoice_<id>.pdf. Two files can have the same date and id only if something is wrong, which should stop the run.
+Acceptance: a dry-run that prints old -> new, the real run, collision detection that refuses to overwrite, and portability between GNU and BSD date/stat.
+
+---
+
+Goal: Back up /srv/data to a remote host with rsync, and explain why my last run deleted things on the destination.
+Context: Last command: rsync -av --delete /srv/data backup@nas:/backups/data/
+Afterwards the destination had an extra data/data level and the old files under /backups/data were gone.
+Acceptance: what the trailing slash changes, the correct command with excludes for cache and tmp directories, a dry run, and a cheap way to verify the copy.
+
+---
+
+Goal: Run the same diagnostic command on 40 servers over SSH and collect the output per host.
+Context: hosts.txt, one hostname per line. Command: df -h / && free -m. SSH is slow to connect (~2 s per host). Host keys must be checked, not ignored.
+Acceptance: parallel execution with a per-host timeout, output saved as one file per host, connection reuse to speed up repeated runs, and no StrictHostKeyChecking=no.
+
+---
+
+Goal: Wait in a script until Postgres accepts connections, but give up after 60 seconds.
+Context: Used in CI after docker compose up -d. Today it is sleep 15, which is too short on slow runners and too long on fast ones.
+Acceptance: a loop that checks readiness the right way for Postgres (not just the TCP port), a hard timeout, and a clear failure message with the last error.
+
+---
+
+Goal: The disk on the app server is full, but du does not show where the space went.
+Context: df -h shows / at 100%, du -sh /* adds up to 40 GB on a 100 GB disk. A log file was deleted by logrotate yesterday.
+Acceptance: the likely cause, the commands to confirm it and find the process, and how to free the space without restarting the service if possible.
+
+---
+
+Goal: Generate a random 32-character password in a script for a new database user.
+Context: Current code: PASS=$(echo $RANDOM | md5sum | head -c 32). Runs on Linux and macOS.
+Acceptance: why the current approach is weak, a portable way using a proper random source, and how to pass the password to the next command without it showing up in process listings or shell history.
+
+---
+
+Goal: Find all Deployments in the cluster whose containers have no CPU or memory limits.
+Context: Many namespaces, some Deployments have several containers and init containers. kubectl and jq available.
+Acceptance: one command printing namespace, deployment and container for each missing limit, init containers included, and a note on what LimitRange would change.
+
+---
+
+Goal: Explain what this one-liner does, step by step, and whether it is safe to run.
+Context: git for-each-ref --format='%(refname:short) %(committerdate:unix)' refs/remotes/origin | awk -v cutoff=$(date -d '-90 days' +%s) '$2 < cutoff {sub("origin/","",$1); print $1}' | grep -vE '^(main|release/)' | xargs -r -n1 git push origin --delete
+Acceptance: a plain explanation of each stage, the portability problem on macOS, the risks (what it deletes that you might not want), and a safer version with a review step.
+
+---
+
+Goal: Decide whether our 350-line bash deploy script should be rewritten in Python.
+Context: It parses JSON with jq, builds Docker images, calls kubectl, retries HTTP calls, and has grown nested functions and string-built command lines. Two people understand it.
+Acceptance: concrete criteria for when bash is the wrong tool, what to keep in shell, what to move, and a migration plan that does not stop deploys.
