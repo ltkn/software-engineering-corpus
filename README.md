@@ -109,7 +109,7 @@ Follow in order, rerun earlier steps when later ones move. The steps assume the 
 
 ## oQ-T quants — one command
 
-`scripts/omlx_oqt.sh 4 v1` builds an oQ-T quant of Qwen3.8-Flash-Next on the 128 GB Mac (streamed, resumable). Setup, options and troubleshooting: **[OQT.md](OQT.md)**.
+`scripts/oqt_pipeline.sh 4 v1` runs everything on the 128 GB Mac: your local model answers the corpus prompts, the answers become the calibration text, and an oQ-T quant of Qwen3.8-Flash-Next is built from them (streamed, idempotent, resumable). Setup, watching, options and troubleshooting: **[OQT.md](OQT.md)**.
 
 ## Building oQ quants with oMLX — step order (Apple Silicon, custom corpus + Q8 N-gram)
 

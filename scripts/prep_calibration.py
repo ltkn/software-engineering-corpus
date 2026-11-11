@@ -9,6 +9,13 @@ Implements step 1 of PREP_PLAN.md (§2, §4 stages 1-3):
   derive    For knowledge-card blocks (no question in them), ask the served
             model, thinking off, to write the request a developer would send.
             Each answer passes a leakage check; rejected drafts are retried.
+  generate  Have the served model answer the prompts (thinking on, generic
+            effort levels), sampled by manifest share up to a token budget.
+            Every request is cached, so a rerun resumes exactly.
+  render    Write the kept conversations in the source model's chat template
+            (thinking included) into one calibration text file, and check
+            that every special token survives as a single token. Needs
+            `transformers`: run it with the oMLX venv python.
   all       extract, then derive.
 
 Outputs go to <out>/ (default ~/oqup/prep/<run>/):
@@ -412,7 +419,15 @@ DERIVE_SYSTEM = (
 # Per-family request settings. 'thinking_off' is merged into chat_template_kwargs.
 # Unknown families fail loudly instead of guessing (PREP_PLAN.md §4a).
 FAMILIES = {
-    "qwen": {"thinking_off": {"enable_thinking": False}},
+    "qwen": {
+        "thinking_off": {"enable_thinking": False},
+        "thinking_on": {"enable_thinking": True},
+        # Generic level -> the model's own name (Qwen3.8-Flash-Next card:
+        # low / medium / xhigh; xhigh is its single top level).
+        "effort": {"low": "low", "medium": "medium", "max": "xhigh"},
+        "sampling": {"temperature": 1.0, "top_p": 0.95, "top_k": 20},
+        "render_kwargs": {"enable_thinking": True, "preserve_thinking": True},
+    },
 }
 
 
@@ -464,6 +479,18 @@ def strip_think(text: str) -> str:
     return re.sub(r"(?s)<think>.*?</think>", "", text or "").strip()
 
 
+def chat_raw(server: str, api_key: str | None, payload: dict, timeout: float) -> dict:
+    req = urllib.request.Request(
+        server.rstrip("/") + "/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json",
+                 **({"Authorization": f"Bearer {api_key}"} if api_key else {})},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
 def chat(server: str, api_key: str | None, payload: dict, timeout: float) -> str:
     req = urllib.request.Request(
         server.rstrip("/") + "/v1/chat/completions",
@@ -511,7 +538,9 @@ def derive_one(row: dict, spec: Spec, args, fam: str, cache_dir: Path) -> dict:
             rec = {"key": key, "id": row["id"], "sha": row["sha"], "attempt": attempt,
                    "temperature": temp, "model": args.model, "prompt": text,
                    "accepted": ok, "why": why, "version": DERIVE_VERSION}
-            cpath.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
+            tmp = cpath.with_suffix(".tmp")
+            tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
+            os.replace(tmp, cpath)
         attempts.append({"attempt": attempt, "accepted": rec["accepted"], "why": rec["why"]})
         if rec["accepted"]:
             return {"id": row["id"], "status": "accepted", "prompt": rec["prompt"],
@@ -578,6 +607,317 @@ def do_derive(out: Path, args, only: set[str] | None) -> int:
 
 
 # ---------------------------------------------------------------------------
+# generate (PREP_PLAN.md §4 stages 4-5, §4a)
+# ---------------------------------------------------------------------------
+
+GENERATE_VERSION = "generate-v1"
+EFFORT_LEVELS = ("max", "medium", "low")
+
+
+def parse_effort_mix(text: str) -> list[tuple[str, float]]:
+    """'max=70,medium=15,low=15' -> cumulative thresholds."""
+    parts = []
+    for item in text.split(","):
+        name, _, val = item.partition("=")
+        name = name.strip()
+        if name not in EFFORT_LEVELS:
+            raise SystemExit(f"--effort-mix: unknown level {name!r} (use {', '.join(EFFORT_LEVELS)})")
+        parts.append((name, float(val)))
+    total = sum(v for _, v in parts)
+    if total <= 0:
+        raise SystemExit("--effort-mix must have a positive total")
+    acc, out = 0.0, []
+    for name, v in parts:
+        acc += v / total
+        out.append((name, acc))
+    return out
+
+
+def _unit(*parts) -> float:
+    """Deterministic number in [0, 1) from the given parts."""
+    h = hashlib.sha256("|".join(str(p) for p in parts).encode()).digest()
+    return int.from_bytes(h[:8], "big") / 2**64
+
+
+def plan_requests(prompts: list[dict], args) -> list[dict]:
+    """Samples per prompt from the file's manifest share, deterministic order."""
+    mix = parse_effort_mix(args.effort_mix)
+    by_file: dict[str, float] = {}
+    for p in prompts:
+        by_file[p["file"]] = float(p.get("share") or 0.0)
+    live = [v for v in by_file.values() if v > 0]
+    mean_share = sum(live) / len(live) if live else 1.0
+    items = []
+    for p in prompts:
+        share = float(p.get("share") or 0.0)
+        if share <= 0:
+            continue                      # unweighted files (29/30) are skipped
+        spp = max(1, min(args.max_samples, round(args.samples_per_prompt * share / mean_share)))
+        for k in range(spp):
+            u = _unit(args.seed, "effort", p["id"], p["sha"], k)
+            effort = next(name for name, cut in mix if u < cut)
+            items.append({"prompt": p, "sample": k, "effort": effort,
+                          "order": _unit(args.seed, "order", p["id"], p["sha"], k)})
+    items.sort(key=lambda it: it["order"])
+    return items
+
+
+def verdict(content: str, reasoning: str, finish: str | None) -> tuple[bool, str]:
+    import zlib
+
+    text = f"{reasoning}\n{content}".strip()
+    if not text:
+        return False, "empty"
+    if len(text) > 4000:
+        ratio = len(zlib.compress(text.encode("utf-8"))) / len(text.encode("utf-8"))
+        if ratio < 0.08:
+            return False, "repetition loop"
+    if len(content) < 400 and re.search(
+            r"(?i)\b(i can(no|')t (help|assist)|i'm not able to help|i won't (help|provide))", content):
+        return False, "refusal"
+    if finish == "length":
+        # Thinking that hit the token cap is still the model's own text, so it
+        # stays useful for calibration; it is kept and counted separately.
+        return True, "truncated (kept)"
+    return True, "ok"
+
+
+def generate_one(item: dict, args, fam: str, cache_dir: Path) -> dict:
+    p = item["prompt"]
+    f = FAMILIES[fam]
+    payload = {
+        "model": args.model,
+        "messages": p["messages"],
+        **f["sampling"],
+        "max_tokens": args.max_tokens,
+        "seed": int(_unit(args.seed, "seed", p["id"], item["sample"]) * 2**31),
+        "chat_template_kwargs": {**f["thinking_on"], "reasoning_effort": f["effort"][item["effort"]]},
+    }
+    key = sha(json.dumps([GENERATE_VERSION, p["sha"], p["messages"], item["sample"], payload],
+                         sort_keys=True))
+    cpath = cache_dir / f"{key}.json"
+    if cpath.exists():
+        rec = json.loads(cpath.read_text(encoding="utf-8"))
+        rec["cached"] = True
+        return rec
+    last_err = None
+    for attempt in range(3):
+        try:
+            t0 = time.time()
+            body = chat_raw(args.server, args.api_key, payload, args.timeout)
+            choice = body["choices"][0]
+            msg = choice.get("message") or {}
+            content = strip_think(msg.get("content") or "")
+            reasoning = (msg.get("reasoning_content") or "").strip()
+            if not reasoning:
+                m = re.search(r"(?s)<think>(.*?)</think>", msg.get("content") or "")
+                reasoning = m.group(1).strip() if m else ""
+            usage = body.get("usage") or {}
+            tokens = int(usage.get("completion_tokens")
+                         or (len(content) + len(reasoning)) // 4)
+            ok, why = verdict(content, reasoning, choice.get("finish_reason"))
+            rec = {"key": key, "id": p["id"], "file": p["file"], "sha": p["sha"],
+                   "sample": item["sample"], "effort": item["effort"],
+                   "model": args.model, "messages": p["messages"],
+                   "reasoning": reasoning, "content": content,
+                   "finish_reason": choice.get("finish_reason"), "tokens": tokens,
+                   "seconds": round(time.time() - t0, 2), "keep": ok, "why": why,
+                   "version": GENERATE_VERSION}
+            tmp = cpath.with_suffix(".tmp")
+            tmp.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, cpath)
+            rec["cached"] = False
+            return rec
+        except (urllib.error.URLError, TimeoutError, KeyError, ValueError, IndexError) as e:
+            last_err = e
+            time.sleep(min(30, 3 * 2 ** attempt))
+    return {"id": p["id"], "file": p["file"], "error": str(last_err), "keep": False,
+            "why": "request failed", "tokens": 0, "cached": False}
+
+
+def model_tag(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", name)
+
+
+def do_generate(out: Path, args) -> int:
+    prompts = read_jsonl(out / "prompts.jsonl")
+    if not prompts:
+        print("no prompts (run extract and derive first)", file=sys.stderr)
+        return 1
+    fam = family_of(args.model, args.family)
+    adir = out / "answers" / model_tag(args.model)
+    cache_dir = adir / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    items = plan_requests(prompts, args)
+    budget = int(args.budget_tokens)
+    print(f"generate: {len(items)} planned requests over {len({i['prompt']['id'] for i in items})} "
+          f"prompts; budget {budget:,} tokens; model {args.model}; concurrency {args.concurrency}",
+          flush=True)
+
+    results: list[dict] = []
+    tokens_done = 0
+    fresh_tokens, fresh_seconds_start = 0, None
+    failures_in_row = 0
+    t0 = time.time()
+    it = iter(items)
+    pending: dict = {}
+    pilot_reported = False
+    with cf.ThreadPoolExecutor(max_workers=args.concurrency) as ex:
+        def submit_next():
+            nonlocal fresh_seconds_start
+            if tokens_done >= budget:
+                return False
+            nxt = next(it, None)
+            if nxt is None:
+                return False
+            if fresh_seconds_start is None:
+                fresh_seconds_start = time.time()
+            pending[ex.submit(generate_one, nxt, args, fam, cache_dir)] = nxt
+            return True
+
+        for _ in range(args.concurrency):
+            if not submit_next():
+                break
+        while pending:
+            done, _ = cf.wait(list(pending), return_when=cf.FIRST_COMPLETED)
+            for fut in done:
+                pending.pop(fut)
+                rec = fut.result()
+                results.append(rec)
+                tokens_done += int(rec.get("tokens") or 0)
+                if not rec.get("cached"):
+                    fresh_tokens += int(rec.get("tokens") or 0)
+                failures_in_row = failures_in_row + 1 if rec.get("why") == "request failed" else 0
+                if failures_in_row >= 10:
+                    print("generate: 10 failed requests in a row; is the server up? "
+                          f"last error: {rec.get('error')}", file=sys.stderr, flush=True)
+                    ex.shutdown(cancel_futures=True)
+                    return 2
+                n = len(results)
+                if not pilot_reported and fresh_tokens and n >= args.pilot:
+                    rate = fresh_tokens / max(time.time() - (fresh_seconds_start or t0), 1e-6)
+                    remaining = max(budget - tokens_done, 0)
+                    print(f"generate: pilot {n} answers, {rate:.0f} tokens/s overall -> "
+                          f"about {remaining / max(rate, 1e-6) / 3600:.1f} h for the remaining "
+                          f"{remaining:,} tokens", flush=True)
+                    pilot_reported = True
+                if n % args.log_every == 0:
+                    el = time.time() - t0
+                    rate = fresh_tokens / max(time.time() - (fresh_seconds_start or t0), 1e-6)
+                    eta = max(budget - tokens_done, 0) / max(rate, 1e-6) if fresh_tokens else 0
+                    kept = sum(1 for r in results if r.get("keep"))
+                    print(f"generate: {n} answers ({kept} kept), {tokens_done:,}/{budget:,} tokens, "
+                          f"{el / 60:.0f} min elapsed, ~{eta / 60:.0f} min left", flush=True)
+                submit_next()
+
+    kept = [r for r in results if r.get("keep")]
+    write_jsonl(adir / "answers.jsonl", sorted(kept, key=lambda r: (r["id"], r["sample"])))
+    why_counts: dict[str, int] = {}
+    effort_counts: dict[str, int] = {}
+    for r in results:
+        why_counts[r["why"]] = why_counts.get(r["why"], 0) + 1
+        if r.get("keep"):
+            effort_counts[r["effort"]] = effort_counts.get(r["effort"], 0) + 1
+    by_file: dict[str, list[int]] = {}
+    for r in results:
+        acc = by_file.setdefault(r["file"], [0, 0, 0])
+        acc[0 if r.get("keep") else 1] += 1
+        acc[2] += int(r.get("tokens") or 0)
+    summary = {"model": args.model, "requests": len(results), "kept": len(kept),
+               "tokens": tokens_done, "budget": budget, "verdicts": why_counts,
+               "kept_by_effort": effort_counts,
+               "by_file": {k: {"kept": a, "dropped": b, "tokens": t} for k, (a, b, t) in sorted(by_file.items())},
+               "minutes": round((time.time() - t0) / 60, 1)}
+    (adir / "generate.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
+    print(f"generate: done — {len(kept)}/{len(results)} answers kept, {tokens_done:,} tokens, "
+          f"verdicts {why_counts} -> {adir}", flush=True)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# render (needs transformers: run with the oMLX venv python)
+# ---------------------------------------------------------------------------
+
+
+def do_render(out: Path, args) -> int:
+    try:
+        from transformers import AutoTokenizer
+    except ImportError:
+        print("render needs `transformers`: run it with the oMLX venv python", file=sys.stderr)
+        return 1
+    if not args.source:
+        print("render needs --source <source model dir> (for its tokenizer and chat template)",
+              file=sys.stderr)
+        return 1
+    adir = out / "answers" / model_tag(args.model)
+    answers = read_jsonl(adir / "answers.jsonl")
+    if not answers:
+        print(f"no kept answers in {adir} (run generate first)", file=sys.stderr)
+        return 1
+    tok = AutoTokenizer.from_pretrained(args.source)
+    if not getattr(tok, "chat_template", None):
+        print(f"{args.source} has no chat template", file=sys.stderr)
+        return 1
+    fam = family_of(args.model, args.family)
+    kwargs = FAMILIES[fam]["render_kwargs"]
+
+    def render(messages):
+        return tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=False, **kwargs)
+
+    mode = "template"
+    texts = []
+    for r in answers:
+        assistant = {"role": "assistant", "content": r["content"]}
+        if r.get("reasoning"):
+            assistant["reasoning_content"] = r["reasoning"]
+        msgs = [*r["messages"], assistant]
+        if mode == "template":
+            text = render(msgs)
+            if r.get("reasoning") and r["reasoning"][:80] not in text:
+                # This template drops reasoning_content: put the thinking in
+                # the content as <think> blocks, the format the model emits.
+                mode = "inline-think"
+        if mode == "inline-think":
+            inline = dict(assistant)
+            inline.pop("reasoning_content", None)
+            if r.get("reasoning"):
+                inline["content"] = f"<think>\n{r['reasoning']}\n</think>\n\n{r['content']}"
+            text = render([*r["messages"], inline])
+        texts.append((sha(f"{args.seed}|{r['key']}"), text))
+
+    passages = [b["text"] for b in read_jsonl(out / "blocks.jsonl") if b["mode"] == "passage"]
+    texts += [(sha(f"{args.seed}|passage|{t}"), t) for t in passages]
+    texts.sort(key=lambda x: x[0])
+    bundle = "\n".join(t for _, t in texts) + "\n"
+
+    specials = set(getattr(tok, "all_special_tokens", []) or [])
+    for t in (getattr(tok, "added_tokens_decoder", {}) or {}).values():
+        specials.add(getattr(t, "content", str(t)))
+    broken = []
+    for sp in sorted(specials):
+        if sp and sp in bundle:
+            ids = tok.encode(sp, add_special_tokens=False)
+            if len(ids) != 1:
+                broken.append((sp, ids))
+    if broken:
+        print(f"special tokens do not survive as single tokens: {broken[:5]}", file=sys.stderr)
+        return 1
+
+    path = Path(args.bundle).expanduser() if args.bundle else adir / "bundle.txt"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(bundle, encoding="utf-8")
+    os.replace(tmp, path)
+    n_tokens = len(tok(bundle, add_special_tokens=False)["input_ids"])
+    summary = {"bundle": str(path), "sha256": sha(bundle), "conversations": len(answers),
+               "passages": len(passages), "tokens": n_tokens, "mode": mode,
+               "special_tokens_checked": sorted(sp for sp in specials if sp and sp in bundle)}
+    (adir / "render.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
+    print(f"render: {len(answers)} conversations + {len(passages)} passages, {n_tokens:,} tokens, "
+          f"mode {mode} -> {path}", flush=True)
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # I/O and report
 # ---------------------------------------------------------------------------
 
@@ -626,7 +966,7 @@ def write_report(out: Path, table, problems, derive_results) -> None:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("stage", choices=["extract", "derive", "all"])
+    ap.add_argument("stage", choices=["extract", "derive", "generate", "render", "all"])
     ap.add_argument("--run", default="default", help="run name (output folder)")
     ap.add_argument("--out", help="output folder (default ~/oqup/prep/<run>)")
     ap.add_argument("--only", help="comma-separated file stems to process")
@@ -640,6 +980,19 @@ def main(argv=None) -> int:
     ap.add_argument("--timeout", type=float, default=300)
     ap.add_argument("--limit", type=int, help="derive at most N blocks (pilot)")
     ap.add_argument("--dry-run", action="store_true", help="derive: print the first request, send nothing")
+    g = ap.add_argument_group("generate / render")
+    g.add_argument("--budget-tokens", type=int, default=1_000_000,
+                   help="stop generating once this many tokens were produced (thinking included)")
+    g.add_argument("--effort-mix", default="max=70,medium=15,low=15")
+    g.add_argument("--samples-per-prompt", type=float, default=1.5,
+                   help="average answers per prompt, scaled by the file's manifest share")
+    g.add_argument("--max-samples", type=int, default=3)
+    g.add_argument("--max-tokens", type=int, default=16384, help="per answer")
+    g.add_argument("--seed", type=int, default=0)
+    g.add_argument("--pilot", type=int, default=20, help="answers before the time estimate")
+    g.add_argument("--log-every", type=int, default=25)
+    g.add_argument("--source", help="render: source model dir (tokenizer + chat template)")
+    g.add_argument("--bundle", help="render: output path (default <out>/answers/<model>/bundle.txt)")
     args = ap.parse_args(argv)
 
     out = Path(args.out).expanduser() if args.out else Path.home() / "oqup" / "prep" / args.run
@@ -654,6 +1007,16 @@ def main(argv=None) -> int:
         if not args.model:
             ap.error("derive needs --model (the served model name)")
         rc = do_derive(out, args, only)
+    if args.stage == "generate":
+        if not args.model:
+            ap.error("generate needs --model (the served model name)")
+        if args.timeout == 300:
+            args.timeout = 3600           # long thinking answers
+        rc = do_generate(out, args)
+    if args.stage == "render":
+        if not args.model:
+            ap.error("render needs --model (whose answers to render)")
+        rc = do_render(out, args)
     return rc
 
 

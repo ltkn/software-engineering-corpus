@@ -31,6 +31,7 @@
 #   NGRAM_BITS=8       n-gram table bits (2 3 4 5 6 8)
 #   PRESERVE_MTP=1     keep the MTP draft head
 #   OQ_SKIP_PPL=1      skip heldout scoring
+#   OQT_SCORE_ONLY=1   only (re)score an existing build
 #   OMLX_REPO, VENV_PY, OQUP, MODELS_OUT   paths (defaults below)
 #   --dry-run          (last argument) print the plan and write the runner only
 set -euo pipefail
@@ -101,7 +102,7 @@ BUNDLE="$OQUP/calibration-oqt-$VERSION.txt"
 if [ "$PRESERVE_MTP" = "1" ]; then MTP_PY=True; else MTP_PY=False; fi
 
 for d in "$OUT" $( [ "${OQT_COMPARE:-0}" = "1" ] && echo "$CMP_OUT" ); do
-    if [ -e "$d" ]; then
+    if [ -e "$d" ] && [ "${OQT_SCORE_ONLY:-0}" != "1" ]; then
         [ "${OQT_OVERWRITE:-0}" = "1" ] || die "$d exists. Rerun with OQT_OVERWRITE=1 to replace it (the oQ-T cache is kept, so a rerun resumes)"
     fi
 done
@@ -120,6 +121,31 @@ echo "calibration: ${CORPUS_FILE:-$CORPUS_REPO/calibration/*.txt}  ($OQ_SAMPLES 
 echo "cache      : $CACHE"
 echo "log        : $LOG"
 echo "machine    : ${ram_gb} GB RAM, ${free_gb:-?} GB free"
+
+# ---------------------------------------------------------------- heldouts
+score() { # <quant-dir> <label>
+    if [ "${OQ_SKIP_PPL:-0}" = "1" ]; then echo "heldout scoring skipped (OQ_SKIP_PPL=1)"; return 0; fi
+    local files=() p
+    for p in ${PPL_FILES:-heldout-se2.txt heldout-se.txt heldout-general.txt}; do
+        [[ "$p" == /* ]] || p="$CORPUS_REPO/eval/$p"; files+=("$p")
+    done
+    local plog="$OQUP/ppl-$MODEL_TAG-oQ${LEVEL}-$VERSION-$2.log"
+    local cmd=("$VENV_PY" "$CORPUS_REPO/scripts/ppl_heldout.py" --model "$1" --files "${files[@]}"
+               --chunk "${PPL_CHUNK:-2048}" --json "${plog%.log}.json")
+    # Reuse teacher anchors if the oQe scripts already built them for these files.
+    local anchor; anchor="$(ls -t "$OQUP"/teacher-anchors-*.npz 2>/dev/null | head -1 || true)"
+    [ -n "${PPL_TEACHER:-$anchor}" ] && cmd+=(--teacher "${PPL_TEACHER:-$anchor}")
+    say "heldout scores: $2 (keep the oMLX server stopped)"
+    if "${cmd[@]}" > "$plog" 2>&1; then cat "$plog"; else
+        echo "WARNING: scoring failed, see $plog (the quant itself is fine)" >&2; fi
+}
+if [ "${OQT_SCORE_ONLY:-0}" = "1" ]; then
+    [ -d "$OUT" ] || die "OQT_SCORE_ONLY=1 but there is no build at $OUT"
+    OQ_SKIP_PPL=0
+    score "$OUT" oqt
+    [ -d "$CMP_OUT" ] && score "$CMP_OUT" oqe-cmp
+    exit 0
+fi
 
 # ------------------------------------------------------------------- bundle
 say "calibration bundle"
@@ -237,23 +263,6 @@ if [ "${OQT_COMPARE:-0}" = "1" ]; then
         || die "comparison build failed (log: ${LOG%.log}-cmp.log)"
 fi
 
-# ---------------------------------------------------------------- heldouts
-score() { # <quant-dir> <label>
-    if [ "${OQ_SKIP_PPL:-0}" = "1" ]; then echo "heldout scoring skipped (OQ_SKIP_PPL=1)"; return 0; fi
-    local files=() p
-    for p in ${PPL_FILES:-heldout-se2.txt heldout-se.txt heldout-general.txt}; do
-        [[ "$p" == /* ]] || p="$CORPUS_REPO/eval/$p"; files+=("$p")
-    done
-    local plog="$OQUP/ppl-$MODEL_TAG-oQ${LEVEL}-$VERSION-$2.log"
-    local cmd=("$VENV_PY" "$CORPUS_REPO/scripts/ppl_heldout.py" --model "$1" --files "${files[@]}"
-               --chunk "${PPL_CHUNK:-2048}" --json "${plog%.log}.json")
-    # Reuse teacher anchors if the oQe scripts already built them for these files.
-    local anchor; anchor="$(ls -t "$OQUP"/teacher-anchors-*.npz 2>/dev/null | head -1 || true)"
-    [ -n "${PPL_TEACHER:-$anchor}" ] && cmd+=(--teacher "${PPL_TEACHER:-$anchor}")
-    say "heldout scores: $2 (keep the oMLX server stopped)"
-    if "${cmd[@]}" > "$plog" 2>&1; then cat "$plog"; else
-        echo "WARNING: scoring failed, see $plog (the quant itself is fine)" >&2; fi
-}
 score "$OUT" oqt
 [ "${OQT_COMPARE:-0}" = "1" ] && score "$CMP_OUT" oqe-cmp
 
