@@ -1,0 +1,7 @@
+{
+ "id": "rust-ring-buffer",
+ "domain": "rust",
+ "image": "oqt-agent-rust",
+ "prompt": "Implement the fixed-capacity RingBuffer in src/lib.rs (no heap growth after creation). When full, `push` must overwrite the oldest element and return it. Run `cargo test`.",
+ "check": "cargo test --offline -q"
+}

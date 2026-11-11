@@ -37,6 +37,9 @@
 #   OQT_ROUTING=0      turn off routing protection (M4)
 #   OQT_ROUTING_THRESHOLD=0.02   routing mass shift that triggers more bits
 #   OQT_ROUTING_MAX_LAYERS=0.25  at most this share of layers gets upgraded
+#   OQT_LONG_FILE=<jsonl>  whole documents for long-context windows (one {"text"} per line)
+#   OQT_LONG_SHARE=0.25    share of calibration tokens in long windows
+#   OQT_LONG_LEN=32768     long window length
 #   OMLX_REPO, VENV_PY, OQUP, MODELS_OUT   paths (defaults below)
 #   --dry-run          (last argument) print the plan and write the runner only
 set -euo pipefail
@@ -59,6 +62,10 @@ OQT_ROUTING="${OQT_ROUTING:-1}"
 OQT_ROUTING_THRESHOLD="${OQT_ROUTING_THRESHOLD:-0.02}"
 OQT_ROUTING_MAX_LAYERS="${OQT_ROUTING_MAX_LAYERS:-0.25}"
 if [ "$OQT_ROUTING" = "1" ]; then ROUTING_PY=True; else ROUTING_PY=False; fi
+OQT_LONG_SHARE="${OQT_LONG_SHARE:-0.25}"
+OQT_LONG_LEN="${OQT_LONG_LEN:-32768}"
+LONG_PY=None
+if [ -n "${OQT_LONG_FILE:-}" ] && [ -s "$OQT_LONG_FILE" ]; then LONG_PY="\"$OQT_LONG_FILE\""; fi
 OQ_SEQLEN="${OQ_SEQLEN:-2048}"
 NGRAM_BITS="${NGRAM_BITS:-8}"
 PRESERVE_MTP="${PRESERVE_MTP:-1}"
@@ -198,6 +205,9 @@ quantize_oq_streaming(
         routing_protect=$ROUTING_PY,
         routing_mass_threshold=$OQT_ROUTING_THRESHOLD,
         routing_max_layers_frac=$OQT_ROUTING_MAX_LAYERS,
+        long_calib_path=$LONG_PY,
+        long_seq_length=$OQT_LONG_LEN,
+        long_share=$OQT_LONG_SHARE,
     ),
 )
 EOF
@@ -253,6 +263,10 @@ if s:
 if "routing_mass_shift_median" in s:
     print(f"routing protection   : median routing shift {s['routing_mass_shift_median']:.3f}, "
           f"{s['routing_layers_upgraded']} layers / {s['routing_tensors_upgraded']} tensors got more bits")
+if "calibration_windows" in s:
+    c = s["calibration_windows"]
+    print(f"calibration windows  : {c['short_windows']} x {c['short_len']} tokens"
+          + (f" + {c['long_windows']} x {c['long_len']} tokens (long context)" if c["long_windows"] else " (no long windows)"))
 if "expert_tiering_signal" in s:
     print(f"expert usage skew    : top 20% of experts carry {s['expert_top20pct_share_median']:.0%} "
           f"of tokens (median) -> tiering signal: {s['expert_tiering_signal']}")

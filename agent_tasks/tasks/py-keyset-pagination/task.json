@@ -1,0 +1,7 @@
+{
+ "id": "py-keyset-pagination",
+ "domain": "python",
+ "image": "oqt-agent-python",
+ "prompt": "Users report that page 2 of the user list repeats the last user of page 1, and sometimes a user never shows up when several users were created in the same second. Fix the keyset pagination in pagination.py. Keep the function signature. Tests are in tests/ and run with `python -m pytest -q`.",
+ "check": "python -m pytest -q"
+}

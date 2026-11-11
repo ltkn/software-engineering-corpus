@@ -20,7 +20,14 @@ SRC="$T/hub/models--Qwen--Qwen3.8-Flash-Next/snapshots/abc"
 GEN="$T/models-out/Qwen3.8-Flash-Next-oQ5e-gen"; mkdir -p "$GEN"
 echo '{"model_type":"qwen4_exp","quantization":{"bits":5}}' > "$GEN/config.json"
 export OQUP="$T/oqup" MODELS_OUT="$T/models-out" HF_HUB_CACHE="$T/hub" GENERATOR="$GEN"
-export PORT="${TEST_PORT:-8799}" SERVER_WAIT=30 OQ_SAMPLES=4 OQ_SEQLEN=8 OQ_SKIP_PPL=1 CONCURRENCY=4
+export PORT="${TEST_PORT:-8799}" SERVER_WAIT=30 OQ_SAMPLES=32 OQ_SEQLEN=8 OQ_SKIP_PPL=1 CONCURRENCY=4
+# Agent sessions: a tiny task the scripted stand-in agent can solve, local sandbox.
+mkdir -p "$T/agent-tasks/answer-42/repo"
+echo "Write the answer to answer.txt." > "$T/agent-tasks/answer-42/repo/README.md"
+printf '%s' '{"id": "answer-42", "domain": "test", "image": "unused", "prompt": "Write 42 into answer.txt and verify it.", "check": "grep -qx 42 answer.txt"}' > "$T/agent-tasks/answer-42/task.json"
+export OQT_AGENT_TASKS="$T/agent-tasks" OQT_AGENT_SANDBOX=local AGENT_SAMPLES=2
+# Long windows scaled to the tiny model: 64-token windows over 32 x 8-token short ones.
+export OQT_LONG_LEN=64 OQT_LONG_SHARE=0.25
 export OQT_SERVE_CMD="python3 -I $HERE/stub_omlx.py \$PORT $T/counter.json"
 P="$REPO/scripts/oqt_pipeline.sh"
 reset() { echo '{}' > "$T/counter.json"; }
@@ -31,6 +38,17 @@ OUT="$T/models-out/Qwen3.8-Flash-Next-oQ4t-t"
 grep -q '<|im_start|>' "$T/oqup/runs/t/bundle.txt" || fail "bundle is not in the chat template"
 grep -q '<think>' "$T/oqup/runs/t/bundle.txt" || fail "bundle has no thinking"
 pass "fresh run: prompts -> answers -> chat-template bundle -> oQ-T quant"
+python3 - "$OUT/oqt_report.json" "$T/oqup/runs/t/bundle-long.jsonl" "$T/oqup/runs/t/prep/answers/Qwen3.8-Flash-Next-oQ5e-gen/agent.json" <<'PYCHECK' || fail "agent sessions or long windows missing"
+import json, sys
+cal = json.load(open(sys.argv[1]))["summary"]["calibration_windows"]
+assert cal["long_windows"] >= 1 and cal["long_len"] == 64, cal
+long_docs = [json.loads(l) for l in open(sys.argv[2])]
+assert long_docs and all(d["text"] for d in long_docs)
+agent = json.load(open(sys.argv[3]))
+assert agent["kept"] == 2 and agent["solved"] == 2, agent
+PYCHECK
+grep -q "answer.txt" "$T/oqup/runs/t/bundle.txt" || fail "agent sessions not in the calibration bundle"
+pass "agent sessions solved and rendered; long documents packed into long windows"
 
 reset; BUDGET_TOKENS=3000 "$P" 4 t >/dev/null 2>&1 || fail "identical rerun failed"
 [ "$(count generate)" = 0 ] && [ "$(count derive)" = 0 ] || fail "identical rerun sent requests"

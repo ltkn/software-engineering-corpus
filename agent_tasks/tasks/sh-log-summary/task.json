@@ -1,0 +1,7 @@
+{
+ "id": "sh-log-summary",
+ "domain": "shell",
+ "image": "oqt-agent-cpp-shell",
+ "prompt": "Write summarize.sh: it reads JSON log lines (one object per line, fields route, status, ms) from a file given as the first argument and prints one line per route, sorted by route: `<route>\\t<requests>\\t<errors>\\t<max_ms>`, where errors are status >= 500. Lines that are not valid JSON must be skipped and counted on stderr as `skipped N`. Tests: `bats tests`. jq is installed.",
+ "check": "bats tests"
+}

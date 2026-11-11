@@ -1,0 +1,7 @@
+{
+ "id": "ts-allocate-money",
+ "domain": "typescript",
+ "image": "oqt-agent-node",
+ "prompt": "Splitting an invoice total across cost centers sometimes loses or invents a cent. Fix `allocate` in src/money.ts so the parts always sum to the total and the remainder goes to the largest weights first. Run the tests with `npm test`.",
+ "check": "npm test"
+}

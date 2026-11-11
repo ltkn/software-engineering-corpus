@@ -1,0 +1,8 @@
+{
+ "name": "money",
+ "private": true,
+ "type": "module",
+ "scripts": {
+  "test": "tsc -p . && node --test dist/test/*.test.js"
+ }
+}

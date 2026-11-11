@@ -1,0 +1,7 @@
+{
+ "id": "cpp-moving-average",
+ "domain": "cpp",
+ "image": "oqt-agent-cpp-shell",
+ "prompt": "The moving average in src/stats.cpp crashes under AddressSanitizer and returns wrong values for the first samples. Fix it without changing the header. Build and test with `make test` (it uses -fsanitize=address,undefined).",
+ "check": "make test"
+}

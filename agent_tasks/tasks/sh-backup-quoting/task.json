@@ -1,0 +1,7 @@
+{
+ "id": "sh-backup-quoting",
+ "domain": "shell",
+ "image": "oqt-agent-cpp-shell",
+ "prompt": "backup.sh breaks on file names with spaces and silently succeeds when the destination is missing. Fix it so it copies every file from SRC to DEST (preserving names), fails with a clear message and non-zero exit when DEST does not exist, and passes shellcheck. Tests: `bats tests`.",
+ "check": "bats tests && shellcheck backup.sh"
+}

@@ -11,6 +11,7 @@
 #   extract    corpus blocks -> prompts                       (offline, seconds)
 #   derive     model writes the questions for knowledge cards (oMLX server)
 #   seed       model writes generic and broad prompts from seeds/*.txt (oMLX server)
+#   agent      model works as a coding agent on agent_tasks/ in Docker sandboxes (oMLX server)
 #   generate   model answers the prompts, thinking on         (oMLX server, hours)
 #   render     answers -> one calibration file in the chat template
 #   build      oQ-T quant from that file                      (streamed, hours)
@@ -35,6 +36,10 @@
 #                          only generates what is missing.
 #   OQT_MIX=corpus=50,generic=25,broad=25   token shares per prompt group
 #   PROMPTS_PER_SEED=8     prompts the model writes per seed
+#   OQT_AGENT=1            agent sessions (needs Docker; skipped for OQT_PROFILE=generic)
+#   AGENT_SAMPLES=2        sessions per agent task
+#   OQT_LONG_SHARE=0.25    share of calibration tokens in long windows (0 = off)
+#   OQT_LONG_LEN=32768     long window length in tokens
 #   PORT=8765              port for the pipeline's own oMLX server
 #   plus any omlx_oqt.sh option (OQ_SAMPLES, OQ_SEQLEN, NGRAM_BITS, PRESERVE_MTP, ...)
 set -euo pipefail
@@ -50,7 +55,13 @@ BUDGET_TOKENS="${BUDGET_TOKENS:-1000000}"
 EFFORT_MIX="${EFFORT_MIX:-max=70,medium=15,low=15}"
 CONCURRENCY="${CONCURRENCY:-4}"
 PREP="$CORPUS_REPO/scripts/prep_calibration.py"
-STAGES=(preflight extract derive seed generate render build score)
+STAGES=(preflight extract derive seed agent generate render build score)
+OQT_AGENT="${OQT_AGENT:-1}"
+AGENT_SAMPLES="${AGENT_SAMPLES:-2}"
+OQT_LONG_SHARE="${OQT_LONG_SHARE:-0.25}"
+OQT_LONG_LEN="${OQT_LONG_LEN:-32768}"
+AGENT_TASKS="${OQT_AGENT_TASKS:-}"
+AGENT_SANDBOX="${OQT_AGENT_SANDBOX:-docker}"
 OQT_PROFILE="${OQT_PROFILE:-profile}"
 OQT_MIX="${OQT_MIX:-corpus=50,generic=25,broad=25}"
 PROMPTS_PER_SEED="${PROMPTS_PER_SEED:-8}"
@@ -168,8 +179,12 @@ if kind == "generate":
         d["profile"], d["kept"], d["requests"], d["tokens"], d.get("tokens_by_group", {}),
         d.get("with_tool_calls", 0), d["verdicts"]))
 elif kind == "render":
-    print("[{}] {} conversations ({} with tools) + {} passages, {:,} tokens ({})".format(
-        d["profile"], d["conversations"], d.get("with_tools", 0), d["passages"], d["tokens"], d["mode"]))
+    print("[{}] {} conversations ({} with tools), {} agent sessions, {} passages, {:,} tokens ({}); {} long documents (~{:,} tokens)".format(
+        d["profile"], d["conversations"], d.get("with_tools", 0), d.get("agent_sessions", 0), d["passages"],
+        d["tokens"], d["mode"], d.get("long_documents", 0), d.get("long_tokens_est", 0)))
+elif kind == "agent":
+    print("{}/{} sessions kept, {} solved by their check, {} failed to run, mean {} steps, {:,} tokens".format(
+        d["kept"], d["sessions"], d["solved"], d["failed_to_run"], d["mean_steps"], d["tokens"]))
 else:
     s = d.get("summary") or {}
     if s:
@@ -278,6 +293,12 @@ log "answers by: $GENERATOR"
 log "level     : oQ${LEVEL}t -> $MODELS_OUT/*-oQ${LEVEL}t-$NAME"
 log "budget    : $BUDGET_TOKENS tokens, effort $EFFORT_MIX, concurrency $CONCURRENCY"
 log "prompts   : profile $OQT_PROFILE, mix $OQT_MIX, $PROMPTS_PER_SEED prompts per seed"
+[ "$OQT_PROFILE" = generic ] && OQT_AGENT=0
+log "agent     : $([ "$OQT_AGENT" = 1 ] && echo "$AGENT_SAMPLES sessions per task, $AGENT_SANDBOX sandbox" || echo off)"
+log "long ctx  : $(awk -v s="$OQT_LONG_SHARE" 'BEGIN{exit !(s>0)}' && echo "${OQT_LONG_SHARE} of tokens in ${OQT_LONG_LEN}-token windows" || echo off)"
+if [ "$OQT_AGENT" = 1 ] && [ "$AGENT_SANDBOX" = docker ]; then
+    docker info >/dev/null 2>&1 || die "agent sessions need Docker (start colima or OrbStack), or set OQT_AGENT=0"
+fi
 log "machine   : ${ram_gb} GB RAM, ${free_gb:-?} GB free under $OQUP"
 [ "$ram_gb" -ge 96 ] || log "WARNING: ${ram_gb} GB RAM; this pipeline is planned for the 128 GB Mac"
 [ -n "$free_gb" ] && [ "$free_gb" -lt 150 ] && log "WARNING: only ${free_gb} GB free"
@@ -294,9 +315,11 @@ PREP_SHA="$(hash_of < "$PREP")"
 D_EXTRACT="$( { cat "$CORPUS_REPO"/calibration/*.txt "$CORPUS_REPO/manifest.json"; echo "$PREP_SHA"; } | hash_of)"
 D_DERIVE="$(printf '%s|%s|%s' "$D_EXTRACT" "$GEN_ID" "$( { cat "$GENERATOR/config.json"; ls -l "$GENERATOR"/*.safetensors 2>/dev/null; } | hash_of)" | hash_of)"
 D_SEED="$(printf '%s|%s|%s|%s' "$( cat "$CORPUS_REPO"/seeds/*.txt | hash_of)" "$PREP_SHA" "$GEN_ID" "$PROMPTS_PER_SEED" | hash_of)"
-D_GENERATE="$(printf '%s|%s|%s|%s|%s|%s|%s' "$D_DERIVE" "$D_SEED" "$BUDGET_TOKENS" "$EFFORT_MIX" \
-    "${MAX_TOKENS:-16384}" "$OQT_PROFILE" "$OQT_MIX" | hash_of)"
-D_RENDER="$(printf '%s|%s' "$D_GENERATE" "$( cat "$SRC"/tokenizer*.json "$SRC"/*.jinja 2>/dev/null | hash_of)" | hash_of)"
+D_AGENT="$(printf '%s|%s|%s|%s|%s' "$( { find "${AGENT_TASKS:-$CORPUS_REPO/agent_tasks/tasks}" -type f -print0 | sort -z | xargs -0 cat; cat "$CORPUS_REPO/scripts/agent_harness.py"; } | hash_of)" \
+    "$PREP_SHA" "$GEN_ID" "$EFFORT_MIX" "$AGENT_SAMPLES" | hash_of)"
+D_GENERATE="$(printf '%s|%s|%s|%s|%s|%s|%s|%s' "$D_DERIVE" "$D_SEED" "$BUDGET_TOKENS" "$EFFORT_MIX" \
+    "${MAX_TOKENS:-16384}" "$OQT_PROFILE" "$OQT_MIX" "$([ "$OQT_AGENT" = 1 ] && echo "$D_AGENT" || echo none)" | hash_of)"
+D_RENDER="$(printf '%s|%s|%s' "$D_GENERATE" "$( cat "$SRC"/tokenizer*.json "$SRC"/*.jinja 2>/dev/null | hash_of)" "$OQT_LONG_LEN" | hash_of)"
 
 # ------------------------------------------------------------------ server
 start_server() {
@@ -328,7 +351,7 @@ start_server() {
 run_stage extract "$D_EXTRACT" python3 "$PREP" extract --out "$PREP_OUT"
 
 if ! is_done derive "$D_DERIVE" || { [ "$NEED_SEEDS" = 1 ] && ! is_done seed "$D_SEED"; } \
-        || ! is_done generate "$D_GENERATE"; then
+        || { [ "$OQT_AGENT" = 1 ] && ! is_done agent "$D_AGENT"; } || ! is_done generate "$D_GENERATE"; then
     start_server
 fi
 run_stage derive "$D_DERIVE" python3 "$PREP" derive --out "$PREP_OUT" --cache-root "$CACHE_ROOT" \
@@ -339,6 +362,22 @@ if [ "$NEED_SEEDS" = 1 ]; then
 else
     log "seed: skipped (OQT_MIX gives no weight to generic or broad prompts)"
 fi
+if [ "$OQT_AGENT" = 1 ]; then
+    agent_stage() {
+        if [ "$AGENT_SANDBOX" = docker ] && [ -z "$AGENT_TASKS" ]; then
+            "$CORPUS_REPO/agent_tasks/build_images.sh"
+        fi
+        python3 "$PREP" agent --out "$PREP_OUT" --cache-root "$CACHE_ROOT" \
+            --model "$GEN_ID" --server "$SERVER" --sandbox "$AGENT_SANDBOX" \
+            --agent-samples "$AGENT_SAMPLES" --effort-mix "$EFFORT_MIX" \
+            ${AGENT_TASKS:+--agent-tasks "$AGENT_TASKS"}
+    }
+    run_stage agent "$D_AGENT" agent_stage
+    [ -f "$PREP_OUT/answers/$GEN_ID/agent.json" ] && \
+        log "agent: $(summary agent "$PREP_OUT/answers/$GEN_ID/agent.json")"
+else
+    log "agent: skipped ($([ "$OQT_PROFILE" = generic ] && echo "generic profile" || echo "OQT_AGENT=0"))"
+fi
 run_stage generate "$D_GENERATE" python3 "$PREP" generate --out "$PREP_OUT" --cache-root "$CACHE_ROOT" \
     --profile "$OQT_PROFILE" --mix "$OQT_MIX" \
     --model "$GEN_ID" --server "$SERVER" --concurrency "$CONCURRENCY" \
@@ -348,7 +387,9 @@ run_stage generate "$D_GENERATE" python3 "$PREP" generate --out "$PREP_OUT" --ca
 stop_server
 
 run_stage render "$D_RENDER" "$VENV_PY" "$PREP" render --out "$PREP_OUT" --profile "$OQT_PROFILE" \
-    --model "$GEN_ID" --source "$SRC" --bundle "$BUNDLE"
+    --model "$GEN_ID" --source "$SRC" --bundle "$BUNDLE" \
+    --long-len "$OQT_LONG_LEN" --long-bundle "$RUN/bundle-long.jsonl" \
+    $([ "$OQT_AGENT" = 1 ] || echo --no-agent)
 
 # The build needs the memory: no other oMLX server may be running.
 if pgrep -f "omlx.*serve" >/dev/null 2>&1 && [ "${OQT_IGNORE_SERVER:-0}" != "1" ]; then
@@ -358,8 +399,10 @@ OMLX_COMMIT="$(git -C "$OMLX_REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
 D_BUILD="$(printf '%s|%s|%s|%s|%s|%s|%s|%s|%s' "$(hash_of < "$BUNDLE")" "$LEVEL" "${OQ_SAMPLES:-256}" \
     "${OQ_SEQLEN:-2048}" "${NGRAM_BITS:-8}" "${PRESERVE_MTP:-1}" "$OMLX_COMMIT" \
     "$(hash_of < "$CORPUS_REPO/scripts/omlx_oqt.sh")" \
-    "${OQT_REFINE_EXPERTS:-0}/${OQT_ROUTING:-1}/${OQT_ROUTING_THRESHOLD:-0.02}/${OQT_ROUTING_MAX_LAYERS:-0.25}" | hash_of)"
+    "${OQT_REFINE_EXPERTS:-0}/${OQT_ROUTING:-1}/${OQT_ROUTING_THRESHOLD:-0.02}/${OQT_ROUTING_MAX_LAYERS:-0.25}" \
+    "$OQT_LONG_SHARE/$OQT_LONG_LEN/$( hash_of < "$RUN/bundle-long.jsonl" 2>/dev/null || echo none)" | hash_of)"
 run_stage build "$D_BUILD" env CORPUS_FILE="$BUNDLE" OQT_OVERWRITE=1 OQ_SKIP_PPL=1 \
+    OQT_LONG_FILE="$RUN/bundle-long.jsonl" OQT_LONG_SHARE="$OQT_LONG_SHARE" OQT_LONG_LEN="$OQT_LONG_LEN" \
     "$CORPUS_REPO/scripts/omlx_oqt.sh" "$LEVEL" "$NAME"
 
 D_SCORE="$(printf '%s|%s' "$D_BUILD" "$(cat "$CORPUS_REPO"/eval/heldout-*.txt | hash_of)" | hash_of)"

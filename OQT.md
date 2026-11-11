@@ -19,9 +19,10 @@ git pull
 scripts/testing/test_oqt_pipeline.sh                                  # expect "all pipeline checks passed" (~1 min)
 ```
 
-You need two things already on the Mac:
+You need three things already on the Mac:
 - the original **Qwen3.8-Flash-Next** weights in the Hugging Face cache (as for the oQe scripts);
 - a **quant of it that you can serve** (the one in `~/.omlx/models`, or any oQ4/oQ5/oQ6 build in `~/models-out`). It writes the answers.
+- **Docker** (colima or OrbStack running) for the agent sessions. The first run builds six small sandbox images (needs internet once); check them any time with `agent_tasks/verify_tasks.sh` (expect 12 `ok` lines).
 
 ## Build a quant
 
@@ -44,7 +45,16 @@ scripts/oqt_pipeline.sh status v1          # which stage, how long, last lines
 tail -f ~/oqup/runs/v1/pipeline.log        # one line per stage start/end
 ```
 
-The stages are: `extract` → `derive` → `seed` → `generate` → `render` → `build` → `score`.
+The stages are: `extract` → `derive` → `seed` → `agent` → `generate` → `render` → `build` → `score`.
+
+## Agent sessions and long context
+
+Two parts of the calibration text are there specifically for agentic coding:
+
+- **Agent sessions.** Your local model works as a coding agent on the tasks in `agent_tasks/tasks` (bug fixes and features in Python, TypeScript, Java, Rust, Go, C++ and shell), each in its own Docker container with no network. Whole sessions are recorded: thinking, tool calls, file contents, compiler and test output. The log shows how many sessions solved their task.
+- **Long windows.** Agent sessions and chained conversations become 32k-token windows (25% of the calibration tokens) that start at the beginning of a document. That is where Qwen3.8-Flash-Next's sparse attention actually selects, which short windows never exercise. The build log line `calibration windows` shows the split.
+
+To add your own task: copy a folder in `agent_tasks/tasks`, change `task.json` and `repo/`, add the fixed files under `solution/`, and run `agent_tasks/verify_tasks.sh <task-id>`.
 
 ## Does the corpus help? Build the comparison arm
 
@@ -101,6 +111,10 @@ Put them in front of the command, for example `BUDGET_TOKENS=500000 scripts/oqt_
 | `OQT_PROFILE` | `profile` | `profile`: your corpus plus generic and broad prompts. `generic`: no corpus (the comparison arm) |
 | `OQT_MIX` | `corpus=50,generic=25,broad=25` | Share of the generated text per prompt group. `OQT_MIX=corpus=100` uses only your corpus and skips the seed stage |
 | `PROMPTS_PER_SEED` | `8` | Prompts the model writes per seed in `seeds/generic.txt` and `seeds/broad.txt` |
+| `OQT_AGENT=0` | on | Skip agent sessions (always skipped for the generic arm) |
+| `AGENT_SAMPLES` | `2` | Agent sessions per task in `agent_tasks/tasks` |
+| `OQT_LONG_SHARE` | `0.25` | Share of calibration tokens in long windows (`0` = off) |
+| `OQT_LONG_LEN` | `32768` | Long window length in tokens |
 | `OQT_COMPARE=1` | off | Also build a plain oQe quant from the same text and score both |
 | `OQT_REFINE_EXPERTS=1` | off | Also polish the routed experts' rounding (always on for the other tensors). Better, but about 8 extra hours on Qwen3.8-Flash-Next |
 | `OQT_ROUTING=0` | on | Turn off routing protection |
@@ -138,7 +152,7 @@ The pipeline log says which stage failed and shows the last lines of that stage'
 
 - Resume is per request (answers), per layer (oQ-T sweep) and per output shard (file writing). One step still restarts from its own beginning if interrupted: oMLX's imatrix pass. Its duration on your Mac decides whether it's worth making resumable.
 - Expert tiers (more bits for popular experts) need a change in oMLX's serving code; they will be built only if your builds show a strong tiering signal.
-- The variation pass and agent sessions from `PREP_PLAN.md` are not in yet: corpus prompts are used as written, plus the generic and broad seed prompts.
+- The variation pass from `PREP_PLAN.md` is not in yet. Agent tasks cover 7 languages so far (no Spring/Postgres/Kafka services, Godot or embedded builds yet).
 - Not yet: scoring against the original model with full KL and routing flips, routing-aware bits, expert tiers, DeepSeek V4.1.
 
 ## Lower-level: build from a text file directly

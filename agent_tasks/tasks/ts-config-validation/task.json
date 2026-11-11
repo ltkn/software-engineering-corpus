@@ -1,0 +1,7 @@
+{
+ "id": "ts-config-validation",
+ "domain": "typescript",
+ "image": "oqt-agent-node",
+ "prompt": "Implement `parseConfig` in src/config.ts. It must validate an unknown JSON value into a typed Config and report every problem at once, with the path of each bad field. The tests describe the expected messages. Run them with `npm test`.",
+ "check": "npm test"
+}

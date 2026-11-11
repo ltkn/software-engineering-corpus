@@ -45,6 +45,25 @@ class H(BaseHTTPRequestHandler):
             return self._send({"choices": [{"message": msg, "finish_reason": "stop"}], "usage": {"completion_tokens": 20}})
         n = bump("generate"); time.sleep(DELAY)
         effort = kw.get("reasoning_effort")
+        tool_names = [t["function"]["name"] for t in body.get("tools") or []]
+        if "finish" in tool_names and "run" in tool_names:
+            # Scripted coding agent: explore, fix, verify, finish.
+            bump("agent")
+            done = sum(1 for m in body["messages"] if m["role"] == "tool")
+            script = [("list_files", {"path": "."}),
+                      ("write_file", {"path": "answer.txt", "content": "42\n"}),
+                      ("run", {"command": "cat answer.txt"}),
+                      ("finish", {"summary": "wrote the answer and checked it"})]
+            if done >= len(script):
+                msg = {"role": "assistant", "content": "done"}
+            else:
+                name, args = script[done]
+                msg = {"role": "assistant", "content": "",
+                       "reasoning_content": f"step {done}: use {name} next.",
+                       "tool_calls": [{"id": f"call_{done}", "type": "function",
+                                       "function": {"name": name, "arguments": json.dumps(args)}}]}
+            return self._send({"choices": [{"message": msg, "finish_reason": "tool_calls"}],
+                               "usage": {"completion_tokens": 25}})
         if body.get("tools"):
             name = body["tools"][0]["function"]["name"]
             msg = {"role": "assistant", "content": "",

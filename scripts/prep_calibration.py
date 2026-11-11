@@ -12,6 +12,8 @@ Implements step 1 of PREP_PLAN.md (§2, §4 stages 1-3):
   seed      Have the served model write prompts from seeds/generic.txt (software
             outside the corpus) and seeds/broad.txt (non-coding, multilingual,
             tool calling); the corpus-free material (PREP_PLAN.md §2 D, F).
+  agent     Run the served model as a coding agent on agent_tasks/tasks in Docker
+            sandboxes (no network) and record whole sessions (PREP_PLAN.md §5).
   generate  Have the served model answer the prompts (thinking on, generic
             effort levels), sampled by manifest share up to a token budget.
             Every request is cached, so a rerun resumes exactly.
@@ -1090,6 +1092,97 @@ def do_generate(out: Path, args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# agent (PREP_PLAN.md §5): the model works as a coding agent on task repos
+# ---------------------------------------------------------------------------
+
+AGENT_VERSION = "agent-v1"
+AGENT_TASKS_DIR = REPO / "agent_tasks" / "tasks"
+
+
+def do_agent(out: Path, args) -> int:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import agent_harness as ah
+
+    fam = family_of(args.model, args.family)
+    f = FAMILIES[fam]
+    tasks_dir = Path(args.agent_tasks).expanduser() if args.agent_tasks else AGENT_TASKS_DIR
+    tasks = [ah.load_task(d) for d in sorted(tasks_dir.iterdir()) if (d / "task.json").exists()]
+    tasks = [t for t in tasks if not t.get("holdout")]
+    if not tasks:
+        print(f"agent: no tasks in {tasks_dir}", file=sys.stderr)
+        return 1
+    root = cache_root(out, args)
+    cache_dir = root / "answers" / model_tag(args.model) / "agent-cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    work_root = root / "agent-work"
+    work_root.mkdir(parents=True, exist_ok=True)
+    mix = parse_effort_mix(args.effort_mix)
+    jobs = []
+    for t in tasks:
+        for k in range(args.agent_samples):
+            u = _unit(args.seed, "agent-effort", t["id"], k)
+            effort = next(name for name, cut_ in mix if u < cut_)
+            base = {"model": args.model, **f["sampling"], "max_tokens": args.agent_turn_tokens,
+                    "seed": int(_unit(args.seed, "agent-seed", t["id"], k) * 2**31),
+                    "chat_template_kwargs": {**f["thinking_on"], "reasoning_effort": f["effort"][effort]}}
+            key = sha(json.dumps([AGENT_VERSION, t["hash"], k, base, args.agent_max_steps], sort_keys=True))
+            jobs.append((t, k, effort, base, key))
+    print(f"agent: {len(jobs)} sessions over {len(tasks)} tasks ({args.agent_samples} per task), "
+          f"sandbox {args.sandbox}, concurrency {args.agent_concurrency}", flush=True)
+
+    def run_job(job):
+        t, k, effort, base, key = job
+        cpath = cache_dir / f"{key}.json"
+        if cpath.exists():
+            rec = json.loads(cpath.read_text(encoding="utf-8"))
+            rec["cached"] = True
+            return rec
+        try:
+            rec = ah.run_session(t, lambda payload: chat_raw(args.server, args.api_key, payload, args.timeout),
+                                 base, work_root=work_root, sandbox_kind=args.sandbox,
+                                 max_steps=args.agent_max_steps)
+        except Exception as e:  # sandbox or server failure: report, do not cache
+            return {"task": t["id"], "keep": False, "why": f"session failed: {e}", "tokens": 0,
+                    "cached": False, "sample": k}
+        rec.update({"key": key, "sample": k, "effort": effort, "model": args.model,
+                    "version": AGENT_VERSION})
+        tmp = cpath.with_suffix(".tmp")
+        tmp.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, cpath)
+        rec["cached"] = False
+        return rec
+
+    results = []
+    t0 = time.time()
+    with cf.ThreadPoolExecutor(max_workers=args.agent_concurrency) as ex:
+        for i, rec in enumerate(ex.map(run_job, jobs), 1):
+            results.append(rec)
+            status = "cached" if rec.get("cached") else rec.get("why")
+            solved = {True: "solved", False: "not solved", None: "-"}[rec.get("check_passed")]
+            print(f"agent: {i}/{len(jobs)} {rec['task']} #{rec.get('sample')} "
+                  f"steps={rec.get('steps', '-')} {rec.get('stop_reason', '')} {solved} [{status}] "
+                  f"{(time.time() - t0) / 60:.0f} min", flush=True)
+    kept = [r for r in results if r.get("keep")]
+    adir = answers_dir(out, args)
+    adir.mkdir(parents=True, exist_ok=True)
+    write_jsonl(adir / "agent-sessions.jsonl", sorted(kept, key=lambda r: (r["task"], r["sample"])))
+    failed = [r for r in results if str(r.get("why", "")).startswith("session failed")]
+    summary = {"model": args.model, "sessions": len(results), "kept": len(kept),
+               "solved": sum(1 for r in kept if r.get("check_passed")),
+               "failed_to_run": len(failed),
+               "tokens": sum(int(r.get("tokens") or 0) for r in results),
+               "mean_steps": round(sum(r.get("steps", 0) for r in kept) / max(len(kept), 1), 1),
+               "by_task": {t["id"]: sum(1 for r in kept if r["task"] == t["id"]) for t in tasks},
+               "minutes": round((time.time() - t0) / 60, 1)}
+    (adir / "agent.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
+    print(f"agent: done — {summary['kept']}/{summary['sessions']} sessions kept, {summary['solved']} solved "
+          f"by their check, {summary['failed_to_run']} failed to run -> {adir}", flush=True)
+    for r in failed[:5]:
+        print(f"  {r['task']}: {r['why']}", file=sys.stderr)
+    return 1 if failed and len(failed) == len(results) else 0
+
+
+# ---------------------------------------------------------------------------
 # render (needs transformers: run with the oMLX venv python)
 # ---------------------------------------------------------------------------
 
@@ -1106,6 +1199,8 @@ def do_render(out: Path, args) -> int:
         return 1
     adir = answers_dir(out, args)
     answers = read_jsonl(adir / f"answers-{args.profile}.jsonl")
+    sessions = (read_jsonl(adir / "agent-sessions.jsonl")
+                if "corpus" in PROFILES[args.profile] and not args.no_agent else [])
     if not answers:
         print(f"no kept answers for profile {args.profile} in {adir} (run generate first)",
               file=sys.stderr)
@@ -1150,12 +1245,50 @@ def do_render(out: Path, args) -> int:
                 tools_dropped += 1
         texts.append((sha(f"{args.seed}|{r['key']}"), text))
 
+    for r in sessions:
+        # A whole agent session: system, task, assistant turns with thinking
+        # and tool calls, and tool results, rendered with its tool definitions.
+        text = render(r["messages"], r.get("tools"))
+        texts.append((sha(f"{args.seed}|agent|{r['key']}"), text))
+
     passages = []
     if "corpus" in PROFILES[args.profile]:
         passages = [b["text"] for b in read_jsonl(out / "blocks.jsonl") if b["mode"] == "passage"]
     texts += [(sha(f"{args.seed}|passage|{t}"), t) for t in passages]
     texts.sort(key=lambda x: x[0])
     bundle = "\n".join(t for _, t in texts) + "\n"
+
+    # Long documents for long-context windows: every agent session, plus chained
+    # conversations (consecutive answers from the same file as one multi-turn
+    # session) grown to about the window length. Short leftovers are dropped.
+    long_docs = []
+    target_chars = int(args.long_len * 3.5)
+    for r in sessions:
+        long_docs.append(render(r["messages"], r.get("tools")))
+    by_file: dict[str, list[dict]] = {}
+    for r in answers:
+        if not r.get("tools"):
+            by_file.setdefault(r["file"], []).append(r)
+    for _, rows in sorted(by_file.items()):
+        rows.sort(key=lambda r: (r["id"], r["sample"]))
+        chain, size = [], 0
+        for r in rows:
+            turn_user = r["messages"][-1]
+            turn_asst = {"role": "assistant", "content": r["content"]}
+            if r.get("reasoning"):
+                turn_asst["reasoning_content"] = r["reasoning"]
+            if not chain and r["messages"][0]["role"] == "system":
+                chain.append(r["messages"][0])
+            chain += [turn_user, turn_asst]
+            size += len(turn_user["content"]) + len(r["content"]) + len(r.get("reasoning") or "")
+            if size >= target_chars:
+                long_docs.append(render(chain, None))
+                chain, size = [], 0
+        if chain and size >= target_chars // 4:
+            long_docs.append(render(chain, None))
+    long_path = (Path(args.long_bundle).expanduser() if args.long_bundle
+                 else adir / f"bundle-long-{args.profile}.jsonl")
+    write_jsonl(long_path, [{"text": t} for t in long_docs])
 
     specials = set(getattr(tok, "all_special_tokens", []) or [])
     for t in (getattr(tok, "added_tokens_decoder", {}) or {}).values():
@@ -1176,16 +1309,19 @@ def do_render(out: Path, args) -> int:
     os.replace(tmp, path)
     n_tokens = len(tok(bundle, add_special_tokens=False)["input_ids"])
     summary = {"bundle": str(path), "profile": args.profile, "sha256": sha(bundle),
-               "conversations": len(answers), "passages": len(passages),
+               "conversations": len(answers), "agent_sessions": len(sessions), "passages": len(passages),
                "with_tools": sum(1 for r in answers if r.get("tools")),
                "tool_calls_missing_after_render": tools_dropped,
                "tokens": n_tokens, "mode": mode,
+               "long_documents": len(long_docs), "long_bundle": str(long_path),
+               "long_tokens_est": int(sum(len(t) for t in long_docs) / 3.5),
                "special_tokens_checked": sorted(sp for sp in specials if sp and sp in bundle)}
     (adir / f"render-{args.profile}.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
     if tools_dropped:
         print(f"render: WARNING {tools_dropped} answers had tool calls that the chat template did "
               "not render; check the template's tool-call support", file=sys.stderr)
-    print(f"render: [{args.profile}] {len(answers)} conversations ({summary['with_tools']} with tools) "
+    print(f"render: [{args.profile}] {len(answers)} conversations ({summary['with_tools']} with tools), "
+          f"{len(sessions)} agent sessions, {len(long_docs)} long documents "
           f"+ {len(passages)} passages, {n_tokens:,} tokens, mode {mode} -> {path}", flush=True)
     return 0
 
@@ -1239,7 +1375,7 @@ def write_report(out: Path, table, problems, derive_results) -> None:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("stage", choices=["extract", "derive", "seed", "generate", "render", "all"])
+    ap.add_argument("stage", choices=["extract", "derive", "seed", "agent", "generate", "render", "all"])
     ap.add_argument("--run", default="default", help="run name (output folder)")
     ap.add_argument("--out", help="output folder (default ~/oqup/prep/<run>)")
     ap.add_argument("--only", help="comma-separated file stems to process")
@@ -1270,6 +1406,17 @@ def main(argv=None) -> int:
                    help="token shares per prompt group (restricted to the profile's groups)")
     g.add_argument("--prompts-per-seed", type=int, default=8, help="seed: prompts written per seed")
     g.add_argument("--cache-root", help="share request caches across runs (default: the run folder)")
+    ag = ap.add_argument_group("agent")
+    ag.add_argument("--agent-tasks", help="task folder (default agent_tasks/tasks)")
+    ag.add_argument("--agent-samples", type=int, default=2, help="sessions per task")
+    ag.add_argument("--agent-max-steps", type=int, default=30)
+    ag.add_argument("--agent-turn-tokens", type=int, default=8192, help="max tokens per model turn")
+    ag.add_argument("--agent-concurrency", type=int, default=2)
+    ag.add_argument("--sandbox", choices=["docker", "local"], default="docker",
+                    help="local runs commands on the host: tests only")
+    g.add_argument("--no-agent", action="store_true", help="render: leave agent sessions out")
+    g.add_argument("--long-len", type=int, default=32768, help="render: target length of long documents")
+    g.add_argument("--long-bundle", help="render: long documents output (JSONL with a text field)")
     g.add_argument("--source", help="render: source model dir (tokenizer + chat template)")
     g.add_argument("--bundle", help="render: output path (default <out>/answers/<model>/bundle.txt)")
     args = ap.parse_args(argv)
@@ -1290,6 +1437,12 @@ def main(argv=None) -> int:
         if not args.model:
             ap.error("seed needs --model (the served model name)")
         rc = do_seed(out, args)
+    if args.stage == "agent":
+        if not args.model:
+            ap.error("agent needs --model (the served model name)")
+        if args.timeout == 300:
+            args.timeout = 3600
+        rc = do_agent(out, args)
     if args.stage == "generate":
         if not args.model:
             ap.error("generate needs --model (the served model name)")

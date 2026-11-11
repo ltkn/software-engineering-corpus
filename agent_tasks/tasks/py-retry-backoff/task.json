@@ -1,0 +1,7 @@
+{
+ "id": "py-retry-backoff",
+ "domain": "python",
+ "image": "oqt-agent-python",
+ "prompt": "Implement `retry` in resilience.py so our HTTP client stops hammering failing services. Requirements are in the docstring. The tests in tests/ inject the sleep and random functions; run them with `python -m pytest -q`.",
+ "check": "python -m pytest -q"
+}

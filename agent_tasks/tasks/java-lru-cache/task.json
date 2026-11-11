@@ -1,0 +1,7 @@
+{
+ "id": "java-lru-cache",
+ "domain": "java",
+ "image": "oqt-agent-java",
+ "prompt": "Implement LruCache in src/cache/LruCache.java: a fixed-capacity cache that evicts the least recently used entry, where both get and put count as use, and that is safe to call from several threads. Run the tests with `sh test.sh`.",
+ "check": "sh test.sh"
+}

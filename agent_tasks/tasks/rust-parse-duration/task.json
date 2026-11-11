@@ -1,0 +1,7 @@
+{
+ "id": "rust-parse-duration",
+ "domain": "rust",
+ "image": "oqt-agent-rust",
+ "prompt": "`parse_duration(\"1h30m\")` returns the wrong value and `\"90s\"` is rejected. Fix src/lib.rs so durations with h, m, s and ms units (in any combination, largest first) parse correctly, and invalid input returns a descriptive error instead of panicking. Run `cargo test`.",
+ "check": "cargo test --offline -q"
+}

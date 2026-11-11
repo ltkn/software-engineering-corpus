@@ -1,0 +1,7 @@
+{
+ "id": "java-invoice-ownership",
+ "domain": "java",
+ "image": "oqt-agent-java",
+ "prompt": "A security review found that any authenticated user can download any invoice (BOLA). Fix InvoiceService.invoiceFor so a user only gets invoices of their own tenant, and an unknown or foreign invoice looks the same to the caller (no existence leak). Run the tests with `sh test.sh`.",
+ "check": "sh test.sh"
+}

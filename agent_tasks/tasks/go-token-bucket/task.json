@@ -1,0 +1,7 @@
+{
+ "id": "go-token-bucket",
+ "domain": "go",
+ "image": "oqt-agent-go",
+ "prompt": "Implement the token-bucket rate limiter in limiter.go. It must use the injected clock (no time.Sleep in tests), allow bursts up to the capacity, refill continuously at the given rate, and be safe for concurrent use. Run `go test ./...`.",
+ "check": "go test ./..."
+}
