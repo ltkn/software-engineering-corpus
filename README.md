@@ -107,6 +107,10 @@ Follow in order, rerun earlier steps when later ones move. The steps assume the 
 6. Evaluate. `./llama-perplexity` on `eval/heldout-se.txt` and `eval/heldout-general.txt`, plus the perplexity-vs-F16 logit KL per file. Never ship a Q3/Q4 without this. For closer comparisons, score `eval/heldout-se2.txt` too — a larger (23k-token) SE heldout authored fresh from the same house style; zero 12-gram shingle overlap with `calibration/`, so it stays independent of what the quantizer fit.
 7. Tune. Move manifest weights at most ±25% per iteration, log the reason, and rerun 2–6. The recompute gate is `scripts/recompute_gate.py` and should be part of the corpus edit chain; any new claim in 03/23 goes in its task table.
 
+## oQ-T quants — one command
+
+`scripts/omlx_oqt.sh 4 v1` builds an oQ-T quant of Qwen3.8-Flash-Next on the 128 GB Mac (streamed, resumable). Setup, options and troubleshooting: **[OQT.md](OQT.md)**.
+
 ## Building oQ quants with oMLX — step order (Apple Silicon, custom corpus + Q8 N-gram)
 
 Same corpus, different toolchain: MLX safetensors quants (`oQ3e/oQ4e/oQ5e`) with the PLE N-gram table held at Q8. Head and embedding widths come from the oMLX allocator — the scripts pass no allocation override. Run on the quant host (128 GB); develop on any Mac.
