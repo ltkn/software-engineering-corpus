@@ -274,7 +274,7 @@ Acceptance: graceful shutdown in Spring, a preStop delay so endpoints are remove
 ---
 
 Goal: Move our ingress rules for users-svc to the Gateway API.
-Context: Today an Ingress routes /api/users to users-svc:8080 and /api/orders to orders-svc:8080 on shop.acme.example, with TLS. The platform team has installed a Gateway named public in namespace infra.
+Context: Today an Ingress handled by ingress-nginx (now retired upstream) routes /api/users to users-svc:8080 and /api/orders to orders-svc:8080 on shop.acme.example, with TLS. The platform team has installed a Gateway named public in namespace infra.
 Acceptance: HTTPRoute resources attached to the existing Gateway, path matching equivalent to the old Ingress, how cross-namespace attachment is permitted, and how to test before deleting the Ingress.
 
 ---
@@ -288,3 +288,51 @@ Acceptance: the Rollout spec with steps, an AnalysisTemplate with the Prometheus
 Goal: Our image tags are mutable and staging once ran a different image than production with the same tag. Make deployments reproducible.
 Context: CI builds users-svc:4.1.3 and sometimes rebuilds the same tag after a fix. Deployments reference the tag.
 Acceptance: immutable tags in the registry, deployments pinned by digest with the human-readable tag kept for reference, and how the digest flows from CI to the Helm values.
+
+---
+
+Goal: Migrate from ingress-nginx to the Gateway API now that the ingress-nginx project is retired.
+Context: 34 Ingress objects across 9 namespaces, using annotations for rewrites, basic auth, rate limits, CORS and custom timeouts. A Gateway API implementation is installed.
+Acceptance: an inventory of annotations in use, the Gateway API equivalents (HTTPRoute filters) or implementation-specific policies for the rest, a conversion tool for the first draft, running old and new in parallel on different hostnames, the DNS cutover, and what to do with annotations that have no equivalent.
+
+---
+
+Goal: Resize the CPU of running pods without restarting them.
+Context: Kubernetes 1.35 made in-place pod resize stable. users-svc (Java) needs more CPU during the morning peak; restarts are expensive because of a 60-second warmup.
+Acceptance: resizePolicy per resource (no restart for CPU, restart for memory), how to issue the resize and check its status, why a JVM will not use more memory without a restart, how a vertical autoscaler can use in-place resize, and quota implications.
+
+---
+
+Goal: Fix our log-shipping sidecar that keeps Jobs from completing and misses the first log lines.
+Context: The shipper runs as a regular second container. Jobs never finish because the sidecar keeps running, and it starts after the app so early logs are lost.
+Acceptance: native sidecar containers (an init container with restartPolicy: Always), the start and shutdown ordering they give, how Jobs complete with them, readiness of the sidecar before the app starts, and the minimum Kubernetes version.
+
+---
+
+Goal: Upgrade our charts and pipelines from Helm 3 to Helm 4.
+Context: 22 charts, deployed from CI; some resources are occasionally edited with kubectl during incidents; two Helm plugins are used in CI.
+Acceptance: the main behavior changes (server-side apply instead of three-way merge, kstatus-based waiting, the new plugin system, changed flags and output), field-ownership conflicts with manual kubectl edits and how to resolve them, testing the upgrade in staging, and pinning the Helm version in CI.
+
+---
+
+Goal: Enforce SHA pinning of GitHub Actions across our organization.
+Context: 120 repositories, most workflows reference actions by tag (@v4). We want unpinned actions to fail, without breaking every repository on day one.
+Acceptance: the organization policy that requires full-length commit SHAs, finding and rewriting existing references with a pinning tool, keeping the version as a comment, automated updates of the pins, an exception process, the role of immutable releases for actions we publish ourselves, and rolling the policy out in stages.
+
+---
+
+Goal: Replace our count-based optional resources in OpenTofu with the enabled meta-argument.
+Context: Dozens of resources use count = var.enable_x ? 1 : 0 and are referenced as aws_s3_bucket.logs[0] everywhere. We are on OpenTofu 1.11.
+Acceptance: the enabled meta-argument and how references change, moving existing state addresses without recreating resources, ephemeral resources for secrets fetched during plan and apply, and checking the plan shows no replacements.
+
+---
+
+Goal: Find the resources in our AWS account that Terraform does not manage yet.
+Context: Terraform 1.14 adds list resources and query files to search existing infrastructure. Over the years people created buckets and IAM roles by hand.
+Acceptance: writing a query for a resource type, reviewing the results against current state, generating import blocks and configuration for the ones to keep, deciding what to delete, and whether the providers we use support listing yet.
+
+---
+
+Goal: Check that our cluster and workloads are ready for nodes without cgroup v1.
+Context: The next Kubernetes upgrade removes cgroup v1 support. Some node pools run an older OS image; a few services run old JDK builds and an old monitoring agent.
+Acceptance: how to check the cgroup version per node, JVM versions that understand cgroup v2 limits (and the risk of an old JVM sizing its heap from the host), agents that read cgroup files, and the order of node-pool upgrades.

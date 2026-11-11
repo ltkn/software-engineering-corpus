@@ -127,3 +127,9 @@ Acceptance: what to measure (CPU per request, response time for slow and fast cl
 Goal: Find the cause of p99.9 latency spikes that appear once a minute.
 Context: p50 is 15 ms, p99.9 jumps to 900 ms at regular intervals. No errors. Happens on all pods at roughly the same time.
 Acceptance: candidate causes for periodic spikes (scheduled jobs, cache expiry, metrics scrape, GC, log rotation, DNS TTL), how to correlate spikes with events using traces and JFR, and how to confirm the culprit.
+
+---
+
+Goal: Reduce heap usage of our Java services with compact object headers.
+Context: Java 25. Services hold many small objects (DTOs, map entries); heap is 70% full at peak. JDK 25 made compact object headers a product option.
+Acceptance: the flag that enables it, the expected footprint and GC effect, measuring before and after with the same load, compatibility caveats, and rolling it out service by service.

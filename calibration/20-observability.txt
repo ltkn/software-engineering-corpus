@@ -399,7 +399,7 @@ Acceptance: Pyroscope deployment, Java agent or SDK and Go integration, labels f
 
 Goal: Get traces and metrics from a legacy service we cannot modify.
 Context: A closed-source HTTP service running in our cluster. We want request rates, latencies and traces without touching its code.
-Acceptance: eBPF-based auto-instrumentation (OpenTelemetry eBPF instrumentation, formerly Grafana Beyla), what it can see (HTTP/gRPC, latency, context propagation limits), deployment as a DaemonSet or sidecar, required privileges, and its limits compared with SDK instrumentation.
+Acceptance: eBPF-based auto-instrumentation (OpenTelemetry eBPF Instrumentation, OBI, now 1.0; formerly Grafana Beyla), which of its telemetry follows stable semantic conventions and which may still change, what it can see (HTTP/gRPC, latency, context propagation limits), deployment as a DaemonSet or sidecar, required privileges, and its limits compared with SDK instrumentation.
 
 ---
 
@@ -449,3 +449,27 @@ Acceptance: a scheduled saved search with the right time range, trigger conditio
 Goal: Cut observability costs without losing what matters during incidents.
 Context: Log and trace volume grew 3x in a year. Debug logs from two services make up 40% of log bytes; health-check spans are 30% of traces.
 Acceptance: dropping health-check spans and debug logs in the Collector, sampling strategies by service criticality, retention tiers, per-team usage reports, and a rule that any drop must keep error data.
+
+---
+
+Goal: Migrate our collectors from Grafana Agent and Promtail to Grafana Alloy.
+Context: Grafana Agent reached end of life in November 2025 and Promtail in March 2026. We run Agent in static mode on VMs and Promtail as a DaemonSet in Kubernetes.
+Acceptance: converting existing configurations with Alloy's converter and reviewing the result, the component-based configuration model, rolling out per environment with both running briefly, checking that series and log volumes match, and removing the old agents.
+
+---
+
+Goal: Switch our latency histograms to Prometheus native histograms.
+Context: Prometheus 3.8 made native histograms stable but opt-in. Our classic histograms have badly chosen buckets and high cardinality. Dashboards and alerts use histogram_quantile on _bucket series.
+Acceptance: enabling scraping of native histograms and sending them over remote write, client library support in our services, keeping classic buckets during the transition, updating PromQL (no le label), storage and cardinality effects, and checking that quantiles match.
+
+---
+
+Goal: Send OpenTelemetry metrics with dotted names to Prometheus without mangling them.
+Context: Services emit OTel metrics like http.server.request.duration over OTLP. Prometheus 3 accepts OTLP and UTF-8 metric and label names; our older dashboards expect underscore names.
+Acceptance: Prometheus's OTLP receiver and its name translation settings, querying UTF-8 names in PromQL with the quoted syntax, keeping old dashboards working during the change, resource attributes versus labels, and the choice we make for new services.
+
+---
+
+Goal: Evaluate the OpenTelemetry profiles signal for our continuous profiling.
+Context: We run Pyroscope with its own agents. The OpenTelemetry Profiles signal entered public alpha in 2026; some backends accept it.
+Acceptance: the signal's current stability and what alpha means for us, Collector and SDK support, backend support, risks of adopting now, a small trial that does not replace the working pipeline, and the criteria for switching later.

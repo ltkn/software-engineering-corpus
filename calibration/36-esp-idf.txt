@@ -1,5 +1,5 @@
 Goal: Create an ESP-IDF project for an ESP32-C6 with a clean component layout.
-Context: Firmware for a sensor node: a sensor driver, a network module (Wi-Fi plus MQTT), and the app logic. ESP-IDF 5.x. Today everything is in main/main.c.
+Context: Firmware for a sensor node: a sensor driver, a network module (Wi-Fi plus MQTT), and the app logic. ESP-IDF 6.x. Today everything is in main/main.c.
 Acceptance: idf.py commands to create the project and set the target, components with their own CMakeLists using idf_component_register with REQUIRES/PRIV_REQUIRES, an sdkconfig.defaults file committed instead of sdkconfig, and the build/flash/monitor command.
 
 ---
@@ -11,7 +11,7 @@ Acceptance: an idf_component.yml in the main component with version constraints,
 ---
 
 Goal: Connect to Wi-Fi as a station with reconnection, the event-driven way.
-Context: ESP32-C6, ESP-IDF 5.x. SSID and password from NVS. Today the code calls esp_wifi_connect() once and hopes.
+Context: ESP32-C6, ESP-IDF 6.x. SSID and password from NVS. Today the code calls esp_wifi_connect() once and hopes.
 Acceptance: esp_netif and default event loop setup, handlers for WIFI_EVENT_STA_DISCONNECTED and IP_EVENT_STA_GOT_IP, reconnect with backoff, an event group so other tasks can wait for the connection with a timeout, and logging the disconnect reason.
 
 ---
@@ -42,7 +42,7 @@ Acceptance: Secure Boot v2 with signing keys kept off the build machines, flash 
 ---
 
 Goal: Read a sensor over I2C with the new I2C master driver API.
-Context: ESP-IDF 5.x on an ESP32-C6. Sample code from the internet uses i2c_param_config and i2c_driver_install, which give deprecation warnings.
+Context: ESP-IDF 6.x on an ESP32-C6. Sample code from the internet uses i2c_param_config and i2c_driver_install; they are deprecated, and with warnings now treated as errors the build fails.
 Acceptance: creating the master bus and adding the device, transmit and receive with a timeout, handling a missing device, and why mixing the legacy and new driver in one firmware fails.
 
 ---
@@ -78,7 +78,7 @@ Acceptance: esp_http_server with handlers, reading a JSON body with a size limit
 ---
 
 Goal: Put the ESP32-C6 into deep sleep between readings and keep the device alive for a year on two AA batteries.
-Context: Reading every 15 minutes, send over Wi-Fi only if the value changed by more than 0.5 °C, otherwise sleep again. ESP-IDF 5.x.
+Context: Reading every 15 minutes, send over Wi-Fi only if the value changed by more than 0.5 °C, otherwise sleep again. ESP-IDF 6.x.
 Acceptance: timer wakeup, data kept in RTC memory across sleeps, a wake stub or quick path to decide without starting Wi-Fi, GPIO isolation to avoid leakage, and a power budget calculation.
 
 ---
@@ -196,3 +196,45 @@ E (325) esp_image: image at 0x10000 has invalid magic byte
 W (330) boot: OTA app partition slot 0 is not bootable
 The device was flashed with a custom partition table yesterday.
 Acceptance: what each line means, the likely cause (app flashed at an offset that no longer matches the table), how to recover (erase otadata or reflash all partitions), and how to avoid it in the flash scripts.
+
+---
+
+Goal: Migrate our firmware from ESP-IDF 5.x to 6.0.
+Context: The project uses the legacy ADC and RMT drivers, mbedtls_* calls for HMAC and AES, cJSON from the IDF, a custom Kconfig file, redirected stdout per task, and builds with a few warnings.
+Acceptance: the 6.0 breaking changes that apply (legacy drivers removed, MbedTLS 4 with the PSA Crypto API, Picolibc as default libc, warnings treated as errors, C23 and C++26 defaults, CMake 3.22.1 minimum, the new Kconfig tooling, cJSON as a managed component), a migration order, and how to keep 5.x builds in CI during the switch.
+
+---
+
+Goal: Port our message signing from legacy mbedtls_* calls to the PSA Crypto API.
+Context: ESP-IDF 6.0 moved to MbedTLS 4 and PSA. Today the code uses mbedtls_md_hmac with SHA-256 and mbedtls_gcm for AES-GCM; the key is a 32-byte array in NVS.
+Acceptance: initializing PSA, importing the key with the right attributes and usage flags, HMAC with psa_mac_compute and verification, AES-GCM with the AEAD functions, destroying keys, and whether the key can live in protected storage instead of plain NVS.
+
+---
+
+Goal: Set up ESP-IDF 6 on a new laptop and let our coding agent build and flash through the IDF MCP server, safely.
+Context: ESP-IDF 6.0 ships a new installation manager and an MCP server so AI coding tools can drive builds. The team uses several IDF versions across projects.
+Acceptance: installing with the installation manager, pinning the IDF version per project, starting the MCP server locally, limiting which actions the agent may run (build and read logs freely; flash only to a named port; never erase eFuses or burn security settings), and not exposing it on the network.
+
+---
+
+Goal: Choose the chip for a cost-sensitive Wi-Fi 6 smart plug: ESP32-C61, ESP32-C6 or ESP32-C5.
+Context: Needs Wi-Fi 6 and BLE, a small web UI, OTA, energy metering over UART, and Matter later. 5 GHz is not required. Price matters at volume.
+Acceptance: a comparison from current datasheets (radios, cores, PSRAM option, 802.15.4, GPIOs, IDF support status), what Matter over Wi-Fi needs in flash and RAM, and a recommendation with the trade-off accepted.
+
+---
+
+Goal: Add Wi-Fi 6E to an ESP32-P4 design using the ESP32-E22 as a radio co-processor.
+Context: The ESP32-P4 has no radio. The ESP32-E22, announced in early 2026, is Espressif's Wi-Fi 6E co-processor; engineering samples may be all that is available.
+Acceptance: the hosted-radio architecture and the host interface options, which firmware runs on each chip and how both are updated, 6 GHz regulatory constraints, current availability and support status to check before committing, and a fallback design with a C6 or C5 co-processor.
+
+---
+
+Goal: Choose between ESP32-H2 and ESP32-H4 for a battery-powered BLE and Thread sensor.
+Context: The device runs for years on a coin cell, advertises over BLE and joins a Thread network. ESP32-H4 is the newer low-power BLE plus 802.15.4 part.
+Acceptance: a comparison from the current datasheets (cores, sleep currents, BLE version, 802.15.4, memory), ESP-IDF support status for each, availability, and the recommendation.
+
+---
+
+Goal: Build a Matter-over-Thread contact sensor on an ESP32-C6 with esp-matter.
+Context: Battery powered, door contact on a GPIO. Must work with any Matter controller through a Thread border router.
+Acceptance: the device type and clusters, sleepy end device settings, commissioning over BLE, factory data and the device attestation certificates (and what production requires), OTA through Matter, and testing with Home Assistant's Matter integration.

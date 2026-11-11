@@ -139,3 +139,39 @@ Acceptance: a nonce- or hash-based script policy, moving the inline snippet to a
 Goal: Validate a form with the browser's Constraint Validation API and custom rules.
 Context: Fields: email, password (min 12 characters), password confirmation must match, birth date must make the user 16+. Messages must be translated.
 Acceptance: native attributes where possible, setCustomValidity for cross-field rules, showing messages accessibly next to fields and not only on submit, and server-side validation still in place.
+
+---
+
+Goal: Style the country picker with the browser's customizable select instead of our custom widget.
+Context: Our div-based dropdown has accessibility bugs. Recent browsers support an opt-in customizable select (appearance: base-select) with styleable parts; not every browser our users have supports it yet.
+Acceptance: the opt-in CSS, styling the button, picker and options (including flags next to names), keeping keyboard and screen-reader behavior native, the fallback in browsers without support, and feature detection.
+
+---
+
+Goal: Build a tooltip and an actions menu with the popover attribute and CSS anchor positioning, without a JavaScript positioning library.
+Context: Today Popper.js positions 12 kinds of floating UI; it adds weight and bugs on scroll.
+Acceptance: popover for the menu (top layer, light dismiss) and the right element and ARIA for the tooltip, anchor-name and position-anchor, fallback positions when there is no room, focus handling, and support checks with a fallback.
+
+---
+
+Goal: Animate dialogs and popovers in and out, including from display: none.
+Context: Entry animations never run because the element appears with display: none removed; exit animations are cut off.
+Acceptance: @starting-style for entry, transition-behavior: allow-discrete for display and overlay, the :open state where supported, respecting prefers-reduced-motion, and browser support with a graceful fallback.
+
+---
+
+Goal: Make the comment textarea grow with its content without JavaScript.
+Context: A resize script listens to input events and causes layout jank; the field should grow up to 12 lines, then scroll.
+Acceptance: field-sizing: content with min and max sizes, behavior with long words and pasted text, accessibility (no hidden overflow), and the fallback where unsupported.
+
+---
+
+Goal: Upgrade our Vue app from Vite 7 to Vite 8 (Rolldown).
+Context: Vite 8 replaced esbuild and Rollup with Rolldown and switched CSS minification to Lightning CSS. We use six Vite plugins, two of them unmaintained, and manual chunk configuration.
+Acceptance: checking plugin compatibility, the rolldown-vite package on Vite 7 as a bridge, chunking options that changed, comparing bundle contents and sizes before and after, CSS differences from the new minifier, and a rollback plan.
+
+---
+
+Goal: Make navigation to the product page feel instant with speculation rules.
+Context: A multi-page shop. Analytics show 60% of users on a listing page click one of the first three products.
+Acceptance: speculation rules for prefetch versus prerender, eagerness settings, excluding URLs with side effects (add to cart, logout), handling analytics in prerendered pages, browser support (progressive enhancement), and measuring the effect on LCP.

@@ -146,3 +146,15 @@ Acceptance: an RFC template filled in (motivation, proposal, drawbacks, alternat
 Goal: Draw our branching strategy as a Mermaid gitGraph.
 Context: main with short-lived feature branches merged through PRs, release branches cut for each minor version, hotfixes cherry-picked to the release branch.
 Acceptance: a gitGraph showing two features, a release branch with a hotfix, and the cherry-pick, with valid syntax and short commit labels.
+
+---
+
+Goal: Write the instruction file for coding agents in our repository.
+Context: The team uses several coding agents. Most read AGENTS.md; Claude Code reads CLAUDE.md. Agents keep running the wrong test command and editing generated files.
+Acceptance: an AGENTS.md with build and test commands that actually work, code conventions, directories not to touch (generated, vendored), how to run a single test, and the review expectations; keeping CLAUDE.md in sync (import or symlink); keeping it short and verified; no secrets; owners for changes to it.
+
+---
+
+Goal: Write the security advisory for the invoice download authorization fix.
+Context: GET /orders/{id}/invoice did not check ownership in versions 4.0.0 to 4.1.2; fixed in 4.1.3. A customer reported it; no evidence of exploitation so far. We publish advisories on GitHub and request a CVE.
+Acceptance: an advisory with summary, affected and fixed versions, severity with a CVSS vector and its rationale, impact, workarounds, credit to the reporter, and timeline; plus a note on when this would also trigger a regulatory report (for example under the EU Cyber Resilience Act if actively exploited).

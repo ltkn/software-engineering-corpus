@@ -139,3 +139,15 @@ Acceptance: a table of outcomes with what is known about the charge, the action 
 Goal: Prevent a thundering herd when 10,000 clients reconnect after an outage.
 Context: Mobile clients reconnect to our WebSocket gateway; after a 5-minute outage they all reconnect at once and knock it over again.
 Acceptance: client-side jittered exponential backoff, server-side admission control and connection rate limits, a "come back in N seconds" response, and testing the recovery path.
+
+---
+
+Goal: Process image jobs from Kafka with more workers than partitions, using share groups.
+Context: The jobs topic has 6 partitions, but bursts need 40 workers. Ordering does not matter; each job must be processed at least once and failing jobs must not block others. Kafka 4.2 made share groups (queues for Kafka) generally available.
+Acceptance: when share groups fit versus classic consumer groups, the share consumer and per-record acknowledgement (accept, release, reject), delivery counts and poison-record handling, the lack of ordering guarantees, broker version and feature settings, client and Spring Kafka support, and monitoring.
+
+---
+
+Goal: Decide whether to build the checkout saga on a durable execution engine instead of our own state machine.
+Context: Our hand-written saga persists state in Postgres, polls for timeouts and has had bugs in compensation retries. A team proposes Temporal or a similar workflow engine.
+Acceptance: what durable execution provides (persisted workflow state, retries, timers, visibility), the determinism rules workflow code must follow, versioning workflows already in flight, operating the engine (or paying for a hosted one), testing, and lock-in compared with keeping the current design.

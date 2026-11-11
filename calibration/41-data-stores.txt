@@ -40,9 +40,9 @@ Acceptance: maxmemory and the eviction policy for each instance, why noeviction 
 
 ---
 
-Goal: Migrate our Redis deployment to Valkey.
-Context: Redis 7.2 open-source, used for caching and rate limiting by four services with the Lettuce client. We want to move because of the license change.
-Acceptance: compatibility of commands and the protocol, client changes (if any), a migration with replication or dual-write, the checks before switching traffic, and rollback.
+Goal: Decide whether to move our Redis 7.2 deployment to Redis 8 or to Valkey 9, then plan the migration.
+Context: Redis 7.2 open-source, used for caching and rate limiting by four services with the Lettuce client. Redis 8 is open source again under AGPLv3 (alongside its other licenses); Valkey is the BSD-licensed fork. We run it internally and do not offer it as a service.
+Acceptance: what each license means for our use, feature differences that matter to us (for example hash field expiration, vector sets, cluster slot migration), client compatibility, a migration with replication or dual-write, the checks before switching traffic, and rollback.
 
 ---
 
@@ -146,3 +146,15 @@ Acceptance: invalidation messages (Valkey pub/sub or Kafka events from an outbox
 Goal: Choose a data store for each of these needs: sessions, a product catalog search, audit logs kept 7 years, a job queue, and user-uploaded files.
 Context: Current estate: Postgres 18, Kafka 4.3, Valkey, Garage. Small platform team; adding a new database is expensive to operate.
 Acceptance: a choice per need with the reason, what Postgres can cover before adding anything new, and the signals that would justify a dedicated search engine later.
+
+---
+
+Goal: Expire individual fields of a hash instead of whole keys.
+Context: Each user session is a hash with fields like cart, csrf_token and mfa_ok; mfa_ok must expire after 10 minutes while the session lives for 8 hours. Today we store mfa_ok in a separate key and they get out of sync.
+Acceptance: per-field TTL commands (supported by Valkey 9 and recent Redis), setting and refreshing a field's TTL, what happens to the hash when all fields expire, client library support, and the version check before relying on it.
+
+---
+
+Goal: Upgrade our Garage cluster from 1.x to 2.x.
+Context: Three nodes, about 6 TB. Our automation calls the admin API v1 with a single admin token. garage.toml still uses replication_mode.
+Acceptance: replacing replication_mode with replication_factor, why all nodes must be upgraded together (incompatible internal RPC) and the short downtime that implies, a metadata snapshot or backup first, moving automation to admin API v2 with scoped admin tokens instead of a master token, and post-upgrade checks.

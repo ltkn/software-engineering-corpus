@@ -161,3 +161,39 @@ Acceptance: the cxx bridge approach (or a C layer with bindgen), ownership of bu
 Goal: Set up a CI matrix that builds and tests with GCC and Clang on Linux and with Apple Clang on macOS.
 Context: CMake presets exist. We want warnings as errors, sanitizers on Linux only, and ccache to keep builds fast.
 Acceptance: the matrix definition, ccache configuration and cache keys, preset selection per job, and how to keep one failing compiler from hiding results of the others.
+
+---
+
+Goal: Use C++26 static reflection to generate enum-to-string conversion and JSON serialization without macros.
+Context: 40 enums and 25 plain structs, today covered by hand-written switch statements and an X-macro. The team uses GCC and Clang; reflection support is arriving compiler by compiler.
+Acceptance: a reflection-based enum_to_string and a to_json for aggregates, the compiler versions and flags that support it, a feature-test check with the old implementation as fallback, and the compile-time cost.
+
+---
+
+Goal: Add C++26 contracts to our money API and decide how violations are handled.
+Context: Money::split(int parts) requires parts > 0 and guarantees the parts sum to the original. Today these are asserts compiled out in release builds.
+Acceptance: pre and post contract assertions on the function, the evaluation semantics (ignore, observe, enforce, quick-enforce) and which to use in tests and in production, the violation handler, why contracts are not for validating untrusted input, and compiler support status.
+
+---
+
+Goal: Decide whether to rewrite our callback-based async pipeline with std::execution (senders/receivers).
+Context: A network service chains read, parse, query and respond with callbacks and a thread pool; error handling and cancellation are inconsistent. C++26 standardized std::execution.
+Acceptance: the core concepts (scheduler, sender, receiver, then/let_value, when_all, cancellation), how the pipeline would look, library availability (standard library support versus the reference implementation), the learning cost, and a recommendation for this team.
+
+---
+
+Goal: Turn on standard library hardening for our release builds.
+Context: C++26 standardizes a hardened library mode and "erroneous behavior" for reads of uninitialized variables. We want bounds checks on operator[] and similar preconditions in production now, with GCC and Clang.
+Acceptance: the hardening modes available today in libstdc++ and libc++ and how to enable them, what they check and what they cost, how uninitialized-variable reads are treated under C++26 and the compiler flags that help today, and measuring the overhead on our benchmarks.
+
+---
+
+Goal: Fix the C build that broke after upgrading to GCC 15.
+Context: error: 'bool' cannot be defined via 'typedef' — from a vendored C library that has typedef int bool; and #define true 1. GCC 15 changed the default C standard.
+Acceptance: why GCC 15's default of C23 makes bool, true and false keywords, the quick fix (pin -std=gnu17 for that target), the proper fix (include stdbool.h or drop the definitions), and finding other C23 incompatibilities (old-style function declarations, empty parameter lists).
+
+---
+
+Goal: Fix the configure step that fails after upgrading to CMake 4.
+Context: CMake Error: Compatibility with CMake < 3.5 has been removed from CMake. The error comes from three vendored dependencies with old cmake_minimum_required lines.
+Acceptance: why CMake 4 removed the old compatibility, the temporary policy-version override that unblocks the build, updating or patching the dependencies' minimum version properly, and pinning the CMake version in CI.

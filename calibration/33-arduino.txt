@@ -185,3 +185,27 @@ Acceptance: why the default PWM frequency causes it, configuring Timer1 for 25 k
 Goal: Migrate my ESP32 project from the classic ESP32 to an ESP32-C6 board.
 Context: Uses: Wi-Fi, BLE (as a beacon), LEDC PWM, touch pins for buttons, the hall sensor, and two cores (a task pinned to core 1). Core 3.x.
 Acceptance: what the C6 lacks or does differently (single RISC-V core, no touch pins, no hall sensor, Wi-Fi 6, 802.15.4 added), the code changes for each feature, and alternatives for the missing ones.
+
+---
+
+Goal: Build a Matter light with the Arduino-ESP32 core on an ESP32-C6.
+Context: Arduino core 3.x with its Matter library. The light should be controllable from Apple Home, Google Home and Home Assistant. On/off and brightness only.
+Acceptance: the Matter endpoint for a dimmable light, the partition scheme the Matter build needs, commissioning with the QR code or manual pairing code, a button that decommissions and factory-resets, Wi-Fi versus Thread transport support in the core version used, and what certification would require for a product.
+
+---
+
+Goal: Make an ESP32-H2 Zigbee temperature sensor with the Arduino core's Zigbee library.
+Context: Battery-powered, reports every 5 minutes, paired with Zigbee2MQTT. The sketch compiles but never joins.
+Acceptance: the Zigbee mode and partition scheme to select in the board options, the end-device role and clusters (temperature, battery), reporting configuration, sleepy end device behavior, pairing steps, and a factory-reset button.
+
+---
+
+Goal: Split a project across the Arduino UNO Q's Linux side and its microcontroller.
+Context: A camera-based sorter: object detection in Python on the board's Linux processor, servos and a conveyor sensor on the STM32 microcontroller running a sketch. Arduino App Lab is installed; the Bridge library connects the two sides.
+Acceptance: what runs on which side and why (real-time control on the MCU), Bridge calls in both directions with a small message contract, what happens if the Linux side restarts, 3.3 V level constraints on the headers, and deploying both parts as one App.
+
+---
+
+Goal: Connect an ESP32-C5 on the 5 GHz band with the Arduino core, falling back to 2.4 GHz.
+Context: Dual-band Wi-Fi 6 chip; the home router has separate 2.4 and 5 GHz networks with the same name. Arduino core 3.3 (based on ESP-IDF 5.5).
+Acceptance: a core version that supports the C5, how the sketch selects or prefers a band (from the core's Wi-Fi API documentation), behavior when 5 GHz is unavailable, checking the band and channel actually used, and power implications.

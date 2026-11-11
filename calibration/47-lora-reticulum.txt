@@ -34,7 +34,7 @@ Acceptance: a compact binary layout with fixed-point encodings, an integrity che
 
 ---
 
-Goal: Decide between raw LoRa, LoRaWAN, Meshtastic and Reticulum for a farm monitoring project.
+Goal: Decide between raw LoRa, LoRaWAN, Meshtastic, MeshCore and Reticulum for a farm monitoring project.
 Context: 25 sensors over 2 km², one barn with internet, no budget for a commercial LoRaWAN gateway, farmers also want to send short text messages between handhelds.
 Acceptance: what each option provides (addressing, routing, encryption, infrastructure needed), a recommendation for sensors and for messaging (possibly different), and the trade-offs accepted.
 
@@ -101,9 +101,9 @@ Acceptance: announce rate settings and interface modes on the boundary node, red
 
 ---
 
-Goal: Compare Meshtastic and Reticulum for an emergency communication network.
+Goal: Compare Meshtastic, MeshCore and Reticulum for an emergency communication network.
 Context: A volunteer group wants text messaging and position sharing between 40 devices in a region, with possible internet bridging. Devices: LilyGO and Heltec boards.
-Acceptance: architecture differences (flooding mesh vs routing with transport nodes), encryption and identity, the apps available, scaling with many nodes, firmware and maintenance effort, and a recommendation with its limits.
+Acceptance: architecture differences (managed flooding, MeshCore's repeaters with learned paths, Reticulum's routing with transport nodes), encryption and identity, the apps available, scaling with many nodes, firmware and maintenance effort, licensing, and a recommendation with its limits.
 
 ---
 
@@ -128,3 +128,51 @@ Acceptance: average current estimate in receive mode, battery and panel sizing f
 Goal: Debug why two LoRa nodes cannot hear each other on the bench.
 Context: Both use RadioLib with SX1262, same code, 30 cm apart. Transmit returns success; the receiver gets nothing.
 Acceptance: a checklist: same frequency, bandwidth, SF, coding rate, sync word, preamble, CRC and IQ settings; TCXO voltage; antenna connected; receiver actually in receive mode; interrupt pin wiring; and a known-good test with a second receiver or an SDR.
+
+---
+
+Goal: Set the transmit power of a Heltec WiFi LoRa 32 V4 so it stays within EU868 limits.
+Context: The V4 adds an external power amplifier after the SX1262 (different PA parts on different hardware revisions), giving up to about 28 dBm at the board. Our firmware sets the SX1262 to 22 dBm, as on older boards.
+Acceptance: the difference between chip output and board output with the PA, the regional limits for the sub-bands we use (and the higher-power sub-band with its stricter duty cycle), the PA enable or bypass control for our board revision, accounting for antenna gain, measuring actual output, and the same care when the board runs RNode or Meshtastic firmware.
+
+---
+
+Goal: Plan our move from RNS 0.9.x to the current Reticulum 1.x and check that its license fits our use.
+Context: Our nodes run RNS 0.9.x in a product we sell to farms. Reticulum left beta with 1.0 in late 2025 after a license change earlier that year and has moved on through the 1.x series (1.6 by late 2026). Community forks and a Rust port (rns-rs) exist.
+Acceptance: reading the current license terms and what they allow for our commercial use and redistribution, interoperability between 0.9 and current 1.x nodes, the upgrade order across the network, pinning versions, and whether the Rust port (a derivative work under the same Reticulum License) or a fork would serve us better.
+
+---
+
+Goal: Connect a Reticulum host to an RNode over Wi-Fi instead of USB.
+Context: The RNode sits on a mast with the antenna; the Raspberry Pi is indoors. Recent RNS and RNode firmware support connecting RNodes over Wi-Fi, Ethernet or BLE.
+Acceptance: the firmware and RNS versions needed, configuring the RNode's network side and the RNodeInterface on the host, securing that link (the local network becomes part of the path), latency and reconnect behavior, and a USB fallback for maintenance.
+
+---
+
+Goal: Set up a MeshCore network of repeaters for a valley, and decide what runs where.
+Context: Hikers use phones with companion radios; we have six solar sites on ridges and a hut with a computer. MeshCore offers companion, repeater and room server firmware.
+Acceptance: which firmware role each site gets, flashing and configuring the radio settings for the region, repeater administration, how MeshCore routes compared with Meshtastic's flooding, and how to check coverage and hop counts after installation.
+
+---
+
+Goal: Replace the Python rnsd on our Raspberry Pi gateways with the Rust implementation rns-rs, without breaking the network.
+Context: Gateways run Python Reticulum with an RNodeInterface (LoRa) and a TCPClientInterface to a backbone; other nodes stay on Python. rns-rs is a port of the Python reference that aims for wire compatibility (announces, links and resources with Python nodes) and says Python config files parse unchanged.
+Acceptance: building the rnsd binary with the interface features we need (an interface type not compiled in is a config error), reusing the existing ~/.reticulum config and identity files, checking state with rnstatus and rnpath, a canary gateway next to Python ones, the interop and radio-hardware caveats the project states, and rolling back to Python rnsd.
+
+---
+
+Goal: Write our sensor collector as a Rust application on rns-rs instead of a Python RNS script.
+Context: The collector receives readings from 40 Python-based sensor nodes over Reticulum and stores them in Postgres. It must run for months on a small ARM board. rns-rs exposes the node through the rns-net crate's RnsNode API; its protocol crates (rns-core, rns-crypto) are no_std.
+Acceptance: starting a node from our config, loading or creating the collector identity, registering and announcing the destination, receiving packets or links from Python senders, acknowledging receipt, keeping announces infrequent on LoRa, and an interop test against the Python reference before deployment.
+
+---
+
+Goal: Track the Reticulum reference implementation the way rns-rs does, and fetch it over Reticulum itself.
+Context: The reference implementation's normative repository is addressed as an rns:// destination on the Reticulum network, with GitHub as a mirror. rns-rs records which upstream commit it is at parity with and audits each upstream change (ported, already covered, not runtime-relevant, deferred). It ships Git-over-Reticulum tools (rngit, git-remote-rns).
+Acceptance: configuring Git to clone or fetch from the rns:// remote with the project's tools, comparing it with the GitHub mirror, a parity log for our own fork or port (upstream commit, disposition, tests), and how to notice when the mirror and the network source disagree.
+
+---
+
+Goal: Run interoperability tests between our Reticulum software and the Python reference in CI.
+Context: We maintain a Rust node based on rns-rs and a Python application. rns-rs tests byte-exact conformance vectors generated from Python, runs live interop tests against several pinned Python Reticulum versions, and has a Docker end-to-end matrix (chain, mesh and star topologies).
+Acceptance: pinning the Python versions to test against, a job that starts a Python node and a Rust node and checks announces, path discovery, links and resource transfer between them, Docker topologies for multi-hop cases, and failing the build on any interop regression.

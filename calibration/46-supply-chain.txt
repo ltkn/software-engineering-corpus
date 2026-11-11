@@ -121,3 +121,21 @@ Acceptance: a short explanation of how that attack worked (social engineering of
 Goal: Write the OpenSSF Scorecard improvements for our own open-source library.
 Context: Our public Java library scores 4.1/10. Low checks: branch protection, pinned dependencies, token permissions, signed releases, security policy.
 Acceptance: the concrete change for each low check, the order to do them in, and which checks matter to downstream users versus which are cosmetic.
+
+---
+
+Goal: Publish our npm packages with trusted publishing instead of tokens.
+Context: Three packages are published from GitHub Actions with an NPM_TOKEN secret. After the Shai-Hulud worm, npm revoked classic tokens and pushes publishers toward short-lived credentials and OIDC trusted publishing.
+Acceptance: configuring the trusted publisher for each package, the workflow permission and npm CLI version required, provenance attached automatically, removing the old token, two-factor rules for any manual publish, and the same approach for our PyPI package.
+
+---
+
+Goal: Respond to a self-spreading npm malware incident that may have reached us.
+Context: A worm is publishing malicious versions of popular packages that steal tokens from developer machines and CI, and pushes stolen secrets to public repositories. Our lockfiles may include affected versions.
+Acceptance: checking lockfiles and build logs against the published list of bad versions, isolating affected machines and runners, rotating every credential they could reach (npm, GitHub, cloud, CI secrets), looking for new workflows or repositories created with our tokens, blocking the bad versions in our registry proxy, and the follow-up controls.
+
+---
+
+Goal: Set up our process for vulnerability and incident reporting under the EU Cyber Resilience Act.
+Context: We sell a device and its companion app in the EU. Since 11 September 2026, manufacturers must report actively exploited vulnerabilities and severe incidents through ENISA's single reporting platform.
+Acceptance: what triggers a report, the deadlines (early warning within 24 hours of becoming aware, a notification within 72 hours, a final report within 14 days after a fix or mitigation is available), who decides and who submits, the information to have ready, how this coexists with GDPR breach notification, and a rehearsal; reviewed with legal counsel.

@@ -598,7 +598,7 @@ Content, 6 kinds:
 
 Shape per block: Signal needed → schema or config fragment → how it reads during an incident → leak or noise anti-pattern → verification (drill, scan, or dashboard assertion).
 
-Expansion 2026-11-11 (21 task-first blocks, Goal → Context → Acceptance → optional Reference, PREP_PLAN.md §3): the opinionated stack — OpenTelemetry Collector pipelines and tail sampling, the Boot 4.1 OTel starter, PromQL recording and alerting rules with promtool tests, SLO burn-rate alerts, Alertmanager routing and inhibition, Grafana dashboards as code, Loki (LogQL, label discipline), Tempo (TraceQL, exemplars), cardinality control, Pyroscope, eBPF auto-instrumentation, kube-state-metrics and blackbox probes, cost control — and Splunk (HEC export from the Collector, SPL, Universal Forwarder with props/transforms, field extraction, throttled alerts).
+Expansion 2026-11-11 (25 task-first blocks, refreshed for Alloy replacing Grafana Agent/Promtail, Prometheus native histograms and UTF-8/OTLP names, OBI 1.0 and the OTel profiles alpha; Goal → Context → Acceptance → optional Reference, PREP_PLAN.md §3): the opinionated stack — OpenTelemetry Collector pipelines and tail sampling, the Boot 4.1 OTel starter, PromQL recording and alerting rules with promtool tests, SLO burn-rate alerts, Alertmanager routing and inhibition, Grafana dashboards as code, Loki (LogQL, label discipline), Tempo (TraceQL, exemplars), cardinality control, Pyroscope, eBPF auto-instrumentation, kube-state-metrics and blackbox probes, cost control — and Splunk (HEC export from the Collector, SPL, Universal Forwarder with props/transforms, field extraction, throttled alerts).
 
 Mix target: ≥25% code-forward reference blocks (JSON log schemas, OTel config, alert rules).
 
@@ -811,7 +811,9 @@ Content, 5 kinds:
 
 Shape per block: Goal → Context (code, log, wiring or situation) → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
 
-Budget: task-first, short. Bundle share 2.0. est ~2.9k tokens, 34 blocks (2026-11-11).
+Budget: task-first, short. Bundle share 2.0. est ~3.4k tokens, 39 blocks (2026-11-11).
+
+Refreshed 2026-11-11 against Godot 4.5/4.6: Jolt as default 3D physics, abstract classes and variadic functions, screen reader support, IK solvers, Tracy profiling.
 
 Boundaries: general testing doctrine is 18; CI mechanics are 39; frontend web is 44.
 
@@ -831,7 +833,9 @@ Content, 5 kinds:
 
 Shape per block: Goal → Context (code, log, wiring or situation) → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
 
-Budget: task-first, short. Bundle share 2.5. est ~2.5k tokens, 31 blocks (2026-11-11).
+Budget: task-first, short. Bundle share 2.5. est ~2.9k tokens, 35 blocks (2026-11-11).
+
+Refreshed 2026-11-11: Arduino-ESP32 3.3 (ESP-IDF 5.5, ESP32-C5), the core's Matter and Zigbee libraries, and the Arduino UNO Q (Linux plus STM32 over Bridge).
 
 Boundaries: ESP-IDF in C is 36; embedded Rust is 35; LoRa is 47; sensor physics and edge ML are 48.
 
@@ -851,7 +855,9 @@ Content, 5 kinds:
 
 Shape per block: Goal → Context (code, log, wiring or situation) → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
 
-Budget: task-first, short. Bundle share 3.0. est ~2.6k tokens, 31 blocks (2026-11-11).
+Budget: task-first, short. Bundle share 3.0. est ~3.0k tokens, 35 blocks (2026-11-11).
+
+Refreshed 2026-11-11: let chains (2024 edition, 1.88), async closures (1.85), the MSRV-aware resolver, and the never-type fallback lints made errors in 1.92.
 
 Boundaries: no_std and microcontrollers are 35; supply-chain tooling (cargo-deny, audits) is 46; performance method is 43.
 
@@ -871,7 +877,9 @@ Content, 5 kinds:
 
 Shape per block: Goal → Context (code, log, wiring or situation) → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
 
-Budget: task-first, short. Bundle share 2.5. est ~2.4k tokens, 31 blocks (2026-11-11). Crate names in the ESP Rust stack move often: blocks name capabilities, not crate versions.
+Budget: task-first, short. Bundle share 2.5. est ~2.9k tokens, 36 blocks (2026-11-11). Crate names in the ESP Rust stack move often: blocks name capabilities, not crate versions.
+
+Refreshed 2026-11-11 for esp-hal 1.x: esp-wifi is now esp-radio, esp-hal-embassy merged into esp-rtos, stable vs unstable API policy, 802.15.4 from Rust, and Reticulum on ESP32 with rns-rs's no_std crates.
 
 Boundaries: application Rust is 34; ESP-IDF in C is 36; LoRa radios and Reticulum are 47; sensors and edge ML are 48.
 
@@ -879,7 +887,7 @@ Boundaries: application Rust is 34; ESP-IDF in C is 36; LoRa radios and Reticulu
 
 ## Scope: 36-esp-idf.txt
 
-Purpose: production firmware with ESP-IDF 5.x in C across the current Espressif line (C6, C5, S3, P4, H2), from project layout to secure, updatable fleets.
+Purpose: production firmware with ESP-IDF 6.x in C (5.x where projects have not migrated) across the current Espressif line (C6, C5, C61, S3, P4, H2, H4, and the E22 co-processor), from project layout to secure, updatable fleets.
 
 Content, 5 kinds:
 
@@ -891,7 +899,9 @@ Content, 5 kinds:
 
 Shape per block: Goal → Context (code, log, wiring or situation) → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
 
-Budget: task-first, short. Bundle share 2.5. est ~2.6k tokens, 32 blocks (2026-11-11).
+Budget: task-first, short. Bundle share 2.5. est ~3.2k tokens, 39 blocks (2026-11-11).
+
+Refreshed 2026-11-11 for ESP-IDF 6.0 (March 2026): legacy drivers removed, MbedTLS 4 with PSA Crypto, Picolibc, warnings as errors, C23/C++26 defaults, the installation manager and MCP server; chip choices including C61, H4 and the E22 Wi-Fi 6E co-processor; Matter over Thread.
 
 Boundaries: Arduino-style code is 33; Rust on Espressif is 35; LoRa is 47; sensors and edge ML are 48.
 
@@ -911,7 +921,9 @@ Content, 5 kinds:
 
 Shape per block: Goal → Context (pasted log, diff, error or situation) → Acceptance (what done looks like) → optional Reference (key point of a good answer; leakage check only, never calibration text).
 
-Budget: task-first, short. Bundle share 3.0. est ~3.8k tokens, 42 blocks (2026-11-11).
+Budget: task-first, short. Bundle share 3.0. est ~4.1k tokens, 45 blocks (2026-11-11).
+
+Refreshed 2026-11-11: git last-modified (2.52), preparing for Git 3.0 defaults (reftable, main), and agent instruction files as a review surface.
 
 Boundaries: CI pipelines are 39; shell tooling is 38; secret handling policy is 09 (37 covers the git mechanics of a leak).
 
@@ -931,7 +943,9 @@ Content, 5 kinds:
 
 Shape per block: Goal → Context (the script, command or output) → Acceptance → optional Reference.
 
-Budget: task-first, short. Bundle share 3.0. est ~2.9k tokens, 37 blocks (2026-11-11).
+Budget: task-first, short. Bundle share 3.0. est ~3.1k tokens, 39 blocks (2026-11-11).
+
+Refreshed 2026-11-11: bash 5.3's in-shell command substitution, and Ubuntu's switch to the Rust uutils coreutils.
 
 Boundaries: Linux service configuration is 21; git commands are 37; CI YAML is 39.
 
@@ -952,7 +966,9 @@ Content, 6 kinds:
 
 Shape per block: Goal → Context (workflow, Jenkinsfile, HCL, manifest or error) → Acceptance → optional Reference.
 
-Budget: task-first, short. Bundle share 3.0. est ~3.9k tokens, 44 blocks (2026-11-11).
+Budget: task-first, short. Bundle share 3.0. est ~4.7k tokens, 52 blocks (2026-11-11).
+
+Refreshed 2026-11-11: ingress-nginx retirement and Gateway API migration, in-place pod resize (GA in 1.35), native sidecars, cgroup v1 removal, Helm 4, org-wide SHA pinning of Actions, OpenTofu 1.11 enabled/ephemeral, Terraform 1.14 query.
 
 Boundaries: Linux host configuration is 21; observability stacks are 20; supply-chain signing and SBOMs are 46; architecture decisions are 19.
 
@@ -972,7 +988,9 @@ Content, 5 kinds:
 
 Shape per block: Goal → Context → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
 
-Budget: task-first, short. Bundle share 2.5. est ~2.3k tokens, 26 blocks (2026-11-11).
+Budget: task-first, short. Bundle share 2.5. est ~2.7k tokens, 32 blocks (2026-11-11).
+
+Refreshed 2026-11-11: C++26 (reflection, contracts, std::execution, library hardening and erroneous behavior), GCC 15's C23 default, CMake 4's removed compatibility.
 
 Boundaries: Arduino-style C++ is 33; ESP-IDF C is 36; Rust is 34; performance method is 43.
 
@@ -992,7 +1010,9 @@ Content, 5 kinds:
 
 Shape per block: Goal → Context → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
 
-Budget: task-first, short. Bundle share 2.5. est ~2.6k tokens, 25 blocks (2026-11-11).
+Budget: task-first, short. Bundle share 2.5. est ~2.3k tokens, 27 blocks (2026-11-11).
+
+Refreshed 2026-11-11: Redis 8 under AGPLv3 vs Valkey 9 as a real choice, per-field hash TTLs, Garage 2.x upgrade (replication_factor, admin API v2 with scoped tokens).
 
 Boundaries: Postgres internals are 12; Kafka is 13; distributed-systems patterns are 42.
 
@@ -1012,7 +1032,9 @@ Content, 5 kinds:
 
 Shape per block: Goal → Context → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
 
-Budget: task-first, short. Bundle share 2.5. est ~2.5k tokens, 24 blocks (2026-11-11).
+Budget: task-first, short. Bundle share 2.5. est ~2.2k tokens, 26 blocks (2026-11-11).
+
+Refreshed 2026-11-11: Kafka share groups (GA in 4.2) and durable execution engines for sagas.
 
 Boundaries: Kafka configuration is 13; architecture decisions are 19; data stores are 41.
 
@@ -1032,7 +1054,9 @@ Content, 5 kinds:
 
 Shape per block: Goal → Context → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
 
-Budget: task-first, short. Bundle share 2.0. est ~2.4k tokens, 22 blocks (2026-11-11).
+Budget: task-first, short. Bundle share 2.0. est ~1.8k tokens, 23 blocks (2026-11-11).
+
+Refreshed 2026-11-11: compact object headers as a product option in JDK 25.
 
 Boundaries: Postgres query plans are 12; Rust benchmarking is 34; frontend metrics in depth are 44.
 
@@ -1052,7 +1076,9 @@ Content, 5 kinds:
 
 Shape per block: Goal → Context → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
 
-Budget: task-first, short. Bundle share 2.0. est ~2.4k tokens, 24 blocks (2026-11-11).
+Budget: task-first, short. Bundle share 2.0. est ~2.4k tokens, 30 blocks (2026-11-11).
+
+Refreshed 2026-11-11: customizable select, popover with anchor positioning, @starting-style entry/exit animations, field-sizing, Vite 8 on Rolldown, speculation rules.
 
 Boundaries: Vue specifics are 16; TanStack is 17; React is 24; testing doctrine is 18.
 
@@ -1072,7 +1098,9 @@ Content, 5 kinds:
 
 Shape per block: Goal → Context → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
 
-Budget: task-first, short. Bundle share 2.0. est ~2.6k tokens, 24 blocks (2026-11-11).
+Budget: task-first, short. Bundle share 2.0. est ~2.1k tokens, 26 blocks (2026-11-11).
+
+Refreshed 2026-11-11: AGENTS.md (and CLAUDE.md) for coding agents, and security advisories with their regulatory angle.
 
 Boundaries: commit messages and PR descriptions are 37; architecture content is 19.
 
@@ -1092,7 +1120,9 @@ Content, 5 kinds:
 
 Shape per block: Goal → Context → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
 
-Budget: task-first, short. Bundle share 2.0. est ~2.4k tokens, 21 blocks (2026-11-11).
+Budget: task-first, short. Bundle share 2.0. est ~2.0k tokens, 24 blocks (2026-11-11).
+
+Refreshed 2026-11-11: npm trusted publishing after Shai-Hulud, responding to a self-spreading package worm, and EU Cyber Resilience Act reporting (in force since 11 September 2026).
 
 Boundaries: CI mechanics are 39; secret management doctrine is 09; application security is 06.
 
@@ -1112,7 +1142,9 @@ Content, 5 kinds:
 
 Shape per block: Goal → Context → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
 
-Budget: task-first, short. Bundle share 2.0. est ~2.6k tokens, 22 blocks (2026-11-11).
+Budget: task-first, short. Bundle share 2.0. est ~2.9k tokens, 30 blocks (2026-11-11).
+
+Refreshed 2026-11-11: Heltec V4's external PA and legal power, Reticulum 1.x (1.6 by late 2026) and its license, RNodes over Wi-Fi/Ethernet/BLE, MeshCore alongside Meshtastic, and the Rust port rns-rs (wire-compatible with the Python reference, which it tracks from the normative rns:// repository; interop testing; native ESP32 nodes).
 
 Boundaries: general Arduino is 33; embedded Rust is 35; ESP-IDF is 36; sensors are 48.
 
@@ -1132,7 +1164,9 @@ Content, 5 kinds:
 
 Shape per block: Goal → Context → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
 
-Budget: task-first, short. Bundle share 2.5. est ~3.1k tokens, 28 blocks (2026-11-11).
+Budget: task-first, short. Bundle share 2.5. est ~2.4k tokens, 30 blocks (2026-11-11).
+
+Refreshed 2026-11-11: air-quality sensors as Matter devices, and fleet-level sensor health monitoring.
 
 Boundaries: radio links are 47; firmware frameworks are 33/35/36; privacy law is 25.
 

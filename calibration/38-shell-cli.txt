@@ -258,3 +258,15 @@ Acceptance: a plain explanation of each stage, the portability problem on macOS,
 Goal: Decide whether our 350-line bash deploy script should be rewritten in Python.
 Context: It parses JSON with jq, builds Docker images, calls kubectl, retries HTTP calls, and has grown nested functions and string-built command lines. Two people understand it.
 Acceptance: concrete criteria for when bash is the wrong tool, what to keep in shell, what to move, and a migration plan that does not stop deploys.
+
+---
+
+Goal: Speed up a bash loop that runs a command substitution 20,000 times.
+Context: while read -r id; do name=$(lookup_name "$id"); ... done < ids.txt, where lookup_name is a shell function. Each $(...) forks a subshell. Servers have bash 5.3; developers' Macs have bash 3.2.
+Acceptance: bash 5.3's command substitution that runs in the current shell (the ${ cmd; } and ${| cmd; } forms), how its side effects differ from $(...), the measured speedup, and a fallback that works on older bash (returning via a variable instead of stdout).
+
+---
+
+Goal: Our provisioning scripts behave differently on new Ubuntu releases that ship the Rust-based coreutils.
+Context: A script that works on Ubuntu 24.04 fails on a newer release: one ls option is not accepted and a sort with locale settings produces a different order. Some servers use GNU coreutils, some uutils.
+Acceptance: how to tell which implementation is installed, sticking to POSIX or widely supported options, setting LC_ALL for deterministic sorting, a CI matrix that runs the scripts on both, how to install GNU coreutils where needed, and reporting incompatibilities upstream.

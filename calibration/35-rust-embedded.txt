@@ -92,7 +92,7 @@ Acceptance: the QEMU machine to target (lm3s6965evb with thumbv7m), the runner c
 
 Goal: Start a no_std Rust project for an ESP32-C6.
 Context: Fresh project, no Wi-Fi yet, just GPIO, an I2C sensor and logging. I want to use esp-hal directly, not ESP-IDF.
-Acceptance: the project generator or template for esp-hal, the RISC-V target used by the C6 (no special toolchain needed), flashing and monitoring with espflash, logging, and blinking an LED with the HAL's GPIO API.
+Acceptance: the project generator or template for esp-hal, the RISC-V target used by the C6 (no special toolchain needed), what is in esp-hal 1.x's stable API versus behind its unstable feature, flashing and monitoring with espflash, logging, and blinking an LED with the HAL's GPIO API.
 
 ---
 
@@ -115,8 +115,8 @@ Acceptance: Wi-Fi station setup with blocking or async wrapper, reconnect on dis
 ---
 
 Goal: Use embassy on an ESP32-C6 with esp-hal: blink, read a button, and run a Wi-Fi task.
-Context: no_std, esp-hal with the embassy integration. Wi-Fi connection in its own task.
-Acceptance: initializing the embassy time driver and executor for esp-hal, spawning tasks, the network stack and Wi-Fi task setup, and static allocation of the resources the tasks need.
+Context: no_std, esp-hal 1.x with esp-rtos (which replaced esp-hal-embassy) providing the scheduler and the embassy time driver. Wi-Fi via esp-radio in its own task.
+Acceptance: starting esp-rtos and the embassy executor, spawning tasks, the network stack and Wi-Fi task setup, the heap allocator esp-radio needs, and static allocation of the resources the tasks need.
 
 ---
 
@@ -186,3 +186,33 @@ Acceptance: what the executor does when idle versus a true stop mode, the time d
 Goal: Set up CI for an embedded Rust workspace with several boards.
 Context: Crates: drivers (host-testable), firmware for STM32F411, firmware for ESP32-C6 (no_std), and an RP2040 variant. GitHub Actions.
 Acceptance: host tests, cross builds for every target with the right toolchains (including the Espressif one where needed), clippy for embedded targets, binary size reported per PR, and caching to keep the job fast.
+
+---
+
+Goal: Upgrade our ESP32-C6 no_std firmware to esp-hal 1.x.
+Context: The firmware uses a pre-1.0 esp-hal, esp-wifi and esp-hal-embassy. The 1.0 release renamed and split crates: esp-wifi became esp-radio, and the scheduler and embassy integration moved into esp-rtos.
+Acceptance: the dependency changes, which APIs are stable in esp-hal 1.x and which need the unstable feature, the initialization changes, the order of the migration (build, then GPIO/I2C, then radio), and how to keep the old firmware buildable until the new one is validated.
+
+---
+
+Goal: Connect an ESP32-C6 to Wi-Fi in no_std Rust with esp-radio.
+Context: esp-hal 1.x, esp-rtos and embassy-net. Credentials compiled in for now. DHCP, then an HTTP request to a local server.
+Acceptance: the heap allocator esp-radio requires and how to size it, starting the esp-rtos scheduler, creating the Wi-Fi controller and network stack, waiting for an IP address, reconnecting after disconnects, and the release-mode settings Wi-Fi needs to run reliably.
+
+---
+
+Goal: Send and receive IEEE 802.15.4 frames between an ESP32-H2 and an ESP32-C6 in Rust.
+Context: esp-radio provides 802.15.4 support on these chips. We want a simple sensor-to-gateway link on one channel, not a full Thread network.
+Acceptance: radio configuration (channel, PAN id, addresses), sending and receiving frames, acknowledgements, frame size limits, and what would be needed to go further to Thread or Zigbee (and why that usually means ESP-IDF's stacks today).
+
+---
+
+Goal: Write a policy for which esp-hal APIs our production firmware may use.
+Context: esp-hal 1.x stabilized a core set of APIs; many drivers sit behind an unstable feature that can change in minor releases. Two products depend on the firmware.
+Acceptance: allowed and forbidden feature flags, how to pin versions and review upgrades, wrapping unstable drivers behind our own interfaces, and tracking when they become stable.
+
+---
+
+Goal: Evaluate running Reticulum natively on an ESP32 LoRa board with rns-rs instead of RNode firmware plus a host.
+Context: rns-rs splits Reticulum into no_std protocol crates (rns-core, rns-crypto with an ESP-IDF crypto backend) and std networking crates, and includes an ESP32 LoRa transport firmware targeting the Heltec WiFi LoRa 32 V3. Our hardware is the Heltec V4 (ESP32-S3 with an external PA). The project states that physical radio hardware validation is not yet claimed.
+Acceptance: which crates can run on the device and what stays on a host, memory and flash budget on the ESP32-S3, porting the board support from V3 to V4 (pins, PA control and legal transmit power), a bench test plan against Python Reticulum nodes, and the decision criteria versus RNode firmware.

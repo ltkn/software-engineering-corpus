@@ -210,3 +210,33 @@ Acceptance: a custom Resource class with exported, typed and ranged properties, 
 Goal: Our Godot project in git has constant merge conflicts in .tscn files and uid noise. Set it up properly.
 Context: Three people work on scenes. Diffs show changed uid values and reordered nodes. .godot/ was committed by mistake.
 Acceptance: the .gitignore for Godot 4, which files must be committed (including .uid files on recent versions), why .godot/ must not be, how to split big scenes to reduce conflicts, and how to resolve a .tscn conflict safely.
+
+---
+
+Goal: Decide whether to move our 3D project from Godot Physics to Jolt now that Jolt is the default for new projects (Godot 4.6).
+Context: Existing project upgraded from 4.4. It uses RigidBody3D vehicles with wheels, CharacterBody3D players, Area3D triggers, and a few hinge joints. Physics bugs would be very visible.
+Acceptance: where the physics engine is selected, the behaviors to compare (contacts and friction, joints, areas, scaled shapes, sleeping), a test scene that records differences, performance measurement, and a rollback plan.
+
+---
+
+Goal: Refactor our weapon classes with GDScript abstract classes and add a variadic logging helper (Godot 4.5+).
+Context: Base class Weapon has fire() and reload() that every subclass must override; today the base implementations call push_error("not implemented") and the bug shows only at runtime. A log_event(name, ...) helper takes a varying number of values.
+Acceptance: an abstract base class with abstract methods, the error you get when instantiating it, subclasses that must implement the methods, the variadic function syntax, and what breaks for teammates still on Godot 4.4.
+
+---
+
+Goal: Make our game's menus usable with a screen reader.
+Context: Godot 4.5 or later, menus built from Control nodes, some custom buttons drawn with _draw(). A blind player asked for support.
+Acceptance: enabling the engine's screen reader support, accessible names and descriptions for custom controls, focus order and keyboard navigation, announcing state changes (volume value, toggles), testing with NVDA and VoiceOver, and what remains out of reach for in-game content.
+
+---
+
+Goal: Make the character's feet stay on uneven ground using Godot's IK nodes.
+Context: Godot 4.6, humanoid Skeleton3D with an AnimationTree. On slopes and stairs the feet float or sink. The new IK solvers (for example TwoBoneIK3D) are available.
+Acceptance: one IK chain per leg with a target from a downward raycast, a pole or hint for knee direction, lowering the hips to the lower foot, blending IK with the animation so it fades during jumps, and the per-frame cost.
+
+---
+
+Goal: Find the source of a 30 ms frame spike in GDScript-heavy gameplay code.
+Context: Godot 4.6. The built-in profiler shows the spike in script time but not which function. Tracy profiler support for GDScript was added recently.
+Acceptance: what Tracy integration requires (including whether a custom engine build is needed), marking zones around suspicious code, reading the timeline, comparing with the built-in profiler and monitors, and confirming the fix.

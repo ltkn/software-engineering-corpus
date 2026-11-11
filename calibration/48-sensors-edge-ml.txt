@@ -163,3 +163,15 @@ Acceptance: an external component with a polling sensor class, configuration sch
 Goal: Design a privacy-respecting occupancy system for an office using mmWave and CSI instead of cameras.
 Context: The office wants to know which meeting rooms are occupied and how many desks are used, without identifying people.
 Acceptance: sensor choice per space, what data leaves the device (counts and flags only), on-device processing, retention, informing employees, and what the system cannot be used for by design.
+
+---
+
+Goal: Expose our CO2 and air-quality sensor as a Matter device so it works with any smart-home app.
+Context: ESP32-C6 with SCD41 and SGP41. Users have Apple Home, Google Home or Home Assistant.
+Acceptance: the Matter device type and clusters for air quality and CO2 concentration, Wi-Fi versus Thread for this device, mapping our readings and index to the cluster attributes, commissioning, how each ecosystem displays the values, and what certification requires.
+
+---
+
+Goal: Detect failing or drifting sensors in a fleet of 200 air-quality nodes.
+Context: Some nodes report flat values for days, some CO2 sensors read 300 ppm high after a year, and some die silently.
+Acceptance: rules for stuck values, impossible values and missing reports, comparing each node with neighbors and with its own history, flagging drift for recalibration, alert thresholds that avoid noise, and a dashboard of sensor health.

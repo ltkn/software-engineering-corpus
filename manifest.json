@@ -12,8 +12,8 @@
   },
   "bundle": {
     "target_tokens": "200k-250k weighted",
-    "blocks_counted": 2083,
-    "unweighted_estimate": "~274.2k est of 2083 counted blocks (bytes/5.5 pre-check; 2026-11-11 added the task-first files 32-48 and 21 task-first blocks in 20-observability, whose blocks are prompts for oQ-T generation rather than calibration text; ~1046.5k as sum(tokens x weight))",
+    "blocks_counted": 2157,
+    "unweighted_estimate": "~280.9k est of 2157 counted blocks (bytes/5.5 pre-check; 2026-11-11 added the task-first files 32-48 and task-first blocks in 20-observability, refreshed the same day against 2025-2026 releases; these blocks are prompts for oQ-T generation rather than calibration text; ~1063.1k as sum(tokens x weight))",
     "eval": [
       "eval/heldout-se.txt",
       "eval/heldout-general.txt",
@@ -159,8 +159,8 @@
     },
     {
       "id": "20-observability",
-      "blocks": 56,
-      "tokens": "est ~6.8k (pre-check 36.3 KB, ~121/block, 2026-11-11)",
+      "blocks": 60,
+      "tokens": "est ~7.2k (pre-check 38.5 KB, ~119/block, 2026-11-11)",
       "share": 2.5,
       "code_forward_target": ">=25%"
     },
@@ -243,120 +243,120 @@
     },
     {
       "id": "32-godot",
-      "blocks": 34,
-      "tokens": "est ~2.9k (pre-check 15.7 KB, ~86/block, 2026-11-11)",
+      "blocks": 39,
+      "tokens": "est ~3.4k (pre-check 18.2 KB, ~87/block, 2026-11-11)",
       "share": 2.0,
       "code_forward_target": null
     },
     {
       "id": "33-arduino",
-      "blocks": 31,
-      "tokens": "est ~2.5k (pre-check 13.6 KB, ~82/block, 2026-11-11)",
+      "blocks": 35,
+      "tokens": "est ~2.9k (pre-check 15.6 KB, ~83/block, 2026-11-11)",
       "share": 2.5,
       "code_forward_target": null
     },
     {
       "id": "34-rust",
-      "blocks": 31,
-      "tokens": "est ~2.6k (pre-check 14.0 KB, ~84/block, 2026-11-11)",
+      "blocks": 35,
+      "tokens": "est ~3.0k (pre-check 16.2 KB, ~86/block, 2026-11-11)",
       "share": 3.0,
       "code_forward_target": null
     },
     {
       "id": "35-rust-embedded",
-      "blocks": 31,
-      "tokens": "est ~2.4k (pre-check 12.9 KB, ~77/block, 2026-11-11)",
+      "blocks": 36,
+      "tokens": "est ~2.9k (pre-check 15.7 KB, ~81/block, 2026-11-11)",
       "share": 2.5,
       "code_forward_target": null
     },
     {
       "id": "36-esp-idf",
-      "blocks": 32,
-      "tokens": "est ~2.6k (pre-check 13.8 KB, ~80/block, 2026-11-11)",
+      "blocks": 39,
+      "tokens": "est ~3.2k (pre-check 17.3 KB, ~83/block, 2026-11-11)",
       "share": 2.5,
       "code_forward_target": null
     },
     {
       "id": "37-git-code-review",
-      "blocks": 42,
-      "tokens": "est ~3.8k (pre-check 20.6 KB, ~91/block, 2026-11-11)",
+      "blocks": 45,
+      "tokens": "est ~4.1k (pre-check 22.1 KB, ~92/block, 2026-11-11)",
       "share": 3.0,
       "code_forward_target": null
     },
     {
       "id": "38-shell-cli",
-      "blocks": 37,
-      "tokens": "est ~2.9k (pre-check 15.6 KB, ~78/block, 2026-11-11)",
+      "blocks": 39,
+      "tokens": "est ~3.1k (pre-check 16.7 KB, ~80/block, 2026-11-11)",
       "share": 3.0,
       "code_forward_target": null
     },
     {
       "id": "39-cicd-iac",
-      "blocks": 44,
-      "tokens": "est ~3.9k (pre-check 21.1 KB, ~89/block, 2026-11-11)",
+      "blocks": 52,
+      "tokens": "est ~4.7k (pre-check 25.2 KB, ~90/block, 2026-11-11)",
       "share": 3.0,
       "code_forward_target": null
     },
     {
       "id": "40-c-cpp",
-      "blocks": 26,
-      "tokens": "est ~2.1k (pre-check 11.5 KB, ~82/block, 2026-11-11)",
+      "blocks": 32,
+      "tokens": "est ~2.7k (pre-check 14.6 KB, ~85/block, 2026-11-11)",
       "share": 2.5,
       "code_forward_target": null
     },
     {
       "id": "41-data-stores",
-      "blocks": 25,
-      "tokens": "est ~2.0k (pre-check 11.0 KB, ~82/block, 2026-11-11)",
+      "blocks": 27,
+      "tokens": "est ~2.3k (pre-check 12.3 KB, ~85/block, 2026-11-11)",
       "share": 2.5,
       "code_forward_target": null
     },
     {
       "id": "42-distributed-systems",
-      "blocks": 24,
-      "tokens": "est ~2.0k (pre-check 10.5 KB, ~81/block, 2026-11-11)",
+      "blocks": 26,
+      "tokens": "est ~2.2k (pre-check 11.7 KB, ~84/block, 2026-11-11)",
       "share": 2.5,
       "code_forward_target": null
     },
     {
       "id": "43-performance",
-      "blocks": 22,
-      "tokens": "est ~1.7k (pre-check 9.1 KB, ~77/block, 2026-11-11)",
+      "blocks": 23,
+      "tokens": "est ~1.8k (pre-check 9.5 KB, ~77/block, 2026-11-11)",
       "share": 2.0,
       "code_forward_target": null
     },
     {
       "id": "44-frontend-platform",
-      "blocks": 24,
-      "tokens": "est ~1.9k (pre-check 10.1 KB, ~79/block, 2026-11-11)",
+      "blocks": 30,
+      "tokens": "est ~2.4k (pre-check 12.8 KB, ~80/block, 2026-11-11)",
       "share": 2.0,
       "code_forward_target": null
     },
     {
       "id": "45-docs-writing",
-      "blocks": 24,
-      "tokens": "est ~1.9k (pre-check 10.3 KB, ~80/block, 2026-11-11)",
+      "blocks": 26,
+      "tokens": "est ~2.1k (pre-check 11.5 KB, ~82/block, 2026-11-11)",
       "share": 2.0,
       "code_forward_target": null
     },
     {
       "id": "46-supply-chain",
-      "blocks": 21,
-      "tokens": "est ~1.7k (pre-check 9.1 KB, ~81/block, 2026-11-11)",
+      "blocks": 24,
+      "tokens": "est ~2.0k (pre-check 11.0 KB, ~85/block, 2026-11-11)",
       "share": 2.0,
       "code_forward_target": null
     },
     {
       "id": "47-lora-reticulum",
-      "blocks": 22,
-      "tokens": "est ~1.9k (pre-check 10.1 KB, ~86/block, 2026-11-11)",
+      "blocks": 30,
+      "tokens": "est ~2.9k (pre-check 15.4 KB, ~96/block, 2026-11-11)",
       "share": 2.0,
       "code_forward_target": null
     },
     {
       "id": "48-sensors-edge-ml",
-      "blocks": 28,
-      "tokens": "est ~2.2k (pre-check 12.0 KB, ~80/block, 2026-11-11)",
+      "blocks": 30,
+      "tokens": "est ~2.4k (pre-check 12.9 KB, ~80/block, 2026-11-11)",
       "share": 2.5,
       "code_forward_target": null
     }

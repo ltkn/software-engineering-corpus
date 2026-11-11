@@ -210,3 +210,35 @@ Acceptance: every way this is unsound (alignment, length rounding, endianness as
 Goal: Expose our Rust parsing library to Python.
 Context: The library parses a binary log format 30x faster than our Python code. Data scientists want parse_file(path) -> list of dicts, or better, something pandas can use directly.
 Acceptance: PyO3 bindings built with maturin, releasing the GIL during parsing, returning columnar data instead of millions of dicts, error mapping to Python exceptions, and building wheels in CI.
+
+---
+
+Goal: Flatten this nested if-let code with let chains.
+Context: if let Some(user) = session.user() {
+    if let Some(addr) = &user.address {
+        if addr.country == "FR" {
+            if let Ok(vat) = vat_for(addr) { apply(vat); }
+        }
+    }
+}
+The crate is on edition 2021 and the toolchain is a recent stable.
+Acceptance: the let-chain version, why it needs the 2024 edition (and Rust 1.88 or later), the edition migration steps, and a note on the changed temporary scope of if let that made let chains possible.
+
+---
+
+Goal: Accept async callbacks in my retry helper without fighting the borrow checker.
+Context: async fn retry<F, Fut>(mut f: F) -> Result<T> where F: FnMut() -> Fut, Fut: Future<Output = Result<T>>
+Callers want to pass a closure that borrows a &mut counter captured from the surrounding scope; it does not compile because the returned future cannot borrow from the closure.
+Acceptance: async closures and the AsyncFn/AsyncFnMut traits (stable since Rust 1.85), the new signature, why the old two-generic pattern cannot express borrowing from captured state, and the minimum Rust version this sets.
+
+---
+
+Goal: Keep our library building on its declared minimum Rust version while dependencies move on.
+Context: Downstream users are on Rust 1.80. cargo update keeps selecting dependency versions that need newer Rust, and our CI only tests the latest stable.
+Acceptance: rust-version in Cargo.toml, Cargo's MSRV-aware resolver (the default with resolver 3 / edition 2024) and how to enable it otherwise, a CI job on the MSRV, a lockfile policy for libraries, and a written MSRV policy.
+
+---
+
+Goal: Fix the build after a toolchain update fails with never-type fallback errors.
+Context: error: never type fallback affects this call to an `unsafe` function (never_type_fallback_flowing_into_unsafe) in our code, and a similar error from dependency_on_unit_never_type_fallback inside a dependency. Both were warnings before Rust 1.92.
+Acceptance: what never-type fallback is in plain words, why the lints became errors, fixing our code with explicit type annotations, handling the error in a dependency (update it, or patch temporarily), and pinning the toolchain in CI so such changes land on purpose.
