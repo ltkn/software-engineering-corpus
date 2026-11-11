@@ -71,6 +71,7 @@ Each stage reads the previous stage's cached output and writes its own, keyed by
 1. **Split.** Read `calibration/*.txt` into blocks with file, index and sha. Skip `#` header lines.
 2. **Classify.** Apply the per-file rule table from §2. Unknown shapes go to the model-derived path and are listed in the report, never silently dropped.
 3. **Derive prompts** (source B and seeds D). Model with thinking off, low temperature. Apply the leakage check against the block's own text.
+3b. **Vary** (§4b). Rewrite each prompt into other voices, so the bank looks like real user traffic rather than one clean author.
 4. **Sample.** Choose how many answers each prompt gets, using the manifest shares as sampling weights (this finally makes the weights do something). Default is two or three samples per prompt.
 5. **Generate answers.** Model with thinking on, at the model's recommended thinking-mode sampling (Qwen: temperature 1.0, top_p 0.95, top_k 20). Reasoning effort follows §4a. Requests are sent several at once through the oMLX server's OpenAI-compatible API.
 6. **Chain long sessions.** Group related prompts (same file or topic) into multi-turn conversations of 16–32k tokens, where each turn sees the earlier answers.
@@ -93,6 +94,34 @@ The script uses three generic levels and maps them to each model's own names, so
 - The mapping lives in a small per-model table, read from the model's chat template or encoding reference when possible. An unknown model fails with a clear message instead of guessing.
 - Default mix: **~70% `max`** (your normal setting), ~15% `medium`, ~15% `low`. The per-level split is in the report, so it can be tuned.
 - Thinking off is used only for prompt derivation (stage 3), never for calibration answers.
+
+## 4b. Variation pass
+
+**Why:** the corpus prompts are clean, complete and written in one house style. Real requests are terse, messy, partial, pasted, or not in English. Calibration data benefits more from that variety than from polish, and rewriting the corpus by hand would make it *less* varied (one author). So the corpus stays as written and the variety is generated.
+
+**How:**
+- For each prompt (rule-made or derived), the model writes **one or two variants**, thinking off, each in a voice drawn from this list:
+
+| Voice | What it looks like |
+|---|---|
+| `terse` | One line, no pleasantries: "keyset pagination for users, pg18, offset is too slow" |
+| `paste-first` | The error, log or code pasted first, the question last and short |
+| `rambling` | Partial context, a guess at the cause, extra detail that isn't needed |
+| `junior` | Unsure wording, asks for an explanation as well as the fix |
+| `non-native` | Correct meaning, non-native English phrasing |
+| `french` | The same request in French (the model answers in the language asked) |
+
+- **The original is always kept.** Variants are extra rows linked to the original's ID, never replacements.
+- **Weights are preserved.** A block's manifest share is split across its original and variants, so a file's total weight doesn't grow because it got varied.
+- **Default split:** about half of the prompt rows are originals; voices are drawn evenly, except `french`, which is capped at about 10% of variants.
+- **Checks on every variant:**
+  - the same leakage check as derive (no copying the answer part of the block);
+  - **task preservation:** the variant must keep the key technical terms of the original (names of APIs, tools, error codes, versions). A variant that drops most of them is rejected, because it has changed the task;
+  - code, logs and error text pasted in the original must survive verbatim in `paste-first` variants.
+- **Cached by content hash** like derive, with its own version tag, so changing the voice list only regenerates what changed.
+- **Report:** variants per voice, rejection rate per voice and per file, and a few random samples per voice for a quick human read.
+
+**Not varied:** the 04 passages (plain text, no prompt), and the heldout prompts. Heldouts are scored on their original wording only, so the evaluation stays comparable across runs.
 
 ## 5. Agent sessions — how agents work, in your stack
 
@@ -140,7 +169,7 @@ Starting mix, to be tuned against KL to the BF16 teacher and routing flips:
 
 ## 9. Outputs
 
-Written outside the repo (large), under `~/oqup/prep/<model>/<run>/`:
+Written outside the repo (large), under `~/oqup/prep/<run>/`. The prompt bank (`blocks.jsonl`, `prompts.jsonl`, the derive cache) is shared by every target model; answers and sessions go into a per-model folder under the same run:
 - `calibration-profile.jsonl` and `calibration-generic.jsonl`: one conversation per line, plain turns (system, user, assistant with thinking, tool calls and results), plus metadata: source, file, block sha, sample seed, model build, settings, token count, filter verdict.
 - `heldout.jsonl`: same format.
 - `report.md`: counts and tokens per source, file and domain, filter drop rates, agent outcome rates, leakage-check results, the model build used, and the oMLX and corpus commits.
@@ -166,8 +195,8 @@ One command with the target model, the oMLX server address, and the run name. Op
 
 ## 12. Build order
 
-1. Rule table and the split, classify and derive stages, checked against the current 31 files (every block accounted for).
-2. Answer generation, filters, and the report, run as the pilot.
+1. Rule table and the split, classify and derive stages, checked against the current 31 files (every block accounted for). **Done 2026-11-11:** `scripts/prep_calibration.py` (`extract`, `derive`, `all`). All 1,564 blocks are accounted for: 1,124 rule-made prompts, 431 knowledge cards for the model to derive, and 9 passages from 04 for the broad slice. Derive was tested against a stub server (leak rejection, retry, cache, merge); its first real run against oQ5 is still to do.
+2. Variation pass (§4b), then answer generation, filters, and the report, run as the pilot.
 3. Author 32–48 and the 20 expansion as task-first blocks, about 30–50 each to start, plus their held-out tasks. Do the most agent-relevant first: 37 (git), 38 (shell), 39 (CI/CD), then the rest.
 4. Agent harness and Docker sandbox images, starting with the Rust and Java tasks (the simplest toolchains), then git/shell/CI, observability, C/C++, Godot, Arduino, embedded Rust and ESP-IDF, then the remaining domains.
 5. Mixing, both profiles, and heldout sealing.
@@ -200,7 +229,9 @@ Settled 2026-11-11:
 
 The 20-observability expansion keeps its existing share. The new files add 41.5 to the existing total of 103.0, so the stack's effective share falls accordingly; that's the intended trade for breadth. The manifest is updated when each file is created, not before.
 
-Still open: nothing blocking. The next step is building the script (§12 step 1).
+- **No hand rewrite of the existing corpus.** The blocks stay as written (reference answers kept, old oQe arms stay comparable). Variety comes from the variation pass (§4b) instead.
+
+Still open: nothing blocking. Step 1 is built; next is the variation pass and step 2.
 
 ## 14. Further domains (agreed 2026-11-11)
 
