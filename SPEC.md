@@ -795,6 +795,106 @@ Boundaries: the probe that finds the violation is 08, the mechanism is 06, the e
 
 ---
 
+## Scope: 32-godot.txt
+
+Purpose: building games with Godot 4 in GDScript (plus GDShader) — gameplay code, scenes and signals, UI, tooling, and shipping. No C#.
+
+Content, 5 kinds:
+
+1. Gameplay — CharacterBody2D/3D controllers with delta-correct physics, coyote time and buffering, state machines, navigation, collision layers, cameras, AnimationTree.
+2. Scenes and architecture — signals and event buses, autoloads used sparingly, instancing and pooling, custom Resources for balance data (and the shared-resource trap), @tool scripts, TileMapLayer migration, procedural generation.
+3. UI and input — containers and anchors for any resolution, themes, focus navigation, keyboard/gamepad input with rebinding, pause and input propagation.
+4. Shaders and performance — canvas_item and spatial shaders (hit flash, screen-texture distortion, dissolve), per-instance materials, profiler use, batching and MultiMesh.
+5. Shipping — save files (JSON/ConfigFile, not untrusted Resources), GUT/gdUnit4 tests headless, CI exports, Web export headers, git setup, ENet multiplayer with authority.
+
+Shape per block: Goal → Context (code, log, wiring or situation) → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
+
+Budget: task-first, short. Bundle share 2.0. est ~2.9k tokens, 34 blocks (2026-11-11).
+
+Boundaries: general testing doctrine is 18; CI mechanics are 39; frontend web is 44.
+
+---
+
+## Scope: 33-arduino.txt
+
+Purpose: Arduino-style firmware on AVR, RP2040 and the Arduino-ESP32 3.x core, weighted toward recent Espressif chips (C3, C6, S3), with no hardware assumed for verification.
+
+Content, 5 kinds:
+
+1. Timing and I/O — millis()-based scheduling, debouncing, interrupts with volatile and atomic reads, hardware timers and LEDC on core 3.x, PWM frequency, encoders.
+2. Buses and peripherals — I2C (pins, pull-ups, scanners), shared SPI with transactions, UARTs and GPS, ADC calibration and attenuation, level shifting, RMT for LED strips, servos.
+3. Connectivity — Wi-Fi/MQTT reconnection, OTA with rollback, local web server with LittleFS, ESP-NOW, USB CDC on boot.
+4. Power and robustness — deep sleep with RTC memory, AVR heap fragmentation and F()/PROGMEM, task watchdog, Guru Meditation backtraces, FreeRTOS tasks from Arduino, SD logging under power loss.
+5. Engineering — non-blocking state machines with safety rules, host unit tests for pure logic, arduino-cli multi-board CI, library packaging, board choice, migrating classic ESP32 code to the C6.
+
+Shape per block: Goal → Context (code, log, wiring or situation) → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
+
+Budget: task-first, short. Bundle share 2.5. est ~2.5k tokens, 31 blocks (2026-11-11).
+
+Boundaries: ESP-IDF in C is 36; embedded Rust is 35; LoRa is 47; sensor physics and edge ML are 48.
+
+---
+
+## Scope: 34-rust.txt
+
+Purpose: application and library Rust — the borrow checker, error design, async services, performance, and the edges (unsafe, FFI, Python bindings).
+
+Content, 5 kinds:
+
+1. Ownership — E0502-style conflicts, lifetimes in structs, Rc/Arc/RefCell/Mutex choices, string types, Pin.
+2. Errors and APIs — thiserror for libraries, anyhow with context for binaries, unwrap removal, generics vs impl Trait vs dyn Trait, sync and async APIs, serde mapping, clap CLIs.
+3. Async services — axum with state and IntoResponse errors, sqlx with offline mode, reqwest timeouts and cancellation, worker pools with graceful shutdown, Send errors across .await, mixed runtimes.
+4. Performance and testing — allocation-free parsing, criterion benchmarks, proptest, streaming aggregation over huge files, leak hunting, integration tests against Postgres.
+5. Edges and tooling — unsafe soundness review, C FFI with safe wrappers, PyO3/maturin, workspaces and features, clippy policy, edition 2024 migration, cross-compilation.
+
+Shape per block: Goal → Context (code, log, wiring or situation) → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
+
+Budget: task-first, short. Bundle share 3.0. est ~2.6k tokens, 31 blocks (2026-11-11).
+
+Boundaries: no_std and microcontrollers are 35; supply-chain tooling (cargo-deny, audits) is 46; performance method is 43.
+
+---
+
+## Scope: 35-rust-embedded.txt
+
+Purpose: embedded Rust from bare metal to async — embedded-hal 1.0 drivers, embassy and RTIC, probe-rs debugging and defmt logging, and the Espressif Rust stack (esp-hal no_std and esp-idf-svc std).
+
+Content, 5 kinds:
+
+1. Foundations — no_std/no_main, project setup with probe-rs as runner, memory.x, panic handlers, HardFault and stack overflow diagnosis, binary size.
+2. Drivers and buses — generic drivers over embedded-hal 1.0 traits, SpiBus vs SpiDevice, bus sharing with embedded-hal-bus, 0.2→1.0 migration, async SPI with timeouts, DMA with 'static buffers.
+3. Concurrency — embassy tasks, channels and signals, Ticker-based control loops, RTIC 2 resources and priorities, static mut removal, interrupt-safety review with atomics and ordering.
+4. Espressif — esp-hal on the C6 (RISC-V, stable toolchain) vs Xtensa chips via espup, esp-hal vs esp-idf-svc choice, Wi-Fi/MQTT/TLS, BLE, embassy on esp-hal.
+5. Quality and power — host tests with mocks, on-target tests, QEMU in CI, defmt, flash-backed settings with CRC, stop modes and leakage, multi-board CI.
+
+Shape per block: Goal → Context (code, log, wiring or situation) → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
+
+Budget: task-first, short. Bundle share 2.5. est ~2.4k tokens, 31 blocks (2026-11-11). Crate names in the ESP Rust stack move often: blocks name capabilities, not crate versions.
+
+Boundaries: application Rust is 34; ESP-IDF in C is 36; LoRa radios and Reticulum are 47; sensors and edge ML are 48.
+
+---
+
+## Scope: 36-esp-idf.txt
+
+Purpose: production firmware with ESP-IDF 5.x in C across the current Espressif line (C6, C5, S3, P4, H2), from project layout to secure, updatable fleets.
+
+Content, 5 kinds:
+
+1. Project and build — components and REQUIRES, the component registry with pinned versions, sdkconfig.defaults per target, multi-chip CI in the espressif/idf image, size reduction, 4.4→5.x migration, Unity tests on the Linux target.
+2. Runtime — FreeRTOS tasks (stack sizes in bytes), queues and notifications, GPIO ISRs that only notify, stack overflow and task watchdog diagnosis, heap leak hunting, core dumps analysed against kept ELFs, boot-log reading.
+3. Connectivity — event-driven Wi-Fi with reconnect, provisioning over BLE, MQTT over mutual TLS, HTTP server, NimBLE GATT with bonding, ESP-NOW channel constraints, Thread end devices, Zigbee on the H2, Wi-Fi for the radio-less P4 via a C6 co-processor.
+4. Storage and updates — NVS init and recovery, partition tables with OTA slots and coredump, HTTPS OTA with rollback, secure boot v2, flash and NVS encryption (eFuse steps called out as irreversible).
+5. Power and peripherals — deep sleep with RTC memory, LP core sampling on the C6, DFS and light sleep with Wi-Fi power save, the new I2C master driver, ADC oneshot with calibration, RMT for LED strips.
+
+Shape per block: Goal → Context (code, log, wiring or situation) → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
+
+Budget: task-first, short. Bundle share 2.5. est ~2.6k tokens, 32 blocks (2026-11-11).
+
+Boundaries: Arduino-style code is 33; Rust on Espressif is 35; LoRa is 47; sensors and edge ML are 48.
+
+---
+
 ## Scope: 37-git-code-review.txt
 
 Purpose: how an engineer and a coding agent move code through git and review, end to end — history surgery, recovery, archaeology, and reviews that catch real defects. Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).

@@ -1,0 +1,198 @@
+Goal: Create an ESP-IDF project for an ESP32-C6 with a clean component layout.
+Context: Firmware for a sensor node: a sensor driver, a network module (Wi-Fi plus MQTT), and the app logic. ESP-IDF 5.x. Today everything is in main/main.c.
+Acceptance: idf.py commands to create the project and set the target, components with their own CMakeLists using idf_component_register with REQUIRES/PRIV_REQUIRES, an sdkconfig.defaults file committed instead of sdkconfig, and the build/flash/monitor command.
+
+---
+
+Goal: Use a component from the ESP Component Registry and pin its version.
+Context: I need a BME280 driver and the LED strip component. Today I copied their source into components/ and never update them.
+Acceptance: an idf_component.yml in the main component with version constraints, the lock file and whether to commit it, where managed components are downloaded, and how to update one dependency deliberately.
+
+---
+
+Goal: Connect to Wi-Fi as a station with reconnection, the event-driven way.
+Context: ESP32-C6, ESP-IDF 5.x. SSID and password from NVS. Today the code calls esp_wifi_connect() once and hopes.
+Acceptance: esp_netif and default event loop setup, handlers for WIFI_EVENT_STA_DISCONNECTED and IP_EVENT_STA_GOT_IP, reconnect with backoff, an event group so other tasks can wait for the connection with a timeout, and logging the disconnect reason.
+
+---
+
+Goal: Initialize NVS correctly and store settings that survive firmware updates.
+Context: nvs_flash_init() sometimes returns ESP_ERR_NVS_NO_FREE_PAGES after we changed the partition table, and the device bootloops.
+Acceptance: the standard init sequence that erases and retries only for the specific error codes, reading and writing typed values with a namespace, committing, and when erasing NVS on boot is dangerous.
+
+---
+
+Goal: Design the partition table for OTA updates on a 4 MB flash ESP32-S3.
+Context: The app binary is 1.6 MB and growing. We need two app slots, NVS, a small storage partition for logs, and room for a coredump.
+Acceptance: a partitions.csv with otadata, ota_0, ota_1, nvs, coredump and a data partition, offsets and alignment, the menuconfig settings to use it, and what to do when the app outgrows its slot.
+
+---
+
+Goal: Implement HTTPS OTA updates with automatic rollback.
+Context: ESP32-C6 fleet. The server hosts firmware with a version manifest. A bad update must not leave devices offline.
+Acceptance: esp_https_ota with server certificate verification, version check before downloading, the bootloader rollback option enabled, marking the new app valid only after it reaches the MQTT broker, and what the device does if it reboots before that.
+Reference: CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE; new image boots in pending-verify state; call esp_ota_mark_app_valid_cancel_rollback() after a health check; otherwise esp_ota_mark_app_invalid_rollback_and_reboot() (or a reset) returns to the previous slot.
+
+---
+
+Goal: Enable secure boot and flash encryption for production devices, without bricking the test fleet.
+Context: ESP32-C6, units will be shipped to customers. Firmware must not be readable or replaceable by someone with the board and a USB cable. We also need to keep OTA updates working.
+Acceptance: Secure Boot v2 with signing keys kept off the build machines, flash encryption in release mode, NVS encryption, the irreversible eFuse steps called out clearly, a development-mode rehearsal on spare boards first, and how OTA images are signed.
+
+---
+
+Goal: Read a sensor over I2C with the new I2C master driver API.
+Context: ESP-IDF 5.x on an ESP32-C6. Sample code from the internet uses i2c_param_config and i2c_driver_install, which give deprecation warnings.
+Acceptance: creating the master bus and adding the device, transmit and receive with a timeout, handling a missing device, and why mixing the legacy and new driver in one firmware fails.
+
+---
+
+Goal: Run a sensor task, a network task and a display task with FreeRTOS, and stop them corrupting shared data.
+Context: ESP32-S3. The sensor task updates a struct of readings at 10 Hz; the network task sends it every 5 s; the display task shows it at 2 Hz. Occasionally the display shows half-updated values.
+Acceptance: task creation with stack sizes in bytes (ESP-IDF's convention) and priorities, a queue or a mutex-protected snapshot for the readings, core affinity where it matters, and measuring stack high-water marks.
+
+---
+
+Goal: My device resets with "***ERROR*** A stack overflow in task sensor_task has been detected." Fix it properly.
+Context: The task has a 2048-byte stack, calls a JSON library and printf with floats, and declares a 512-byte buffer on the stack.
+Acceptance: measuring actual usage with uxTaskGetStackHighWaterMark, moving big buffers off the stack, the real cost of printf with floats, and choosing a new size with margin.
+
+---
+
+Goal: Handle a GPIO interrupt from a PIR sensor and process it in a task.
+Context: ESP32-C6. PIR output on GPIO 4, rising edge. Today the ISR calls ESP_LOGI and an MQTT publish, and the device crashes.
+Acceptance: installing the GPIO ISR service, a minimal ISR that only notifies a task (queue or task notification from ISR), IRAM placement, why logging and networking inside an ISR crash, and debouncing in the task.
+
+---
+
+Goal: Publish sensor data to an MQTT broker over TLS and receive commands.
+Context: ESP32-C6, esp-mqtt client. Broker requires TLS with a private CA and client certificates per device. Commands arrive on devices/<id>/cmd.
+Acceptance: client configuration with CA, client cert and key (stored where?), last will, QoS choices for telemetry and commands, the event handler for data, and reconnect behavior.
+
+---
+
+Goal: Expose a local HTTP API on the device for configuration.
+Context: ESP32-S3 in access-point mode during setup. Endpoints: GET /status, POST /wifi with SSID and password, POST /reboot. Phones connect to it once.
+Acceptance: esp_http_server with handlers, reading a JSON body with a size limit, input validation, CORS only if needed, and why credentials sent this way need care (AP password, short setup window).
+
+---
+
+Goal: Put the ESP32-C6 into deep sleep between readings and keep the device alive for a year on two AA batteries.
+Context: Reading every 15 minutes, send over Wi-Fi only if the value changed by more than 0.5 °C, otherwise sleep again. ESP-IDF 5.x.
+Acceptance: timer wakeup, data kept in RTC memory across sleeps, a wake stub or quick path to decide without starting Wi-Fi, GPIO isolation to avoid leakage, and a power budget calculation.
+
+---
+
+Goal: Use the LP core on the ESP32-C6 to sample a sensor while the main core sleeps.
+Context: An analog sensor should be checked every second; the main core should only wake when the value crosses a threshold.
+Acceptance: what the LP core can access, building and loading an LP core program from the project, sharing variables between LP and HP cores, waking the main core, and the current saved compared with waking every second.
+
+---
+
+Goal: Set up dynamic frequency scaling and light sleep to cut idle current while staying connected to Wi-Fi.
+Context: ESP32-C6 that must answer requests within 1 s. Average current today is 80 mA.
+Acceptance: esp_pm_configure with min and max frequency and automatic light sleep, the menuconfig options it requires, Wi-Fi power save mode and listen interval, power management locks for timing-critical code, and the expected current.
+
+---
+
+Goal: Get a crash dump from a device in the field and analyze it.
+Context: Some units reboot once a day. We have flash space and can upload files over MQTT. Builds are made in CI.
+Acceptance: core dump to flash enabled in menuconfig, reading the dump after reboot and uploading it, analyzing with idf.py coredump-info against the exact ELF of that build, and keeping ELF files for every released version.
+
+---
+
+Goal: Find a heap leak in the firmware: free heap drops by 2 KB every hour.
+Context: ESP32-S3 with Wi-Fi, MQTT and an HTTP client that fetches a config every 10 minutes.
+Acceptance: logging heap_caps_get_free_size and the minimum free heap over time, heap tracing around the suspected code, the usual culprits (HTTP client not cleaned up, cJSON objects not deleted), and a regression check.
+
+---
+
+Goal: Explain this log and fix the task watchdog trigger.
+Context: E (45213) task_wdt: Task watchdog got triggered. The following tasks did not reset the watchdog in time:
+E (45213) task_wdt:  - IDLE0 (CPU 0)
+E (45213) task_wdt: Tasks currently running:
+E (45213) task_wdt: CPU 0: modbus_poll
+The modbus_poll task loops reading a UART with a zero timeout.
+Acceptance: what the idle task watchdog detects, why this task starves IDLE0, the fix (blocking reads with a timeout, or yielding), and when to subscribe a task to the watchdog yourself.
+
+---
+
+Goal: Build a Thread end device on an ESP32-C6 that reports a door sensor.
+Context: Home with an existing Thread border router. Battery-powered device, door contact on GPIO 5.
+Acceptance: OpenThread configuration for a sleepy end device, joining the network (commissioning), sending a message when the door changes, polling period trade-offs, and how the C6 shares the radio between Thread and Wi-Fi if both are enabled.
+
+---
+
+Goal: Make an ESP32-H2 Zigbee light that a Zigbee coordinator can pair and control.
+Context: ESP32-H2 dev kit with an RGB LED. The coordinator is Zigbee2MQTT on a home server.
+Acceptance: the Zigbee SDK example to start from, the device type and clusters (on/off, level, color), handling attribute changes to drive the LED, factory reset with a button, and checking the device in the coordinator.
+
+---
+
+Goal: Implement a BLE GATT server with NimBLE exposing battery level and a custom configuration characteristic.
+Context: ESP32-C6. The phone app writes a JSON config (up to 200 bytes) and reads the battery level.
+Acceptance: NimBLE host setup, the standard battery service plus a custom 128-bit UUID service, handling writes longer than the MTU, requiring an encrypted (bonded) link for the config characteristic, and advertising data.
+
+---
+
+Goal: Drive a WS2812 LED strip with the RMT peripheral on an ESP32-C6.
+Context: 60 LEDs on GPIO 8. Bit-banging flickers when Wi-Fi is active.
+Acceptance: the RMT TX channel and an encoder for the WS2812 timing (or the led_strip component), refresh without blocking other tasks, and the power and level-shifting notes for 5 V strips.
+
+---
+
+Goal: Start a project on the ESP32-P4 that needs Wi-Fi.
+Context: ESP32-P4 Function EV board. The P4 has no radio. The board has an ESP32-C6 for connectivity.
+Acceptance: how Wi-Fi is provided to the P4 (the hosted solution over SDIO/SPI with the C6 as co-processor), which firmware runs on which chip, the components to add, and how the application code differs from a normal Wi-Fi app.
+
+---
+
+Goal: Build one firmware for several Espressif chips in CI.
+Context: The product line uses ESP32-S3, ESP32-C6 and ESP32-C5. GitHub Actions. Builds must use the same ESP-IDF version as developers.
+Acceptance: a matrix job using the official espressif/idf Docker image pinned to a version, idf.py set-target per chip, per-target sdkconfig.defaults files, size reports per target, and artifacts with the ELF kept for crash analysis.
+
+---
+
+Goal: Write unit tests for my components and run them without hardware.
+Context: Components: a ring buffer, a protocol parser and a sensor driver. ESP-IDF supports a Linux host target for some components.
+Acceptance: Unity tests in a test app, running the pure-logic components on the Linux target in CI, mocking hardware-facing code (CMock), and which tests still need a real board.
+
+---
+
+Goal: Reduce the firmware size; the app no longer fits the OTA slot.
+Context: 1.9 MB app on an ESP32-C6 with 1.875 MB slots. Features: Wi-Fi, MQTT with TLS, HTTP server, BLE, JSON.
+Acceptance: measuring with idf.py size-components, compiler optimization level, logging level at compile time, mbedTLS feature trimming, disabling unused components, and deciding whether BLE is worth its size.
+
+---
+
+Goal: Migrate a project from ESP-IDF 4.4 to 5.x.
+Context: Uses the legacy ADC and I2C drivers, esp_event, gpio_pad_select_gpio, a custom partition table, and portTICK_RATE_MS.
+Acceptance: the main breaking changes that apply (driver APIs, removed macros, component requirements now explicit), a migration order, and how to run both versions in CI during the migration.
+
+---
+
+Goal: Read the battery voltage with the ESP-IDF ADC oneshot driver and calibration.
+Context: ESP32-C6, divider on an ADC pin, battery 3.0-4.2 V. Readings must be accurate within 50 mV.
+Acceptance: oneshot unit and channel setup with attenuation, the calibration scheme available on this chip, averaging, converting through the divider, and reading while Wi-Fi is active.
+
+---
+
+Goal: Provision Wi-Fi credentials from a phone app instead of hardcoding them.
+Context: ESP32-C6 product, users configure it at home. We want a standard approach with an existing phone library.
+Acceptance: Espressif's provisioning manager over BLE (or SoftAP), proof-of-possession and security version, storing credentials, re-provisioning with a button, and what happens when the network changes.
+
+---
+
+Goal: Use ESP-NOW between ESP32-C5 nodes and a gateway that is also on Wi-Fi.
+Context: Gateway connected to a 5 GHz access point; nodes are battery powered. ESP-NOW messages stop arriving once the gateway connects to Wi-Fi.
+Acceptance: why the channel matters, how nodes find the gateway's channel (scan or a fixed channel on the AP), encryption with peer keys, and message acknowledgement and retries.
+
+---
+
+Goal: Explain the boot log of my ESP32-S3 and find why it bootloops.
+Context: rst:0x10 (RTCWDT_RTC_RST),boot:0x8 (SPI_FAST_FLASH_BOOT)
+...
+E (325) esp_image: image at 0x10000 has invalid magic byte
+W (330) boot: OTA app partition slot 0 is not bootable
+The device was flashed with a custom partition table yesterday.
+Acceptance: what each line means, the likely cause (app flashed at an offset that no longer matches the table), how to recover (erase otadata or reflash all partitions), and how to avoid it in the flash scripts.

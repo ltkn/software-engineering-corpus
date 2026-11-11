@@ -1,0 +1,187 @@
+Goal: Blink an LED, read a button, and print sensor values at the same time without delay() blocking everything.
+Context: Arduino Uno. LED on pin 13 every 500 ms, button on pin 2 (to GND, internal pull-up) toggles a mode, a DHT22-style sensor read every 2 s. With delay() the button feels dead.
+Acceptance: a non-blocking loop based on millis() with one timer per task, overflow-safe comparisons, and the button debounced in software.
+
+---
+
+Goal: My button counter counts 3 or 4 presses for one press. Fix it properly.
+Context: Button on pin 2 of an Uno, counted in an interrupt on FALLING. The counter variable is an int read in loop() and printed over Serial.
+Acceptance: why it bounces, a debounce strategy that works with an interrupt (or a reason to drop the interrupt), the volatile and atomic-read rules for a multi-byte variable shared with an ISR on AVR, and a hardware RC alternative.
+
+---
+
+Goal: Port my LED dimmer from the old ESP32 Arduino core to core 3.x.
+Context: Code from 2.x:
+ledcSetup(0, 5000, 8);
+ledcAttachPin(LED_PIN, 0);
+ledcWrite(0, duty);
+Compiling for an ESP32-C6 with core 3.x fails: 'ledcSetup' was not declared in this scope.
+Acceptance: the core 3.x LEDC API calls, what changed conceptually (pins instead of channels), fade support, and how to keep one sketch compiling on both cores during the transition.
+
+---
+
+Goal: Read an I2C sensor on an ESP32-S3 dev kit and find out why it is not detected.
+Context: BME280 breakout wired to GPIO 8 (SDA) and 9 (SCL), 3.3 V. Wire.begin() with no arguments; an I2C scanner finds nothing.
+Acceptance: Wire.begin with explicit pins, a scanner sketch, checks for address (0x76 or 0x77), pull-ups and power, and which board pins are reserved or strapping pins on the S3 that should be avoided.
+
+---
+
+Goal: Use the ESP32's hardware timer to sample an analog input at exactly 1 kHz.
+Context: Arduino-ESP32 core 3.x on an ESP32-C6. Samples go into a ring buffer that loop() drains and sends over Serial. The old timerBegin(0, 80, true) example from the internet does not compile.
+Acceptance: the core 3.x timer API, an ISR placed in IRAM that does the minimum, a lock-free ring buffer between ISR and loop, and why calling analogRead inside the ISR may be a bad idea on this core.
+
+---
+
+Goal: My ESP32 reads 0 to 4095 but the voltages are wrong and nonlinear. Get accurate millivolt readings.
+Context: Battery voltage through a 100k/100k divider on GPIO 1 of an ESP32-C3. analogRead gives 2400 at what a multimeter says is 1.95 V on the pin.
+Acceptance: attenuation settings, calibrated millivolt reading instead of raw counts, averaging, which pins can be used while Wi-Fi is on (ADC2 limits on chips that have it), and how to compute the battery voltage from the divider.
+
+---
+
+Goal: Save settings on an ESP32 so they survive a reboot, replacing EEPROM.
+Context: Settings: Wi-Fi SSID, password, a calibration float, and a counter incremented every boot. The code uses EEPROM.put/EEPROM.commit copied from an AVR sketch.
+Acceptance: the Preferences library (NVS) with namespaces and typed getters with defaults, wear considerations for the boot counter, and how to wipe settings with a long button press at boot.
+
+---
+
+Goal: Make my ESP32-C6 sensor node run for months on a battery.
+Context: It reads a temperature sensor every 10 minutes and sends the value over Wi-Fi to an MQTT broker. Today it stays awake and the battery lasts 2 days. Arduino core 3.x.
+Acceptance: deep sleep with a timer wakeup, keeping a counter and the last sent value in RTC memory, sending only when the value changed enough, turning the sensor off between readings, fast Wi-Fi reconnect, and how to measure the actual sleep current.
+
+---
+
+Goal: Keep the ESP32 connected to Wi-Fi and MQTT forever, even when the router reboots.
+Context: The sketch connects in setup() and never again. After a router restart the device stays offline until power-cycled.
+Acceptance: event-based Wi-Fi reconnection, MQTT reconnect with backoff in loop(), no blocking while loops that trip the watchdog, last will message for offline detection, and a periodic sanity check.
+
+---
+
+Goal: Update the firmware of devices in the field over Wi-Fi.
+Context: 30 ESP32-S3 boards in different houses, core 3.x. A web server hosts firmware.bin and a version.json. Devices must never brick if the download is interrupted.
+Acceptance: HTTPS update with certificate checking, version comparison before downloading, the partition layout it needs, what happens on power loss mid-update, and a rollback if the new firmware does not reach a "healthy" state.
+
+---
+
+Goal: Run two tasks on the ESP32 with FreeRTOS from an Arduino sketch: one reads sensors at 100 Hz, the other handles Wi-Fi and sends data.
+Context: ESP32-S3 (dual core), Arduino core. Today everything is in loop() and Wi-Fi hiccups make the sampling jitter.
+Acceptance: xTaskCreatePinnedToCore with stack sizes and priorities, a queue between the tasks, vTaskDelayUntil for a steady period, and why Serial prints from both tasks need protection.
+
+---
+
+Goal: My Arduino Uno sketch resets randomly after running for a few hours. Find out why.
+Context: The sketch builds a JSON string with String concatenation every second and sends it over Serial. Free RAM at startup is 600 bytes.
+Acceptance: heap fragmentation on AVR explained, measuring free RAM, moving constant strings to flash with F() and PROGMEM, replacing String with fixed char buffers and snprintf, and the watchdog to recover from hangs.
+
+---
+
+Goal: My ESP32-C3 prints nothing in the Serial Monitor, even though the sketch runs.
+Context: Board: ESP32-C3 SuperMini with only a USB-C port, no USB-UART chip. Serial.begin(115200) in setup, prints in loop. Arduino IDE board ESP32C3 Dev Module.
+Acceptance: why the output goes nowhere, the "USB CDC on boot" setting and its effect on Serial, waiting for the host in setup without blocking forever when no PC is connected, and the same issue on ESP32-S3 boards.
+
+---
+
+Goal: Drive a servo and a WS2812 LED strip from an ESP32 without the servo jittering.
+Context: ESP32-S3, 30 LEDs on GPIO 48 (Adafruit NeoPixel library), servo on GPIO 5. When the strip updates, the servo twitches.
+Acceptance: why bit-banged LED updates disturb timing, using the RMT peripheral for the strip and LEDC for the servo, the ESP32Servo library on core 3.x, and power supply and ground considerations.
+
+---
+
+Goal: Write a non-blocking state machine for a garage door controller.
+Context: Inputs: open button, close button, top limit switch, bottom limit switch, obstacle sensor. Outputs: motor up, motor down, warning light. Motor must stop after 20 s if no limit switch is reached.
+Acceptance: an enum-based state machine with a switch in loop(), timeouts with millis(), safety rules (obstacle reverses closing, both motor outputs never on together), and a test plan with only buttons and LEDs on the bench.
+
+---
+
+Goal: Compile the same sketch for an Uno, an RP2040 Pico and an ESP32-C6 from the command line, for CI.
+Context: Uses Wire and a sensor library from the Library Manager. Board-specific pin numbers are behind #if defined checks.
+Acceptance: arduino-cli commands to install cores and libraries (pinned versions), compile per FQBN, a sketch.yaml or script that holds the build profiles, and a CI job that compiles all three and fails on warnings.
+
+---
+
+Goal: Unit test the logic of my Arduino sketch on my computer, without a board.
+Context: The sketch has a moving-average filter, a threshold detector with hysteresis, and a command parser for Serial input. They are mixed with digitalRead/Serial calls in the .ino file.
+Acceptance: move the logic into plain C++ files with no Arduino calls, test them with a host compiler and a test framework, keep the .ino as a thin layer, and run the tests in CI.
+
+---
+
+Goal: Talk to an SPI display and an SPI SD card on the same bus without them corrupting each other.
+Context: Raspberry Pi Pico (RP2040, Arduino core by Earle Philhower). ILI9341 display and a microSD module share SPI0. The SD card works alone; with the display active, file writes fail.
+Acceptance: separate chip-select pins, SPI transactions with each device's settings, CS lines pulled high at boot before any init, and why some SD modules misbehave on a shared bus.
+
+---
+
+Goal: Use the second UART on a Pico to talk to a GPS module while keeping USB Serial for debugging.
+Context: RP2040 with the Philhower core. GPS sends NMEA at 9600 baud on its TX pin, wired to GP5. I want to parse latitude and longitude.
+Acceptance: setting the UART pins before begin, reading without blocking, parsing NMEA sentences (or using TinyGPSPlus), checking the checksum, and noting that the Pico is 3.3 V only.
+
+---
+
+Goal: Connect a 5 V sensor and a 5 V relay module to an ESP32 safely.
+Context: HC-SR04 ultrasonic sensor (5 V, echo pin outputs 5 V) and a 5 V relay board. The ESP32-C6 is 3.3 V.
+Acceptance: which signals need level shifting and how (divider for the echo, transistor or the relay board's input for the relay), flyback protection, common ground, and powering the relay coil from the right supply.
+
+---
+
+Goal: Measure distance with the HC-SR04 accurately and handle the "no echo" case.
+Context: Using pulseIn(echoPin, HIGH) without a timeout; when nothing is in front, loop() stalls for a second.
+Acceptance: a timeout on the measurement, conversion with the speed of sound adjusted for temperature, a median of several readings, and a non-blocking alternative with interrupts.
+
+---
+
+Goal: Serve a small web page from the ESP32 to show live readings and change a setting.
+Context: ESP32-S3 on the home network. The page shows temperature (updated every 2 s) and a form to set the alarm threshold. Files should not be strings inside the sketch.
+Acceptance: web server choice for core 3.x, static files from LittleFS, a JSON endpoint polled by the page (or server-sent events), input validation for the threshold, and basic authentication with the caveat that it is not secure over plain HTTP.
+
+---
+
+Goal: Send sensor data from 10 ESP32 nodes to one gateway without a Wi-Fi router.
+Context: Garden sensors, 50-100 m apart, battery powered. The gateway is an ESP32-S3 connected to Wi-Fi and MQTT.
+Acceptance: ESP-NOW for the nodes, pairing and message format with a node id and sequence number, the channel constraint when the gateway is also on Wi-Fi, encryption keys, and acknowledgements and retries.
+
+---
+
+Goal: My ESP32 reboots with "Guru Meditation Error: Core 0 panic'ed (LoadProhibited)". Find the cause.
+Context: Backtrace: 0x400d1f2a:0x3ffb1d70 0x400d2b11:0x3ffb1d90 ... The crash happens when the MQTT callback runs. The callback copies the payload into a global char buffer of 64 bytes.
+Acceptance: decoding the backtrace to source lines (the Exception Decoder or addr2line with the .elf), the likely bug (buffer overflow or null pointer), and defensive handling of the payload length.
+
+---
+
+Goal: Explain why my ESP32 keeps resetting with a task watchdog message and fix the sketch.
+Context: E (12034) task_wdt: Task watchdog got triggered. The following tasks did not reset the watchdog in time: IDLE0. The sketch has a while (!client.connected()) {} loop in setup().
+Acceptance: what the idle task watchdog checks, why a busy loop without yielding triggers it, the fix (delay or yield in loops, or restructuring), and when to add your own task to the watchdog instead of disabling it.
+
+---
+
+Goal: Choose between AVR Uno, Pico (RP2040) and an ESP32-C6 for a new project.
+Context: A plant monitor: two analog sensors, one I2C sensor, a small OLED, Wi-Fi to send data every 15 minutes, battery powered, and it should be easy for a beginner to maintain.
+Acceptance: a comparison on radio, power in sleep, ADC quality, tooling, and community support, a recommendation with reasons, and the one thing that would change the recommendation.
+
+---
+
+Goal: Write a small library for my custom sensor board so other sketches can use it.
+Context: The board has an I2C ADC (address set by a jumper) and an alert pin. Functions: begin(), readChannel(n), setThreshold(), and an alert callback.
+Acceptance: a library folder with library.properties, a class taking a TwoWire reference and address, no Serial prints inside the library, error codes instead of silent failures, an example sketch, and the version tag for the Library Manager.
+
+---
+
+Goal: Read a rotary encoder reliably at high speed on an ESP32.
+Context: KY-040 style encoder on GPIO 4 and 5. Polling in loop() misses steps when turning fast; a simple interrupt on one pin counts wrong directions.
+Acceptance: a quadrature state table decoder driven by interrupts on both pins (or the PCNT peripheral), handling bounce, and a thread-safe way to read the count from loop().
+
+---
+
+Goal: Store a log of sensor readings on an SD card for a year without corrupting the file system.
+Context: ESP32-S3 with a microSD module over SPI, one line every minute. Power can be cut at any moment.
+Acceptance: append-only CSV with periodic flush, one file per day, handling a missing or removed card, the risk of power loss during a write and how to limit it, and reading the files back over Wi-Fi.
+
+---
+
+Goal: Make my Arduino Nano control a 12 V fan's speed with PWM without the fan whining.
+Context: 4-wire PC fan, PWM pin wired to Nano pin 9. analogWrite gives an audible whine and poor speed control.
+Acceptance: why the default PWM frequency causes it, configuring Timer1 for 25 kHz on pins 9/10, reading the tachometer pulses to get RPM, and what not to change because millis() depends on Timer0.
+
+---
+
+Goal: Migrate my ESP32 project from the classic ESP32 to an ESP32-C6 board.
+Context: Uses: Wi-Fi, BLE (as a beacon), LEDC PWM, touch pins for buttons, the hall sensor, and two cores (a task pinned to core 1). Core 3.x.
+Acceptance: what the C6 lacks or does differently (single RISC-V core, no touch pins, no hall sensor, Wi-Fi 6, 802.15.4 added), the code changes for each feature, and alternatives for the missing ones.

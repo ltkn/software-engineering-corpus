@@ -1,0 +1,188 @@
+Goal: Set up a new no_std Rust firmware project for an STM32F411 board that flashes and logs with one command.
+Context: Black Pill board (STM32F411CEU6) with an ST-Link probe. I want cargo run to build, flash and show log output.
+Acceptance: target installed, .cargo/config.toml with probe-rs as the runner, memory.x for this chip, cortex-m-rt entry point, defmt logging over RTT with panic-probe, and the release profile settings for small binaries with debug info kept.
+
+---
+
+Goal: Explain what #![no_std] and #![no_main] change, and why my firmware fails to link with "undefined symbol: _start" or "duplicate lang item".
+Context: First embedded project. I added std-using code from a desktop crate and a println!.
+Acceptance: what core and alloc provide versus std, why there is no main, which crates bring a panic handler and an entry point, and how to spot a dependency that silently pulls in std.
+
+---
+
+Goal: Write a driver for an I2C temperature sensor that works on any microcontroller.
+Context: The sensor (address 0x48) has a 2-byte temperature register in 1/128 °C units and a config register. I want the same driver on STM32, RP2040 and ESP32-C6.
+Acceptance: a struct generic over the embedded-hal 1.0 I2c trait, methods that return the bus error type, a release() to get the bus back, no allocation, and a host test using a mock I2C.
+
+---
+
+Goal: Share one I2C bus between two drivers.
+Context: A temperature sensor and an OLED display both sit on I2C1. Each driver wants to own an I2c implementation. Single-threaded main loop, no RTOS.
+Acceptance: the embedded-hal-bus types for sharing (RefCell-based for one context, critical-section based when interrupts are involved), the code wiring both drivers, and why giving each driver its own clone of the peripheral is impossible.
+
+---
+
+Goal: Explain SpiBus versus SpiDevice in embedded-hal 1.0 and fix my driver.
+Context: My display driver takes an SpiBus and toggles a chip-select OutputPin itself. Another driver on the same bus does the same, and transfers interleave.
+Acceptance: what each trait represents, why drivers should take SpiDevice, how chip select and transactions are handled by the bus-sharing layer, and the updated driver signature.
+
+---
+
+Goal: Write my first embassy firmware: blink an LED and react to a button at the same time.
+Context: Raspberry Pi Pico (RP2040) with embassy-rp. LED on GPIO 25, button on GPIO 15 to ground.
+Acceptance: the async main with the executor, two tasks spawned, Timer for the blink, waiting for a falling edge on the button input, debounce, and how embassy sleeps the core between events.
+
+---
+
+Goal: Pass sensor readings from one embassy task to another.
+Context: Task A reads an accelerometer at 100 Hz. Task B sends averages over UART every second. Sometimes B is slow and A must not block.
+Acceptance: an embassy-sync Channel with a capacity and what happens when it is full, the mutex type parameter chosen for a single-core chip, a Signal for "latest value only" as an alternative, and static allocation of the channel.
+
+---
+
+Goal: Get rid of static mut in my firmware; the 2024 edition rejects references to it.
+Context: static mut BUFFER: [u8; 512] = [0; 512];
+static mut COUNT: u32 = 0;
+COUNT is incremented in an interrupt handler and read in the main loop; BUFFER is handed to a DMA transfer once at startup.
+Acceptance: an atomic for the counter, a safe one-time static initialization for the buffer (StaticCell or similar) giving a &'static mut, and a critical-section Mutex for state shared with an interrupt.
+
+---
+
+Goal: Write an RTIC 2 application with a timer interrupt and a button interrupt sharing a counter.
+Context: STM32F411. A 1 kHz timer task samples an ADC; the button resets statistics; a software task prints stats every second.
+Acceptance: the app module with shared and local resources, task priorities, locking only where needed (and why the highest-priority task may not need a lock), and the monotonic timer for the periodic task.
+
+---
+
+Goal: Find out why my firmware hits a HardFault and where.
+Context: probe-rs run stops with "Firmware exited unexpectedly: HardFault" and no panic message. It happens after a few minutes, when a large local array is filled.
+Acceptance: reading the backtrace probe-rs prints, the likely causes (stack overflow into data, unaligned access, invalid pointer), measuring stack usage, and the flip-link or stack-guard approach to turn silent overflow into a clean fault.
+
+---
+
+Goal: Make the firmware fit: it no longer fits in 64 KB of flash.
+Context: STM32G0 with 64 KB flash. Release build is 71 KB. Dependencies: defmt, a display driver, a font crate, heapless, and a formatting call with {:.2} for floats.
+Acceptance: measuring what takes space (cargo bloat or size per section), profile settings (opt-level, lto, codegen-units, panic behavior), removing float formatting from the binary, and checking defmt keeps strings off the device.
+
+---
+
+Goal: Use DMA to receive UART data into a buffer without losing bytes.
+Context: GPS module at 115200 baud on an STM32 with embassy-stm32. Reading byte by byte in a loop drops characters when the CPU is busy.
+Acceptance: a DMA-backed ring-buffered UART read, line splitting for NMEA sentences, buffer sizing for the worst-case processing gap, and why the DMA buffer must live for 'static.
+
+---
+
+Goal: Write a no_std ring buffer and command parser without heap allocation.
+Context: Commands arrive over UART: "SET RATE 100", "GET STATUS", up to 32 bytes each. No allocator on the device.
+Acceptance: heapless String and Vec usage, parsing with fixed-size buffers, error handling for overlong or unknown commands, and unit tests that run on the host with cargo test.
+
+---
+
+Goal: Test my embedded drivers on the host in CI.
+Context: Driver crate for a sensor plus application logic. The firmware crate targets thumbv7em-none-eabihf; tests should run on the CI machine.
+Acceptance: workspace split so the driver and logic crates build for the host, embedded-hal mocks with expected transactions, a target-only firmware crate, and on-target tests with defmt-test or embedded-test for what cannot be mocked.
+
+---
+
+Goal: Run my Cortex-M firmware in QEMU in CI, no hardware.
+Context: Simple firmware that computes CRCs and prints results. CI runner has qemu-system-arm.
+Acceptance: the QEMU machine to target (lm3s6965evb with thumbv7m), the runner configuration, semihosting for output and exit codes, and the limits of what QEMU emulates (no real peripherals for most chips).
+
+---
+
+Goal: Start a no_std Rust project for an ESP32-C6.
+Context: Fresh project, no Wi-Fi yet, just GPIO, an I2C sensor and logging. I want to use esp-hal directly, not ESP-IDF.
+Acceptance: the project generator or template for esp-hal, the RISC-V target used by the C6 (no special toolchain needed), flashing and monitoring with espflash, logging, and blinking an LED with the HAL's GPIO API.
+
+---
+
+Goal: Explain why my ESP32-S3 Rust project needs a different toolchain than my ESP32-C6 project.
+Context: The C6 project builds with stable Rust. For the S3, the build fails with an unknown target error for xtensa.
+Acceptance: Xtensa versus RISC-V cores, espup and what it installs, the toolchain file in the project, and how to keep both projects building on the same machine and in CI.
+
+---
+
+Goal: Choose between esp-hal (no_std) and esp-idf-hal/esp-idf-svc (std on top of ESP-IDF) for a Wi-Fi sensor product.
+Context: ESP32-C6, needs Wi-Fi, MQTT over TLS, OTA updates, NVS settings, and low power between readings. Team knows Rust but not C.
+Acceptance: what each stack gives (std library, ESP-IDF components, maturity of Wi-Fi/TLS/OTA), binary size and build time, debugging story, and a recommendation for this product with reasons.
+
+---
+
+Goal: Connect an ESP32-C6 to Wi-Fi and publish MQTT using the std ESP-IDF Rust stack.
+Context: esp-idf-svc. SSID and password in NVS. Broker at mqtts://broker.acme.home:8883 with a CA certificate.
+Acceptance: Wi-Fi station setup with blocking or async wrapper, reconnect on disconnect, the MQTT client with TLS and the CA bundle, publishing JSON readings, and handling the event loop without blocking it.
+
+---
+
+Goal: Use embassy on an ESP32-C6 with esp-hal: blink, read a button, and run a Wi-Fi task.
+Context: no_std, esp-hal with the embassy integration. Wi-Fi connection in its own task.
+Acceptance: initializing the embassy time driver and executor for esp-hal, spawning tasks, the network stack and Wi-Fi task setup, and static allocation of the resources the tasks need.
+
+---
+
+Goal: Log efficiently from firmware with defmt and read the logs.
+Context: Today the firmware formats strings with core::fmt and sends them over a UART at 115200 baud; logging slows the control loop.
+Acceptance: what defmt sends instead of strings, log levels filtered at compile time, formatting structs with derive(Format), reading logs through probe-rs, and what to do on boards without a debug probe.
+
+---
+
+Goal: Debug my RP2040 firmware step by step with breakpoints.
+Context: A Pico plus a second Pico flashed as a debug probe (debugprobe firmware). VS Code on macOS.
+Acceptance: probe-rs installation, wiring SWD, the debug configuration for VS Code, setting breakpoints and inspecting variables in an optimized build, and why some variables show as optimized out.
+
+---
+
+Goal: Handle a GPIO interrupt on an STM32 with the HAL and wake from sleep.
+Context: Bare cortex-m-rt (no embassy). A motion sensor pulls a pin high; the device should sleep with WFI and wake on the edge, then count events.
+Acceptance: configuring EXTI for the pin, the interrupt handler with the right attribute, clearing the pending bit, sharing the count safely, and the low-power mode chosen.
+
+---
+
+Goal: Read a sensor over SPI with async embedded-hal on embassy, with a timeout.
+Context: An IMU on SPI that sometimes stops responding after a brown-out. The read must not hang the task forever.
+Acceptance: embedded-hal-async SpiDevice usage, wrapping the read with an embassy timeout, a recovery path (reset pin toggle, re-init), and reporting the failure count.
+
+---
+
+Goal: Write a PWM motor controller task with a PID loop at a fixed rate.
+Context: embassy on RP2040. Encoder via PIO or interrupts gives speed; PWM drives an H-bridge. Loop at 1 kHz, target speed set over UART.
+Acceptance: a fixed-rate loop with Ticker (not Timer::after in a loop that drifts), fixed-point or f32 PID with anti-windup, clamping the duty cycle, and a safe stop when commands stop arriving.
+
+---
+
+Goal: Store settings in flash on a microcontroller without wearing it out.
+Context: RP2040 or STM32 with no EEPROM. Settings struct of ~64 bytes, changed a few times a day. Power can fail during a write.
+Acceptance: a dedicated flash region, a key-value or log-structured approach (sequential-storage style), CRC to detect torn writes, and the erase-cycle math showing the expected lifetime.
+
+---
+
+Goal: Review this embedded code for interrupt safety.
+Context: static READY: AtomicBool = AtomicBool::new(false);
+static mut SAMPLE: [u16; 64] = [0; 64];
+#[interrupt] fn ADC() { unsafe { SAMPLE.copy_from_slice(&read_dma()); } READY.store(true, Ordering::Relaxed); }
+loop { if READY.load(Ordering::Relaxed) { process(unsafe { &SAMPLE }); READY.store(false, Ordering::Relaxed); } }
+Acceptance: the data race (the ISR can overwrite while the loop processes), why Relaxed ordering is not enough here, and a corrected design (double buffer with proper ordering, or a critical section, or a channel).
+
+---
+
+Goal: Port my blocking firmware from embedded-hal 0.2 to 1.0.
+Context: Uses embedded_hal::blocking::i2c::{Write, WriteRead}, embedded_hal::digital::v2::OutputPin, and blocking::delay::DelayMs. The HAL crate was upgraded and the old traits are gone.
+Acceptance: the 1.0 equivalents, the error type changes (ErrorType and associated errors), DelayNs instead of DelayMs, and how to keep a driver usable by projects still on 0.2 during the transition.
+
+---
+
+Goal: Implement a BLE peripheral on an ESP32-C6 in Rust that exposes a temperature characteristic.
+Context: The phone app reads and subscribes to notifications. One reading per second.
+Acceptance: which BLE stack to use on the chosen Rust stack, advertising with a name, a GATT service and characteristic with read and notify, sending notifications only when subscribed, and reconnect after disconnect.
+
+---
+
+Goal: Reduce power consumption of my embassy firmware on an STM32L4 from 4 mA to microamps when idle.
+Context: The device wakes every 30 s to read a sensor and goes idle. Measured idle current stays at 4 mA.
+Acceptance: what the executor does when idle versus a true stop mode, the time driver needed to keep time in low-power modes, turning off peripherals and clocks, GPIO states that leak current, and measuring with a power profiler.
+
+---
+
+Goal: Set up CI for an embedded Rust workspace with several boards.
+Context: Crates: drivers (host-testable), firmware for STM32F411, firmware for ESP32-C6 (no_std), and an RP2040 variant. GitHub Actions.
+Acceptance: host tests, cross builds for every target with the right toolchains (including the Espressif one where needed), clippy for embedded targets, binary size reported per PR, and caching to keep the job fast.

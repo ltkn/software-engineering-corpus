@@ -1,0 +1,212 @@
+Goal: Fix this borrow checker error without cloning the whole vector.
+Context: fn bump_first_overdue(invoices: &mut Vec<Invoice>) {
+    let overdue = invoices.iter().find(|i| i.is_overdue());
+    if let Some(inv) = overdue {
+        invoices.push(inv.reminder());
+    }
+}
+error[E0502]: cannot borrow `*invoices` as mutable because it is also borrowed as immutable
+Acceptance: why the shared borrow is still alive at the push, two fixes (end the borrow by computing the new value first, or work with an index), and why cloning the vector is the wrong instinct.
+
+---
+
+Goal: Store parsed config values in a struct without copying strings, or explain why I shouldn't.
+Context: struct Route { path: &str, method: &str }
+error[E0106]: missing lifetime specifier. The routes are parsed from a config file read at startup and live for the whole program.
+Acceptance: the struct with a lifetime parameter and what it ties the struct to, the owned String alternative, Cow for the mixed case, and a recommendation for this startup-config case.
+
+---
+
+Goal: Share a cache between threads in a web service.
+Context: A HashMap<String, User> cache read by every request and written on cache misses. Today it is wrapped in Rc<RefCell<...>> and the compiler says Rc cannot be sent between threads safely.
+Acceptance: Arc with Mutex versus RwLock, how long locks are held, an off-the-shelf concurrent map as an option, and the deadlock risk of holding a lock while calling something that takes it again.
+
+---
+
+Goal: Fix "future cannot be sent between threads safely" when spawning a tokio task.
+Context: let guard = state.lock().unwrap();   // std::sync::Mutex
+let user = fetch_user(id).await?;
+guard.insert(id, user);
+tokio::spawn(handle(state.clone())) fails: `MutexGuard<...>` cannot be sent between threads safely.
+Acceptance: why holding a std MutexGuard across an .await breaks Send, restructuring so the lock is not held across the await, and when tokio's async Mutex is the right tool instead.
+
+---
+
+Goal: Design the error handling for a library crate and the CLI that uses it.
+Context: Library: parses invoice files and talks to an HTTP API; errors include I/O, JSON parse, HTTP status, validation. CLI: prints a helpful message and exits with a code. Today everything returns Box<dyn Error> and callers cannot match on errors.
+Acceptance: a typed error enum for the library with thiserror and source chaining, conversions so ? works, anyhow with context in the CLI, and mapping error kinds to exit codes.
+
+---
+
+Goal: Replace these unwraps with proper error handling.
+Context: fn load_port() -> u16 {
+    let s = std::fs::read_to_string("config.toml").unwrap();
+    let cfg: Config = toml::from_str(&s).unwrap();
+    cfg.server.port.parse().unwrap()
+}
+The service crashes at startup with "called `Result::unwrap()` on an `Err` value" and no hint which file or field.
+Acceptance: a version returning Result with context on each step (file path, field name), and where unwrap or expect is still acceptable.
+
+---
+
+Goal: Rewrite this loop with iterators, if it improves anything.
+Context: let mut totals: HashMap<String, u64> = HashMap::new();
+for o in &orders {
+    if o.status == Status::Paid {
+        let e = totals.entry(o.customer.clone()).or_insert(0);
+        *e += o.amount_cents;
+    }
+}
+Acceptance: an iterator version with filter and fold or a for loop with the entry API without the clone where possible, a comparison of readability, and whether either is faster.
+
+---
+
+Goal: Choose between generics, impl Trait and dyn Trait for my storage abstraction.
+Context: trait Store { fn get(&self, id: &str) -> Option<Vec<u8>>; fn put(&mut self, id: &str, data: &[u8]); }
+Implementations: in-memory (tests), filesystem, S3. The service picks one at startup from config.
+Acceptance: what each option costs and allows, which fits a runtime choice, how async methods change the answer, and code for the chosen approach.
+
+---
+
+Goal: Build a small HTTP API with axum: list and create users, with shared state and proper errors.
+Context: GET /users (with ?limit), POST /users with JSON body validation. State: a Postgres pool. Errors must come back as JSON with the right status codes, never as a panic.
+Acceptance: router with state, extractors (State, Query, Json), a custom error type implementing IntoResponse, input validation, and graceful shutdown on SIGTERM.
+
+---
+
+Goal: Query Postgres from Rust with compile-time checked SQL.
+Context: sqlx with Postgres 18. Table users(id uuid, tenant_id uuid, email text, created_at timestamptz). CI has no database available at compile time.
+Acceptance: a query_as! example mapping to a struct, a transaction around two inserts, migrations with sqlx migrate, and the offline mode (prepared query metadata committed) so CI builds without a database.
+
+---
+
+Goal: Add a timeout and cancellation to a set of concurrent HTTP calls.
+Context: For one request we call three internal services in parallel with reqwest. The whole thing must answer within 800 ms; if one service is slow, return partial data. When the client disconnects, stop the work.
+Acceptance: one reused reqwest Client, join or select patterns with tokio::time::timeout per call, partial results, and how cancellation works when the outer future is dropped (and what it does not cancel).
+
+---
+
+Goal: Write a CLI with subcommands using clap's derive API.
+Context: Tool invoicectl with subcommands: list (--status, --since DATE), send <ID> (--dry-run), export (--format csv|json, --out FILE). Config file path from --config or the INVOICECTL_CONFIG env var.
+Acceptance: derive structs and enums, value parsing for the date and the format enum, env var fallback, helpful --help output, and exit codes.
+
+---
+
+Goal: Make serde deserialize our API's JSON, which has camelCase keys, optional fields and an enum encoded as a string.
+Context: {"orderId":"o-17","totalCents":1299,"status":"PAID","couponCode":null,"createdAt":"2026-11-02T09:00:00Z"}
+Some old payloads omit couponCode entirely; future payloads may add fields.
+Acceptance: derive attributes for renaming, Option with defaults, the enum mapping, a timestamp type, ignoring unknown fields versus denying them, and a test with an old and a new payload.
+
+---
+
+Goal: Explain why this compiles in one edition and not in another, and migrate the crate to the 2024 edition.
+Context: The crate is on edition 2021. cargo fix --edition reports changes around unsafe extern blocks, static mut references and some impl Trait return types.
+Acceptance: what cargo fix --edition does and does not do, the manual changes typically left, how to migrate a workspace crate by crate, and how to check nothing changed behavior.
+
+---
+
+Goal: Reduce allocations in a hot function that parses log lines.
+Context: fn parse(line: &str) -> Entry { let parts: Vec<String> = line.split(' ').map(|s| s.to_string()).collect(); Entry { ip: parts[0].clone(), status: parts[8].parse().unwrap(), ... } }
+It parses 2 million lines per second target; today it reaches 300k.
+Acceptance: borrowing &str from the line instead of allocating, avoiding the intermediate Vec, returning a struct with a lifetime or owned fields only where needed, measuring with a benchmark, and handling malformed lines without panicking.
+
+---
+
+Goal: Benchmark two implementations properly.
+Context: Two versions of a JSON field extractor. A quick Instant::now() measurement in main() shows the new one 40% faster, but numbers vary a lot between runs.
+Acceptance: a criterion benchmark with realistic inputs, black_box where it matters, what the confidence intervals mean, and the common ways micro-benchmarks lie (optimized-away code, cache-warm data).
+
+---
+
+Goal: Test a function that rounds money amounts with property-based testing.
+Context: fn allocate(total_cents: u64, weights: &[u32]) -> Vec<u64> splits a total across weights; the sum must equal the total exactly and each part must be within one cent of its exact share.
+Acceptance: proptest strategies for totals and weight lists (including zeros), properties for sum and fairness, how shrinking reports a minimal failing case, and the edge case that probably fails first.
+
+---
+
+Goal: Call a C library from Rust safely.
+Context: libtinycrc with: uint32_t tc_crc32(const uint8_t *buf, size_t len); and tc_ctx *tc_new(void); void tc_free(tc_ctx *); int tc_update(tc_ctx *, const uint8_t *, size_t). The library is built from source in the repo.
+Acceptance: build script compiling and linking the C code, generated or hand-written bindings, a safe wrapper struct that frees the context in Drop, slices instead of raw pointers in the public API, and what the safe wrapper must guarantee for the unsafe blocks to be sound.
+
+---
+
+Goal: Explain what Pin is for, using the error I got.
+Context: Trying to store a future in a struct and poll it manually gives: the trait `Unpin` is not implemented for `...async block...`.
+Acceptance: why self-referential futures must not move, what Pin promises, Box::pin and the pin! macro as practical fixes, and why most application code never needs to think about it.
+
+---
+
+Goal: Organize our growing project as a cargo workspace.
+Context: One crate with a server, a CLI, shared domain types and a big test suite. Builds take 4 minutes for any change. The CLI does not need the server's dependencies.
+Acceptance: workspace layout with member crates, shared dependency versions in the workspace manifest, features to keep heavy dependencies optional, and what this does to incremental build times.
+
+---
+
+Goal: Fix these clippy warnings and decide which lints to deny in CI.
+Context: warning: this `if` has identical blocks (clippy::if_same_then_else)
+warning: using `clone` on type `Uuid` which implements the `Copy` trait (clippy::clone_on_copy)
+warning: you seem to be trying to use `match` for destructuring a single pattern (clippy::single_match)
+warning: this function has too many arguments (9/7) (clippy::too_many_arguments)
+Acceptance: the fix for each warning, which one deserves an allow with a reason, and a CI setting that fails on warnings without blocking new toolchain releases unexpectedly.
+
+---
+
+Goal: Read a 40 GB CSV file and aggregate it without running out of memory.
+Context: Columns: timestamp, tenant, route, status, latency_ms. Need per-tenant request counts and p95 latency. The machine has 16 GB of RAM.
+Acceptance: streaming reading with the csv crate and serde, constant memory aggregation (exact counts, an approximate quantile sketch or per-tenant histograms), progress reporting, and handling of malformed rows with a count instead of a crash.
+
+---
+
+Goal: Implement a graceful worker pool that processes jobs from a channel and shuts down cleanly.
+Context: tokio. Jobs arrive on an mpsc channel; 8 workers; on SIGTERM stop taking new jobs, finish in-flight ones within 30 s, then exit.
+Acceptance: bounded channel for backpressure, workers sharing the receiver correctly, a cancellation token or watch channel for shutdown, waiting for workers with a deadline, and what happens to queued but unstarted jobs.
+
+---
+
+Goal: Explain the difference between String, &str, Box<str>, Cow<str> and Arc<str>, with when to use each.
+Context: Our code base mixes them randomly and reviewers keep asking for changes in both directions.
+Acceptance: one sentence per type on ownership and cost, a decision rule for function parameters, struct fields and shared immutable data, and two examples from a typical web service.
+
+---
+
+Goal: Make my library usable in both sync and async code without duplicating everything.
+Context: A client for our invoicing API. Some users run tokio services, others write small sync scripts. Today there are two copies of every method.
+Acceptance: options (async core with a blocking wrapper, sans-IO core, feature flags), the trade-offs of each, and a recommended structure with example signatures.
+
+---
+
+Goal: Find and fix a memory leak in a long-running Rust service.
+Context: RSS grows by 200 MB per day until the container is killed. No unsafe code. The service keeps per-connection state in a HashMap<ConnId, Session> and uses Rc in a few places.
+Acceptance: how leaks happen in safe Rust (unbounded maps, reference cycles, forgotten tasks), tools to find the growth (heap profiling), the likely culprits here, and fixes such as TTL eviction or Weak references.
+
+---
+
+Goal: Write integration tests for my axum service against a real Postgres.
+Context: Tests should run in CI and locally, each test isolated from the others, without manual database setup.
+Acceptance: a test harness that starts Postgres (testcontainers or a CI service), a fresh database or transaction per test, calling the router directly without a network port, and keeping the suite fast.
+
+---
+
+Goal: Choose an async runtime and explain why our app mixes two and what breaks.
+Context: The service uses tokio, and one dependency pulled in async-std. Occasionally we see "there is no reactor running, must be called from the context of a Tokio 1.x runtime".
+Acceptance: what that panic means, why runtime-specific futures cannot be polled anywhere, how to pick one runtime, and how to handle a dependency tied to the other.
+
+---
+
+Goal: Cross-compile our Rust CLI for Linux x86_64, Linux ARM64 and macOS from CI.
+Context: Uses rustls (no OpenSSL) and one C dependency (zstd). Releases should be static binaries for Linux.
+Acceptance: target triples, a musl-based Linux build, the tooling choice for cross-compiling the C dependency, macOS builds on a macOS runner, and checksums attached to the release.
+
+---
+
+Goal: Review this unsafe block and say whether it is sound.
+Context: fn as_u32s(bytes: &[u8]) -> &[u32] {
+    unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u32, bytes.len() / 4) }
+}
+Acceptance: every way this is unsound (alignment, length rounding, endianness assumptions), a safe alternative that copies or checks alignment, and the zero-copy crates that do this correctly.
+
+---
+
+Goal: Expose our Rust parsing library to Python.
+Context: The library parses a binary log format 30x faster than our Python code. Data scientists want parse_file(path) -> list of dicts, or better, something pandas can use directly.
+Acceptance: PyO3 bindings built with maturin, releasing the GIL during parsing, returning columnar data instead of millions of dicts, error mapping to Python exceptions, and building wheels in CI.

@@ -310,6 +310,11 @@ SPECS: dict[str, Spec] = {
                                ("Decision context", "Options"), r_decision),
     "30-experimentation-and-flagging": Spec("rule", ("Minimal example", "Example"), ("What to test",), r_test),
     # Task-first files (PREP_PLAN.md §3, §14): everything before Reference is the prompt.
+    "32-godot": Spec("rule", ("Reference",), ("Goal", "Context", "Acceptance"), r_task, cut_optional=True),
+    "33-arduino": Spec("rule", ("Reference",), ("Goal", "Context", "Acceptance"), r_task, cut_optional=True),
+    "34-rust": Spec("rule", ("Reference",), ("Goal", "Context", "Acceptance"), r_task, cut_optional=True),
+    "35-rust-embedded": Spec("rule", ("Reference",), ("Goal", "Context", "Acceptance"), r_task, cut_optional=True),
+    "36-esp-idf": Spec("rule", ("Reference",), ("Goal", "Context", "Acceptance"), r_task, cut_optional=True),
     "37-git-code-review": Spec("rule", ("Reference",), ("Goal", "Context", "Acceptance"), r_task, cut_optional=True),
     "38-shell-cli": Spec("rule", ("Reference",), ("Goal", "Context", "Acceptance"), r_task, cut_optional=True),
     "39-cicd-iac": Spec("rule", ("Reference",), ("Goal", "Context", "Acceptance"), r_task, cut_optional=True),

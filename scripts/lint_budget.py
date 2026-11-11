@@ -48,9 +48,17 @@ BANDS = {
     "fenced 23, 25, 26": (["23", "25", "26"], 6.0),
     "adversarial-hygiene 27, 28": (["27", "28"], 3.0),
     "stack total 06-21 plus 31": ([f"0{i}" for i in range(6, 10)] + [str(i) for i in range(10, 22)] + ["31"], 66.0),
+    # Task-first game and embedded files (PREP_PLAN.md §3), added 2026-11-11.
+    "game and embedded 32-36": (["32", "33", "34", "35", "36"], 12.5),
     # Task-first engineering-workflow files (PREP_PLAN.md §14), added 2026-11-11.
     "workflow 37-39": (["37", "38", "39"], 9.0),
 }
+
+# Task-first files (32-48, PREP_PLAN.md §3): their blocks are prompts, and the
+# calibration volume comes from the answers the target model writes for them in
+# the oQ-T pipeline. Their own byte size says nothing about their influence, so
+# the size/weight balance and the band volume-vs-weight checks skip them.
+TASK_FIRST = {str(i) for i in range(32, 49)}
 
 KNOWN_BAND_GAPS = {
     "core stack 10-21": "12 per-file weights add to 51.0 against the label's 48.0 — SPEC " + ARITH_NOTE,
@@ -89,6 +97,12 @@ def main() -> int:
 
     wtotal = sum(r["est"] * r["weight"] for r in rows)
     wsum = sum(r["weight"] for r in rows)
+    # Legacy files are measured against legacy files only: task-first files
+    # carry weight but almost no text, so including them would skew every other
+    # file's and band's weight share and volume share in opposite directions.
+    legacy = [r for r in rows if r["id"].split("-")[0] not in TASK_FIRST]
+    wsum_legacy = sum(r["weight"] for r in legacy) or 1.0
+    wtotal_legacy = sum(r["est"] * r["weight"] for r in legacy if r["weight"] > 0) or 1.0
     utotal = sum(r["est"] for r in rows)
 
     for r in rows:
@@ -96,8 +110,8 @@ def main() -> int:
             if r["bytes"] > 20_000:
                 errors.append(f"{r['id']}: share 0 but {r['bytes'] / 1024:.1f} KB — fenced files stay small")
             continue
-        declared = r["weight"] / wsum
-        actual = r["est"] * r["weight"] / wtotal
+        declared = r["weight"] / wsum_legacy
+        actual = r["est"] * r["weight"] / wtotal_legacy
         ratio = actual / declared
         # A weight is a multiplier, not a token quota, so this ratio only says how
         # far a file's realized influence sits from a size-neutral reading of it.
@@ -108,7 +122,7 @@ def main() -> int:
             else:
                 warnings.append(msg)
         small = " (small file: noted, not enforced)" if r["est"] < 2000 else ""
-        if not 0.4 <= ratio <= 2.5:
+        if not 0.4 <= ratio <= 2.5 and r["id"].split("-")[0] not in TASK_FIRST:
             flag(f"{r['id']}: size/weight balance x{ratio:.2f} outside 0.4-2.5{small}")
         lo, hi = (45, 420) if r["id"] in EXCEPTIONS else (45, 330)
         if not lo <= r["per_block"] <= hi:
@@ -119,9 +133,11 @@ def main() -> int:
     for name, (prefixes, declared) in BANDS.items():
         sel = [r for r in rows if r["id"].split("-")[0] in prefixes]
         wsum_band = sum(r["weight"] for r in sel)
+        is_task_first = all(r["id"].split("-")[0] in TASK_FIRST for r in sel)
+        w_den, v_den = (wsum, wtotal) if is_task_first else (wsum_legacy, wtotal_legacy)
         vshare = sum(r["est"] * r["weight"] for r in sel if r["weight"] > 0)
-        vshare = vshare / wtotal * 100 if wtotal else 0
-        share = wsum_band / wsum * 100
+        vshare = vshare / v_den * 100 if v_den else 0
+        share = wsum_band / w_den * 100
         band_report.append((name, declared, wsum_band, share, vshare))
         # A declared band is a sum of weights, so it is checked as a sum of weights —
         # comparing it to the band's share of a 103.0 total would hide the very drift
@@ -139,7 +155,8 @@ def main() -> int:
         # warning that fires on every band tells you nothing. Beyond 3 the band's
         # realized influence has drifted from what the weights asked for.
         wvol = vshare - share
-        if abs(wvol) > 3.0 and sum(1 for r in sel if r["weight"] > 0) > 1:
+        task_first_band = all(r["id"].split("-")[0] in TASK_FIRST for r in sel)
+        if abs(wvol) > 3.0 and sum(1 for r in sel if r["weight"] > 0) > 1 and not task_first_band:
             warnings.append(f"band {name}: volume share {vshare:.1f}% against weight share {share:.1f}% "
                             "— the band's influence and its intent disagree")
 

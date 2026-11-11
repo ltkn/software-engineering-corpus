@@ -1,0 +1,212 @@
+Goal: Write the movement script for a 2D platformer player in Godot 4.
+Context: CharacterBody2D with a CollisionShape2D and an AnimatedSprite2D (animations idle, run, jump, fall). Input actions move_left, move_right and jump exist in the Input Map. The game runs at 60 physics ticks per second.
+Acceptance: typed GDScript, movement in _physics_process using velocity and move_and_slide(), gravity from the project settings, coyote time (0.1 s) and jump buffering (0.1 s), animation chosen from the state, sprite flipped by direction.
+
+---
+
+Goal: My player moves faster on a 144 Hz monitor than on a 60 Hz one. Fix it.
+Context: func _process(delta):
+    if Input.is_action_pressed("move_right"):
+        position.x += 5
+    if Input.is_action_pressed("move_left"):
+        position.x -= 5
+The node is a CharacterBody2D, but the script never calls move_and_slide().
+Acceptance: why the speed depends on frame rate, the corrected script in the right callback, and why moving a physics body by setting position skips collisions.
+
+---
+
+Goal: Connect signals between a player and the HUD without the HUD having a hard reference to the player node path.
+Context: Player emits health_changed(new_health, max_health) and died. The HUD is a CanvasLayer in a different branch of the scene tree. Today the HUD does get_node("../../World/Player") in _ready and breaks whenever the tree changes.
+Acceptance: Godot 4 signal syntax with typed signal declarations, a decoupled way to wire them (an autoload event bus or connecting from the parent scene), and the trade-offs of each.
+
+---
+
+Goal: Spawn enemies from a scene file at random positions along the screen edge every 2 seconds.
+Context: res://enemies/slime.tscn exists. A Main scene has a Path2D around the screen with a PathFollow2D. Enemies must be removed when they leave the screen.
+Acceptance: preload the scene, instantiate with instantiate(), place via the PathFollow2D progress_ratio, add as a child at the right place, a Timer node driving the spawns, and cleanup with VisibleOnScreenNotifier2D and queue_free().
+
+---
+
+Goal: Make the enemy chase the player around walls using navigation.
+Context: Godot 4 2D, level built with a TileMapLayer that has a navigation layer painted on floor tiles. Enemy is a CharacterBody2D. Today it moves straight toward the player and gets stuck on walls.
+Acceptance: NavigationAgent2D setup, target updated a few times per second rather than every frame, velocity from get_next_path_position(), avoidance enabled with the velocity_computed signal, and what to do when no path exists.
+
+---
+
+Goal: Migrate my level from the old TileMap node to TileMapLayer.
+Context: Project upgraded from Godot 4.2 to a current 4.x. The level uses one TileMap node with three layers: ground, decoration, collision. Scripts call tile_map.set_cell(1, coords, source_id, atlas_coords) and get_used_cells(0).
+Acceptance: how to convert the node in the editor, how the layer index disappears from the API calls, the updated script calls, and what to check for physics and navigation layers after the conversion.
+
+---
+
+Goal: Save and load the game state.
+Context: State: player position, health, inventory (list of item ids with counts), unlocked levels, settings (volume, fullscreen). Saves must survive game updates that add new fields. Players share save files on forums.
+Acceptance: saving under user://, a versioned format, defaults for missing fields when loading older saves, writes that cannot leave a corrupt file if the game crashes mid-save, and why loading a shared .tres file is a security risk.
+Reference: use JSON or ConfigFile (not Resource) for shareable saves: loading an untrusted .tres/.res can instantiate scripts; write to a temp file then rename; include a save_version and migrate.
+
+---
+
+Goal: Write a simple state machine for an enemy: idle, patrol, chase, attack, hurt, dead.
+Context: Today the enemy script is one _physics_process with nested if statements and boolean flags (is_attacking, is_hurt) that contradict each other.
+Acceptance: an enum-based or node-based state machine in GDScript with enter/exit hooks, transitions in one place, and an explanation of when node-per-state is worth the extra files.
+
+---
+
+Goal: Animate a UI panel sliding in and fading, and a coin popping, using tweens.
+Context: Godot 4. The panel is a Control; the coin is a Sprite2D. Previous code used the Tween node from Godot 3 and no longer works.
+Acceptance: create_tween() with chained and parallel steps, easing and transition types, awaiting the tween's finished signal, and killing a running tween before starting a new one on the same property.
+
+---
+
+Goal: Wait 1.5 seconds in the middle of a function without freezing the game.
+Context: After the player dies I want: play the death animation, wait 1.5 s, fade out, reload the scene. I tried OS.delay_msec(1500) and the whole game froze.
+Acceptance: await with a SceneTreeTimer and with an animation's finished signal, what happens if the node is freed while waiting, and reloading the scene safely.
+
+---
+
+Goal: Set up collision layers and masks for a top-down shooter.
+Context: Bodies: player, enemies, player bullets, enemy bullets, walls, pickups. Player bullets must hit enemies and walls only; enemy bullets hit the player and walls; pickups are detected by the player only; enemies do not collide with each other.
+Acceptance: a layer table with named layers in project settings, the layer and mask for each body type, and the common mistake of confusing layer with mask.
+
+---
+
+Goal: Detect when the player enters a trigger zone and open a door once.
+Context: Area2D with a CollisionShape2D at the door. The player is a CharacterBody2D in group "player". The signal fires several times when the player jitters on the edge.
+Acceptance: body_entered connected in code with a typed handler, group check, a one-shot guard, and disabling the area's monitoring safely from inside the signal handler.
+
+---
+
+Goal: Build a responsive main menu that works from 1280x720 to 4K and on a phone in portrait.
+Context: Godot 4 Control nodes: title, four buttons, a settings panel. Today everything is positioned with absolute coordinates and breaks on other resolutions.
+Acceptance: containers instead of absolute positions, anchors and size flags, the project's stretch mode and aspect settings, a Theme for fonts and button styles, and keyboard/gamepad focus navigation.
+
+---
+
+Goal: Make the game playable with keyboard and gamepad, with rebindable controls.
+Context: Input Map has move and action events for keyboard only. Players asked for controller support and for changing keys in the settings menu.
+Acceptance: input actions with both keyboard and joypad events, Input.get_vector for analog movement with deadzone, a rebinding UI that listens for the next input event, and saving the custom bindings.
+
+---
+
+Goal: Write a GDShader that makes a sprite flash white when hit.
+Context: Sprite2D enemies. The flash should last 0.1 s, be driven from GDScript, and not affect other enemies that share the same texture and material.
+Acceptance: a canvas_item shader with a flash amount uniform, mixing toward white while keeping the alpha, setting the uniform from script, and making the material unique per instance (local to scene or duplicated) so one hit does not flash every enemy.
+
+---
+
+Goal: Write a water distortion shader for the screen behind a 2D water surface.
+Context: Godot 4, canvas_item. The water is a ColorRect over the lower part of the screen; things behind it should wobble. The Godot 3 version used SCREEN_TEXTURE, which no longer exists.
+Acceptance: the Godot 4 way to sample the screen (a sampler uniform with the screen texture hint), UV distortion from a noise texture scrolled over TIME, tint, and the performance cost of reading the screen.
+
+---
+
+Goal: Write a dissolve shader for 3D objects that burn away.
+Context: Godot 4, spatial shader on a StandardMaterial3D-looking mesh. A noise texture drives the dissolve; edges should glow orange. Dissolve amount animated from 0 to 1 by script.
+Acceptance: a spatial shader with ALBEDO and EMISSION, discard below the threshold, a thin glowing edge band, uniforms with proper hints, and shadow behavior of discarded pixels.
+
+---
+
+Goal: My game stutters every few seconds when many bullets are on screen. Find and fix the cause.
+Context: Each shot instantiates bullet.tscn and calls queue_free() when it leaves the screen; up to 400 bullets at once. The profiler shows spikes in the physics and script time.
+Acceptance: how to confirm the cause with Godot's profiler and monitors, an object pool for bullets, and when a single node drawing many bullets (MultiMesh or a server-based approach) beats nodes entirely.
+
+---
+
+Goal: Move global game state into an autoload and explain when not to.
+Context: Score, current level, settings and a reference to the player are passed around through get_parent() chains. A teammate wants to put everything in one GameManager autoload.
+Acceptance: what belongs in an autoload, what should stay in scenes, the autoload declared in project settings with a typed script, and the testing and coupling problems of a do-everything singleton.
+
+---
+
+Goal: Write unit tests for my inventory logic in Godot.
+Context: Inventory.gd (extends RefCounted) with add_item(id, count), remove_item(id, count), and a max stack size of 99. I want the tests to run in CI without a display.
+Acceptance: tests with GUT or gdUnit4 covering stacking, overflow, removal below zero; how to run them headless from the command line; exit code that fails CI.
+
+---
+
+Goal: Export the game for Web and fix the blank page on itch.io.
+Context: Godot 4 project, exported with the Web preset. Locally with python -m http.server the page shows "SharedArrayBuffer is not defined" or stays black. On itch.io it also fails.
+Acceptance: why threads need cross-origin isolation headers, how to get them (host headers, or the itch.io option), the single-threaded export alternative and its trade-offs, and testing the export locally with the right headers.
+
+---
+
+Goal: Build the game for Windows, Linux and Web from CI without opening the editor.
+Context: export_presets.cfg is committed. CI runs on Linux. Export templates must be the exact version of the editor.
+Acceptance: a CI job that installs the matching Godot editor and export templates, runs headless exports for each preset, fails on export errors, and uploads the builds as artifacts; secrets (signing, itch.io key) kept out of the repo.
+
+---
+
+Goal: Explain why my exported node references are null at runtime.
+Context: extends Node2D
+@export var target: Node2D
+@onready var sprite = $Sprite2D
+func _ready():
+    print(target.name)
+Error: Invalid get index 'name' (on base: 'Nil'). The scene is instanced from another scene where target was assigned.
+Acceptance: the likely causes (assignment lost when instancing, assigned on the wrong instance, order of _ready), how to check in the remote scene tree, and defensive code with a clear error instead of a crash.
+
+---
+
+Goal: Implement a camera that follows the player smoothly with screen shake on hits.
+Context: Camera2D as a child of the level, not the player. Level limits are known. Shake should decay over 0.3 s and not move the camera outside the limits.
+Acceptance: follow with smoothing or lerp using delta correctly, limits set from the level, trauma-based shake using noise and offset, and keeping the HUD unaffected by the shake.
+
+---
+
+Goal: Make a 3D third-person character controller.
+Context: CharacterBody3D, a SpringArm3D with a Camera3D, mouse look on the horizontal axis and limited vertical angle, WASD movement relative to the camera direction, jump, and slopes up to 45 degrees.
+Acceptance: mouse capture and release with Escape, movement basis from the camera's yaw, gravity and jump, floor_max_angle set, and the character turning smoothly toward the movement direction.
+
+---
+
+Goal: Add dialogue to my RPG with branching choices, without a plugin.
+Context: Dialogue is written by a non-programmer. Choices can set flags (met_merchant, has_key) and check them. About 300 lines of dialogue for now.
+Acceptance: a data format the writer can edit (JSON or a custom Resource), a dialogue runner that shows lines and choices in a UI, flag conditions and effects, and how to validate the data for broken links before shipping.
+
+---
+
+Goal: Use AnimationTree to blend walk and run and trigger attacks on a 3D character.
+Context: Animations: idle, walk, run, attack, hit. Today the script calls animation_player.play() everywhere and animations snap.
+Acceptance: an AnimationTree with a state machine or blend space for locomotion driven by speed, a one-shot for attacks, setting parameters from script with the right parameter paths, and transitions without snapping.
+
+---
+
+Goal: Write a @tool script that previews a procedurally generated room layout in the editor.
+Context: A RoomGenerator node with exported width, height and seed; changing them in the inspector should regenerate the preview. At runtime it should generate the real level.
+Acceptance: a tool script that regenerates on property change, checks Engine.is_editor_hint() for editor-only behavior, does not save generated children into the scene file by accident, and does not run gameplay code in the editor.
+
+---
+
+Goal: Add simple online multiplayer: two players in the same arena, server-authoritative.
+Context: Godot 4 high-level multiplayer with ENet. One player hosts. Each player controls a CharacterBody2D.
+Acceptance: peer setup for host and join, spawning players with MultiplayerSpawner, syncing positions with MultiplayerSynchronizer, input sent to the server with RPCs, authority checks, and what a cheating client can and cannot do in this design.
+
+---
+
+Goal: Generate a cave level procedurally with cellular automata and paint it into a TileMapLayer.
+Context: 120x80 cells, walls and floors, seedable for reproducible levels, must guarantee the start and exit are connected.
+Acceptance: generation in pure GDScript with a seeded RandomNumberGenerator, smoothing steps, a flood fill to keep the largest cave and connect regions, painting with set_cells_terrain_connect or set_cell, and generation time kept under 100 ms.
+
+---
+
+Goal: Profile and reduce draw calls in a 2D scene with thousands of decorative sprites.
+Context: Grass and rocks are individual Sprite2D nodes (4,000 of them) using six textures. The game runs at 40 FPS on a mid-range laptop.
+Acceptance: how to see draw calls and the cause in the monitors, using a texture atlas so sprites batch, MultiMeshInstance2D for repeated decorations, and visibility culling.
+
+---
+
+Goal: Explain the difference between _process, _physics_process, _input and _unhandled_input, and fix my pause menu.
+Context: When the pause menu is open, the player still shoots when I click a menu button. Shooting is handled in the player's _input. The game pauses with get_tree().paused = true.
+Acceptance: the input propagation order, why the click reaches the player, the fix (handle gameplay input in _unhandled_input, mark events handled in the UI), and process_mode settings so the menu keeps working while paused.
+
+---
+
+Goal: Store game balance data (enemy stats, weapon damage) so designers can edit it without touching code.
+Context: Today stats are constants in scripts. Designers want to tweak values in the inspector and see them in game.
+Acceptance: a custom Resource class with exported, typed and ranged properties, .tres files per enemy, loading them in scripts, and avoiding the shared-resource bug where changing one enemy's runtime health changes all of them.
+
+---
+
+Goal: Our Godot project in git has constant merge conflicts in .tscn files and uid noise. Set it up properly.
+Context: Three people work on scenes. Diffs show changed uid values and reordered nodes. .godot/ was committed by mistake.
+Acceptance: the .gitignore for Godot 4, which files must be committed (including .uid files on recent versions), why .godot/ must not be, how to split big scenes to reduce conflicts, and how to resolve a .tscn conflict safely.

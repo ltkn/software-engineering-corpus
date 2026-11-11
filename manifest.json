@@ -12,8 +12,8 @@
   },
   "bundle": {
     "target_tokens": "200k-250k weighted",
-    "blocks_counted": 1687,
-    "unweighted_estimate": "~242.0k est of 1687 counted blocks (bytes/5.5 pre-check; 2026-11-11 added the task-first files 37-git-code-review (42), 38-shell-cli (37) and 39-cicd-iac (44), whose blocks are prompts for oQ-T generation rather than calibration text; ~970.7k as sum(tokens x weight))",
+    "blocks_counted": 1846,
+    "unweighted_estimate": "~255.0k est of 1846 counted blocks (bytes/5.5 pre-check; 2026-11-11 added the task-first files 32-39 (32-godot 34, 33-arduino 31, 34-rust 31, 35-rust-embedded 31, 36-esp-idf 32, 37-git-code-review 42, 38-shell-cli 37, 39-cicd-iac 44), whose blocks are prompts for oQ-T generation rather than calibration text; ~1003.1k as sum(tokens x weight))",
     "eval": [
       "eval/heldout-se.txt",
       "eval/heldout-general.txt",
@@ -239,6 +239,41 @@
       "blocks": 47,
       "tokens": "est ~14.6k (pre-check 78.2 KB, ~310/block, 2026-10-07)",
       "share": 3.0,
+      "code_forward_target": null
+    },
+    {
+      "id": "32-godot",
+      "blocks": 34,
+      "tokens": "est ~2.9k (pre-check 15.7 KB, ~86/block, 2026-11-11)",
+      "share": 2.0,
+      "code_forward_target": null
+    },
+    {
+      "id": "33-arduino",
+      "blocks": 31,
+      "tokens": "est ~2.5k (pre-check 13.6 KB, ~82/block, 2026-11-11)",
+      "share": 2.5,
+      "code_forward_target": null
+    },
+    {
+      "id": "34-rust",
+      "blocks": 31,
+      "tokens": "est ~2.6k (pre-check 14.0 KB, ~84/block, 2026-11-11)",
+      "share": 3.0,
+      "code_forward_target": null
+    },
+    {
+      "id": "35-rust-embedded",
+      "blocks": 31,
+      "tokens": "est ~2.4k (pre-check 12.9 KB, ~77/block, 2026-11-11)",
+      "share": 2.5,
+      "code_forward_target": null
+    },
+    {
+      "id": "36-esp-idf",
+      "blocks": 32,
+      "tokens": "est ~2.6k (pre-check 13.8 KB, ~80/block, 2026-11-11)",
+      "share": 2.5,
       "code_forward_target": null
     },
     {
