@@ -1,0 +1,123 @@
+Goal: Set a lockfile policy for every ecosystem in our monorepo.
+Context: Java with Maven (no lockfile concept), a Vue app with pnpm, Python tools with pip and requirements.txt, a Rust CLI with Cargo, Go tools. Builds sometimes pick up new transitive versions overnight.
+Acceptance: per ecosystem: what to commit, the install command CI must use (frozen or locked mode), how Maven gets equivalent stability (dependency management, BOMs, enforcer rules), and how updates happen deliberately.
+
+---
+
+Goal: Make our Maven build reproducible so the same commit produces the same JAR bytes.
+Context: Two builds of the same commit produce JARs with different checksums. We want to verify release artifacts by rebuilding them.
+Acceptance: the project.build.outputTimestamp property, plugin versions pinned, avoiding build-time data (timestamps, hostnames) in resources, checking with a rebuild comparison, and what remains environment-dependent (JDK version).
+
+---
+
+Goal: Generate an SBOM for our service and its container image.
+Context: Java service built with Maven, packaged in a container image on a distroless base. Customers ask for SBOMs in CycloneDX.
+Acceptance: an SBOM from the build (Maven plugin) and one from the image (syft), what each sees that the other misses, attaching the SBOM to the release and to the image as an attestation, and keeping it in sync with each release.
+
+---
+
+Goal: Triage the 312 vulnerabilities our scanner reports for the users-svc image.
+Context: grype on the image: 4 critical, 31 high, the rest medium and low. Most are in OS packages of the base image; two are in Java libraries.
+Acceptance: a triage process: reachability (is the code used), exploitability in our context, fix availability; changing the base image first; documenting not-affected decisions in a VEX file; and an SLA per severity that the team can keep.
+
+---
+
+Goal: Configure Renovate so dependency updates stop flooding us with PRs.
+Context: 14 repositories, about 60 Renovate PRs per week, most ignored. Some updates broke builds when merged without review.
+Acceptance: grouping (all non-major updates of a stack together), a schedule, automerge for patch updates that pass CI, separate handling of majors, pinning Docker digests and GitHub Actions SHAs with updates, the dependency dashboard, and a shared preset for all repos.
+
+---
+
+Goal: Sign our container images in CI with cosign, keyless.
+Context: GitHub Actions builds and pushes images to GHCR. We do not want to manage signing keys.
+Acceptance: the workflow steps with OIDC permission, signing by digest (not tag), what the signature binds to (the workflow identity), and the verification command with the expected identity and issuer.
+
+---
+
+Goal: Only allow signed images from our CI to run in the production cluster.
+Context: Kubernetes. Images are signed keylessly by our GitHub Actions workflow. Some third-party images (ingress controller, monitoring) are not signed by us.
+Acceptance: an admission policy (Kyverno or the Sigstore policy controller) verifying the signature identity for our images, an explicit list or separate rule for third-party images, audit mode first, and what happens during a registry or transparency log outage.
+
+---
+
+Goal: Produce build provenance (SLSA) for our releases.
+Context: GitHub Actions builds JARs and images. Auditors ask how we prove an artifact came from a specific commit and workflow.
+Acceptance: generating provenance attestations in the workflow, what the provenance contains, verifying it before deployment, and what level of assurance this provides against a compromised developer laptop or a compromised build.
+
+---
+
+Goal: Our npm install runs postinstall scripts from 900 transitive packages. Reduce the risk.
+Context: Vue app with pnpm. A colleague read about malicious install scripts stealing tokens from CI.
+Acceptance: disabling install scripts by default and allowing only the few packages that need them, CI tokens not available during install, minimum release age for new versions, and how to review new dependencies.
+
+---
+
+Goal: Protect us from dependency confusion with our internal npm and Maven packages.
+Context: Internal packages are named @acme/ui (npm) and com.acme:auth-client (Maven) and live in an internal registry. Developers' machines also reach the public registries.
+Acceptance: scope-to-registry mapping for npm, a repository manager that proxies public registries with internal namespaces blocked from upstream, Maven repository ordering pitfalls, and claiming our names on the public registries.
+
+---
+
+Goal: Choose and pin base images for our services.
+Context: Today the Dockerfiles use eclipse-temurin:latest and node:latest. Images rebuild to different contents every week and the scanner noise is high.
+Acceptance: minimal runtime images (distroless or similar), pinning by digest with the tag kept in a comment, automated digest updates through Renovate, multi-stage builds so build tools never reach runtime, and running as non-root.
+
+---
+
+Goal: Verify the binaries our Dockerfile downloads.
+Context: RUN curl -L https://github.com/.../releases/download/v1.4.2/tool-linux-amd64 -o /usr/local/bin/tool && chmod +x /usr/local/bin/tool
+Acceptance: pinning a checksum and verifying it in the build, or verifying a published signature, failing the build on mismatch, and keeping the checksum updated when the version changes.
+
+---
+
+Goal: Add cargo-deny and cargo-audit to our Rust CLI's CI.
+Context: The CLI has 240 transitive crates. We want to block known vulnerabilities, unexpected licenses, duplicate versions of heavy crates, and crates from unknown sources.
+Acceptance: a deny.toml with advisories, licenses (allow-list), bans and sources sections, the CI job, and how to record an accepted advisory with a reason and expiry.
+
+---
+
+Goal: Make our Python tool installs reproducible and tamper-evident.
+Context: requirements.txt with unpinned versions; CI installs with pip. A compromised package version would be picked up automatically.
+Acceptance: fully pinned dependencies with hashes (pip hash-checking mode or a lockfile with uv), separating direct and transitive dependencies, updating them deliberately, and failing installs when a hash does not match.
+
+---
+
+Goal: Check our dependencies' licenses before a customer audit.
+Context: Customers require no GPL/AGPL in shipped components. We ship a Java service, a Vue app and a CLI written in Rust.
+Acceptance: generating license reports per ecosystem, an allow-list policy enforced in CI, handling of dual-licensed and unknown-license packages, and what counts as "shipped" for each artifact.
+
+---
+
+Goal: Stop secrets from leaking into our CI build logs and artifacts.
+Context: A token appeared in a public build log after a debug step printed the environment. Another secret was found inside a published JAR's application.properties.
+Acceptance: masking limits (transformed or split secrets are not masked), never printing the environment, secret scanning on build outputs and artifacts before publishing, short-lived credentials so a leak expires, and the incident steps when it happens again.
+
+---
+
+Goal: Route all dependency downloads through a repository manager.
+Context: Builds fetch from Maven Central, npm, PyPI and Docker Hub directly. We hit rate limits and cannot block a malicious version quickly.
+Acceptance: a proxy repository per ecosystem, client configuration in CI and for developers, caching and availability benefits, a quarantine or block process for bad versions, and what to monitor.
+
+---
+
+Goal: Evaluate an open-source dependency before adopting it.
+Context: We want a small library for parsing cron expressions in Java. Candidates: one with 3,000 stars and one maintainer, one with 400 stars inside a foundation.
+Acceptance: a checklist (maintenance activity, number of maintainers, security policy, release signing, OpenSSF Scorecard, transitive dependencies, license), how to weigh them, and the option of writing the small part ourselves.
+
+---
+
+Goal: Respond to a newly disclosed critical vulnerability in a library we may use.
+Context: An advisory for a popular Java XML library was published an hour ago. We have 40 services and do not know which ones include it.
+Acceptance: finding affected services fast (SBOMs, dependency graphs, image scans), checking exploitability in our usage, the patch or mitigation path, communication, and how this response would have been faster with better inventory.
+
+---
+
+Goal: Learn from the xz backdoor: what in our process would or would not catch a similar attack?
+Context: Our dependencies include system libraries in base images and many open-source packages with few maintainers.
+Acceptance: a short explanation of how that attack worked (social engineering of a maintainer, payload hidden in release tarballs and test files), which of our controls apply (pinning, reproducible builds, building from source, diffing releases), the ones that would not help, and realistic improvements.
+
+---
+
+Goal: Write the OpenSSF Scorecard improvements for our own open-source library.
+Context: Our public Java library scores 4.1/10. Low checks: branch protection, pinned dependencies, token permissions, signed releases, security policy.
+Acceptance: the concrete change for each low check, the order to do them in, and which checks matter to downstream users versus which are cosmetic.

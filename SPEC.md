@@ -598,6 +598,8 @@ Content, 6 kinds:
 
 Shape per block: Signal needed → schema or config fragment → how it reads during an incident → leak or noise anti-pattern → verification (drill, scan, or dashboard assertion).
 
+Expansion 2026-11-11 (21 task-first blocks, Goal → Context → Acceptance → optional Reference, PREP_PLAN.md §3): the opinionated stack — OpenTelemetry Collector pipelines and tail sampling, the Boot 4.1 OTel starter, PromQL recording and alerting rules with promtool tests, SLO burn-rate alerts, Alertmanager routing and inhibition, Grafana dashboards as code, Loki (LogQL, label discipline), Tempo (TraceQL, exemplars), cardinality control, Pyroscope, eBPF auto-instrumentation, kube-state-metrics and blackbox probes, cost control — and Splunk (HEC export from the Collector, SPL, Universal Forwarder with props/transforms, field extraction, throttled alerts).
+
 Mix target: ≥25% code-forward reference blocks (JSON log schemas, OTel config, alert rules).
 
 Budget: dense. Bundle share 2.5%. est ~2.6k tokens, 26 blocks (added the Boot OTel starter 4.1 anchor block and the tenant/baggage trust-boundary block); est ~5.0k, 35 blocks after clean-room pipeline additions (loss ordering, attribute allow-list, archival lifecycle, fleet rollout — no mined lineage).
@@ -953,6 +955,186 @@ Shape per block: Goal → Context (workflow, Jenkinsfile, HCL, manifest or error
 Budget: task-first, short. Bundle share 3.0. est ~3.9k tokens, 44 blocks (2026-11-11).
 
 Boundaries: Linux host configuration is 21; observability stacks are 20; supply-chain signing and SBOMs are 46; architecture decisions are 19.
+
+---
+
+## Scope: 40-c-cpp.txt
+
+Purpose: modern C and C++ as written for services, libraries and firmware: ownership, undefined behavior, build systems, and the tooling that catches mistakes.
+
+Content, 5 kinds:
+
+1. Ownership and lifetimes — RAII and the rule of zero, smart-pointer choices, dangling string_view, static init order.
+2. Undefined behavior and safety — signed overflow, bounded string copies, data races and memory ordering, jthread cancellation, vector<bool>.
+3. Build — target-based CMake, presets, FetchContent vs vcpkg vs Conan, link errors, warning ratchets, CI matrices with ccache.
+4. Tooling — ASan/UBSan/TSan, clang-tidy on diffs, GoogleTest with CTest, libFuzzer, perf flame graphs.
+5. Language and interop — concepts, std::expected, ranges and std::format, embedded C++ without exceptions/RTTI/heap, C APIs for other languages, the cxx bridge to Rust.
+
+Shape per block: Goal → Context → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
+
+Budget: task-first, short. Bundle share 2.5. est ~2.3k tokens, 26 blocks (2026-11-11).
+
+Boundaries: Arduino-style C++ is 33; ESP-IDF C is 36; Rust is 34; performance method is 43.
+
+---
+
+## Scope: 41-data-stores.txt
+
+Purpose: the stores around Postgres: Valkey/Redis for caching, limits, locks and queues; SQLite; S3-compatible object storage with Garage (Deuxfleurs) as the reference; and schema migrations with Flyway and Liquibase.
+
+Content, 5 kinds:
+
+1. Valkey/Redis — cache-aside with eviction and jitter, stampede protection, atomic rate limiting, locks and their limits, sorted sets, streams with consumer groups, memory and persistence per role, Redis→Valkey migration.
+2. SQLite — WAL and busy timeouts, honest concurrency, and why it is not a test double for Postgres.
+3. Garage — zoned cluster layout with replication, keys and bucket permissions, SDK configuration, presigned uploads with CORS, multipart, static website hosting, MinIO→Garage migration, verifying S3 feature support before relying on it.
+4. Migrations — expand/contract renames, baselining an existing database, Liquibase preconditions and rollbacks, forward-fix policy, CI checks against the previous release.
+5. Choices — cache consistency across instances, picking a store per need before adding new infrastructure.
+
+Shape per block: Goal → Context → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
+
+Budget: task-first, short. Bundle share 2.5. est ~2.6k tokens, 25 blocks (2026-11-11).
+
+Boundaries: Postgres internals are 12; Kafka is 13; distributed-systems patterns are 42.
+
+---
+
+## Scope: 42-distributed-systems.txt
+
+Purpose: the failure-aware patterns between services: idempotency, retries and timeouts, breakers, outbox and sagas, ordering, locks with fencing, and backpressure.
+
+Content, 5 kinds:
+
+1. Calls — idempotency keys, retry policy with jitter and budgets, deadlines across hops, circuit breakers and their ordering with retries, failure-mode tables with reconciliation.
+2. Messaging — transactional outbox, inbox deduplication, Kafka exactly-once scope, poison messages and DLQs, rebalance storms, webhooks.
+3. Coordination — sagas, single-runner jobs, leader election with leases, distributed locks with fencing tokens, why not two-phase commit.
+4. Consistency — read-your-writes with replicas, clocks and ordering, CAP/PACELC applied to real choices.
+5. Load and testing — backpressure and shedding, distributed rate limits, thundering herds, Toxiproxy fault injection, a first chaos experiment.
+
+Shape per block: Goal → Context → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
+
+Budget: task-first, short. Bundle share 2.5. est ~2.5k tokens, 24 blocks (2026-11-11).
+
+Boundaries: Kafka configuration is 13; architecture decisions are 19; data stores are 41.
+
+---
+
+## Scope: 43-performance.txt
+
+Purpose: measure-first performance work across the stack: profiling, load testing that does not lie, capacity math, and regressions in CI.
+
+Content, 5 kinds:
+
+1. Method — reproduce, profile, change one thing; reading percentiles from histograms; finding periodic spikes.
+2. JVM — JFR and async-profiler flame graphs, allocation profiling, G1 vs generational ZGC, JMH, heap dumps in MAT, virtual threads and their limits, startup time.
+3. Load and capacity — k6 open-model scenarios, coordinated omission, Little's law, connection pool sizing, CFS throttling.
+4. Beyond Java — py-spy, browser performance traces and INP, Kafka producer batching, gzip cost.
+5. Practice — N+1 detection with query-count tests, cache vs query fix decisions, stable regression checks in CI.
+
+Shape per block: Goal → Context → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
+
+Budget: task-first, short. Bundle share 2.0. est ~2.4k tokens, 22 blocks (2026-11-11).
+
+Boundaries: Postgres query plans are 12; Rust benchmarking is 34; frontend metrics in depth are 44.
+
+---
+
+## Scope: 44-frontend-platform.txt
+
+Purpose: the web platform under the framework: semantic HTML and accessibility (WCAG 2.2), modern CSS, Core Web Vitals, and the build tooling around Vite.
+
+Content, 5 kinds:
+
+1. Accessibility — semantic forms, native dialog, combobox pattern, contrast and focus (including focus not obscured), reduced motion, accessible diagrams, axe in Playwright.
+2. CSS — grid templates, container queries, cascade layers, design tokens with dark mode, logical properties and RTL, stylelint.
+3. Performance — LCP, CLS and INP diagnosis and fixes, responsive images, font loading, bundle analysis and budgets, Lighthouse CI.
+4. Build and delivery — Vite splitting and environment variable exposure, service workers that update safely, view transitions.
+5. Security — strict CSP with nonces or hashes, constraint validation with server-side checks kept.
+
+Shape per block: Goal → Context → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
+
+Budget: task-first, short. Bundle share 2.0. est ~2.4k tokens, 24 blocks (2026-11-11).
+
+Boundaries: Vue specifics are 16; TanStack is 17; React is 24; testing doctrine is 18.
+
+---
+
+## Scope: 45-docs-writing.txt
+
+Purpose: writing that engineers and readers actually use: READMEs, ADRs, changelogs, guides, runbooks, postmortems, API docs, and Mermaid diagrams, checked in CI.
+
+Content, 5 kinds:
+
+1. Project docs — README, onboarding guide, design docs, RFCs with comment periods.
+2. Change communication — changelogs, migration guides, deprecation notices with Deprecation/Sunset headers, customer vs internal release notes.
+3. Operations — runbooks with decision trees, blameless postmortems with owned actions, user-facing error messages.
+4. API and code docs — OpenAPI descriptions and examples, Javadoc for contracts, plain-language rewrites.
+5. Mermaid — sequence, flowchart, state, ER, C4-style context and gitGraph diagrams; fixing parse errors; rendering checks, markdownlint and link checks in CI; accessible diagrams.
+
+Shape per block: Goal → Context → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
+
+Budget: task-first, short. Bundle share 2.0. est ~2.6k tokens, 24 blocks (2026-11-11).
+
+Boundaries: commit messages and PR descriptions are 37; architecture content is 19.
+
+---
+
+## Scope: 46-supply-chain.txt
+
+Purpose: what goes into our builds and how we prove it: lockfiles and reproducibility, SBOMs and vulnerability triage, update automation, signing and provenance, and defenses against malicious packages.
+
+Content, 5 kinds:
+
+1. Pinning and reproducibility — lockfile policy per ecosystem, reproducible Maven builds, pinned base images by digest, verified downloads, hashed Python installs.
+2. Inventory and triage — CycloneDX SBOMs from build and image, scanner triage with VEX, license policy, fast response to new advisories.
+3. Updates — Renovate grouping, schedules, automerge and digest pinning; repository managers proxying public registries.
+4. Integrity — keyless cosign signing, admission policies verifying signatures, SLSA provenance, secrets kept out of logs and artifacts.
+5. Attacks and hygiene — install-script risks, dependency confusion, evaluating new dependencies, lessons from the xz backdoor, cargo-deny, OpenSSF Scorecard.
+
+Shape per block: Goal → Context → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
+
+Budget: task-first, short. Bundle share 2.0. est ~2.4k tokens, 21 blocks (2026-11-11).
+
+Boundaries: CI mechanics are 39; secret management doctrine is 09; application security is 06.
+
+---
+
+## Scope: 47-lora-reticulum.txt
+
+Purpose: long-range radio for sensors and messaging: LoRa physics and regulation, LilyGO and Heltec boards on recent Espressif chips, RadioLib and lora-phy, LoRaWAN, and the Reticulum Network Stack with LXMF.
+
+Content, 5 kinds:
+
+1. LoRa fundamentals — time on air, EU duty cycle, spreading-factor trade-offs, link budgets, compact payloads, bench safety (never transmit without an antenna), debugging silent links.
+2. Boards — Heltec WiFi LoRa 32 V4 pins and TCXO, T-Beam Supreme PMU rails, T-Deck shared SPI, LR1121 dual-band, solar repeaters (pin maps verified against vendor docs).
+3. Software — RadioLib raw LoRa and LoRaWAN OTAA with session persistence, lora-phy on embassy.
+4. Reticulum — RNodeInterface configuration, RNode firmware with rnodeconf, transport nodes and internet bridges, the addressing and security model, Python RNS apps, LXMF with propagation nodes, airtime management, multi-node tests in Docker.
+5. Choices — raw LoRa vs LoRaWAN vs Meshtastic vs Reticulum by use case.
+
+Shape per block: Goal → Context → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
+
+Budget: task-first, short. Bundle share 2.0. est ~2.6k tokens, 22 blocks (2026-11-11).
+
+Boundaries: general Arduino is 33; embedded Rust is 35; ESP-IDF is 36; sensors are 48.
+
+---
+
+## Scope: 48-sensors-edge-ml.txt
+
+Purpose: sensing done honestly and ML at the edge: environmental and gas sensors with their limits, mmWave radar and Wi-Fi CSI presence, signal processing, TinyML on Espressif chips, and home-automation integration.
+
+Content, 5 kinds:
+
+1. Sensors and signals — temperature/humidity placement and self-heating, DS18B20 buses, two-point calibration, median/EMA/Kalman filtering.
+2. Gas — MQ-series burn-in and R0, SCD41 self-calibration, SGP41 gas index algorithm, CO electrochemical cells, an air-quality station; never a substitute for certified safety alarms.
+3. Presence — LD2410 gates and sensitivity, LD2450 tracking with zones, 60 GHz breathing/heart rate (not medical), Wi-Fi CSI motion and its robustness, privacy-respecting occupancy.
+4. Edge ML — keyword spotting with TFLite Micro and ESP-NN, int8 quantization, anomaly detection from vibration, Edge Impulse, arena sizing, ESP-DL on the P4, on-device vs desktop parity, dataset collection.
+5. Integration — ESPHome (including deep-sleep nodes and custom components), Home Assistant MQTT discovery.
+
+Shape per block: Goal → Context → Acceptance → optional Reference (leakage check only, never calibration text). Task-first prompts: the target model writes the answers (PREP_PLAN.md §3).
+
+Budget: task-first, short. Bundle share 2.5. est ~3.1k tokens, 28 blocks (2026-11-11).
+
+Boundaries: radio links are 47; firmware frameworks are 33/35/36; privacy law is 25.
 
 ---
 

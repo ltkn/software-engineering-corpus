@@ -1,0 +1,129 @@
+Goal: GET /orders got slow after the last release. Find out why before changing anything.
+Context: p95 went from 80 ms to 450 ms. Changes in the release: a new JSON field, a dependency bump, and an extra database index. Staging reproduces it under load.
+Acceptance: a measure-first plan: reproduce with a fixed load, compare profiles before and after, check the database separately, change one thing at a time; and what evidence would point to each of the three changes.
+
+---
+
+Goal: Profile CPU usage of our Spring Boot service in production with low overhead.
+Context: Java 25, containers on Kubernetes. CPU is at 80% under normal load and we do not know where it goes.
+Acceptance: continuous JFR with a profile setting, or async-profiler attached to a pod; generating a flame graph; reading it (wide frames, self time vs total); and the overhead of each option.
+
+---
+
+Goal: Find where our service allocates so much memory that GC runs every second.
+Context: Allocation rate 1.5 GB/s under load, young GC pauses every second. Heap is 4 GB.
+Acceptance: allocation profiling (JFR allocation events or async-profiler alloc mode), reading the allocation flame graph, common culprits (boxing, string building, JSON trees, streams in hot loops), and how to confirm a fix with numbers.
+
+---
+
+Goal: Decide between G1 and generational ZGC for our latency-sensitive API.
+Context: Java 25, heap 8 GB, p99 target 50 ms. G1 pauses reach 120 ms during load peaks. Throughput matters less than tail latency.
+Acceptance: what each collector trades, how to test the switch (same load, same heap, compare p99 and CPU), the flags involved, and why heap sizing and allocation rate matter more than the collector choice.
+
+---
+
+Goal: Write a JMH benchmark comparing two JSON serialization approaches, correctly.
+Context: A colleague timed both with System.nanoTime() in a loop and claims one is 10x faster.
+Acceptance: a JMH benchmark with warmup and forks, Blackhole to avoid dead-code elimination, realistic input data, state scope, and how to read the results with their error margins.
+
+---
+
+Goal: Write a k6 load test for the checkout flow with realistic traffic.
+Context: Flow: login, browse products, add to cart, checkout. Target: 200 checkouts per minute, p95 under 800 ms, error rate under 1%.
+Acceptance: an open-model scenario (arrival rate, not a fixed number of virtual users), think times, test data per virtual user, thresholds that fail the run, and tags to see latency per step.
+
+---
+
+Goal: Explain why our load test said p99 was 40 ms but production users see 2-second pauses.
+Context: The load tool sends a request, waits for the response, then sends the next one, with 50 virtual users. Production has spikes when GC or a slow query happens.
+Acceptance: coordinated omission explained with this example, why closed-model tools hide pauses, how open-model arrival rates and correct histograms fix it, and how to rerun the test.
+
+---
+
+Goal: Size the database connection pool for users-svc.
+Context: 6 replicas, Hikari default pool of 10 each, Postgres max_connections 200. Under load, requests wait on the pool, and someone suggests raising it to 100 per replica.
+Acceptance: why more connections can make the database slower, a sizing method based on the database's cores and query latency, Little's law for the expected concurrency, pool wait metrics, and the server-side limit with PgBouncer if needed.
+
+---
+
+Goal: Use Little's law to check whether our capacity plan makes sense.
+Context: Expected peak: 1,200 requests per second, average latency 150 ms. Each pod handles requests on a thread pool of 200 threads (virtual threads not enabled). 8 pods.
+Acceptance: the expected concurrency, whether the thread pools suffice with headroom, what changes if latency doubles during an incident, and the same reasoning for the database connections.
+
+---
+
+Goal: Switch our service to virtual threads and check it actually helps.
+Context: Java 25, Spring Boot 4.1, blocking JDBC and HTTP calls, Tomcat thread pool of 200 saturated at peak. Some code uses synchronized blocks around I/O.
+Acceptance: enabling virtual threads, what improves (concurrency of blocked requests) and what does not (CPU-bound work, database limits), pinning concerns on this JDK, the load test that proves the change, and the downstream limits it may now overload.
+
+---
+
+Goal: Find the N+1 queries in our service automatically.
+Context: Spring Data JPA. The order list endpoint got slower as data grew; we suspect lazy loading in the DTO mapping.
+Acceptance: detecting query counts per request (Hibernate statistics, a datasource proxy, or a test assertion), fixing with a fetch join or an entity graph or a projection, and a test that fails if the query count regresses.
+
+---
+
+Goal: Analyze a heap dump to find what is filling the old generation.
+Context: Heap grows from 1 GB to 3.8 GB over a day, then full GCs. We captured a heap dump at 3.5 GB.
+Acceptance: opening it in Eclipse MAT, the dominator tree and leak suspects report, following GC roots to the owner, and the usual suspects (unbounded caches, listeners never removed, thread locals in pools).
+
+---
+
+Goal: Explain why our pods are slow even though CPU usage looks low, and fix it.
+Context: Kubernetes, CPU limit 1 core, usage graph shows 40% average. Latency spikes every few hundred milliseconds. The JVM uses many threads for GC and JIT.
+Acceptance: CFS quota throttling explained, the throttling metrics to look at, why averages hide it, and options (raise or remove the CPU limit, size thread pools to the limit, set the JVM's available processors).
+
+---
+
+Goal: Profile a slow Python data job without changing its code.
+Context: A Python 3.14 script that processes 2 GB of JSON takes 40 minutes; it runs in a container we can exec into.
+Acceptance: py-spy record attached to the running process, a flame graph, interpreting time in C extensions versus Python, and the likely fixes (streaming parser, vectorized operations, avoiding per-row object creation).
+
+---
+
+Goal: Our Vue app feels sluggish when typing in the search box. Find the cause in the browser.
+Context: Each keystroke filters a 5,000-item list and re-renders it. INP in our field data is 450 ms.
+Acceptance: recording a trace in the browser's Performance panel, finding long tasks and their source, fixes (debounce, computed filtering, virtualized list, moving work off the main thread), and verifying INP after the fix.
+
+---
+
+Goal: Tune the Kafka producer for throughput without hurting latency too much.
+Context: The event producer sends 50,000 small messages per second with default settings; broker CPU is high and producer latency is fine.
+Acceptance: batch.size and linger.ms effects, compression choice, acks and idempotence implications, the metrics to compare before and after, and the latency budget to respect.
+
+---
+
+Goal: Add a performance regression check to CI that does not flake.
+Context: We want to catch changes that make the order serialization 20% slower. CI runners are shared and noisy.
+Acceptance: what to measure (benchmarks in the same job comparing base and head, allocation counts rather than wall time where possible), thresholds with tolerance, running enough iterations, and how to report results in the PR.
+
+---
+
+Goal: Read latency percentiles correctly and stop averaging them.
+Context: Our dashboard shows "average p95" across 12 pods, and an alert fires on the average latency. Users complain while the dashboard looks green.
+Acceptance: why percentiles cannot be averaged, computing them from merged histograms instead, choosing bucket boundaries, and which percentile and window to alert on.
+
+---
+
+Goal: Decide whether to add a cache or fix the slow query first.
+Context: GET /reports/monthly takes 3 s; it runs one heavy aggregation query over 50 million rows. Results change once a day. Product wants it under 300 ms.
+Acceptance: measuring where the 3 s go, options (index or query rewrite, a materialized view refreshed daily, an application cache), their consistency and operational costs, and the recommendation.
+
+---
+
+Goal: Reduce our container image's startup time from 45 s to under 10 s.
+Context: Spring Boot 4.1 service; startup spends time in classpath scanning, Flyway, Hibernate metamodel and cache warmup. Kubernetes scales up slowly during traffic spikes.
+Acceptance: measuring startup phases, lazy initialization where safe, moving warmup out of the startup path, the JDK's ahead-of-time cache for class loading, and the trade-offs of a native image.
+
+---
+
+Goal: Measure the real cost of enabling gzip on our API responses.
+Context: Responses average 40 KB of JSON; many clients are mobile. Someone worries compression will raise CPU too much.
+Acceptance: what to measure (CPU per request, response time for slow and fast clients, bytes saved), minimum size thresholds, compression level, and doing it at the ingress instead of the app.
+
+---
+
+Goal: Find the cause of p99.9 latency spikes that appear once a minute.
+Context: p50 is 15 ms, p99.9 jumps to 900 ms at regular intervals. No errors. Happens on all pods at roughly the same time.
+Acceptance: candidate causes for periodic spikes (scheduled jobs, cache expiry, metrics scrape, GC, log rotation, DNS TTL), how to correlate spikes with events using traces and JFR, and how to confirm the culprit.

@@ -14,6 +14,6 @@ Line-shape heuristic; a block counts as code-forward when >=60% of its lines mat
 | 17-tanstack | 35% | 100% | 53/53 | ok |
 | 18-testing | 25% | 70% | 30/43 | ok |
 | 19-architecture | 20% | 0% | 0/48 | ok |
-| 20-observability | 25% | 83% | 29/35 | ok |
+| 20-observability | 25% | 89% | 50/56 | ok |
 | 21-linux-infra | 45% | 87% | 39/45 | ok |
 | 22-python | 40% | 92% | 44/48 | ok |

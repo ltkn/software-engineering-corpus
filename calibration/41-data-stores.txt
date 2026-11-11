@@ -1,0 +1,148 @@
+Goal: Add a cache in front of the user profile lookups with Redis/Valkey, without serving stale data for long.
+Context: users-svc, Spring Boot 4.1. GET /users/{id} hits Postgres 3,000 times per second, 95% for the same 5,000 users. Profiles change a few times a day; changes must show within 30 s.
+Acceptance: cache-aside with TTL plus explicit eviction on update, key naming with tenant, serialization format, what happens when Valkey is down (fail open), and TTL jitter to avoid synchronized expiry.
+
+---
+
+Goal: Stop the cache stampede that hits our database every time a popular key expires.
+Context: The product catalog page key expires every 60 s; at that moment 400 requests miss at once and Postgres CPU spikes to 100%.
+Acceptance: request coalescing in the service, early probabilistic refresh or a soft TTL with background refresh, a short lock with SET NX and a timeout, and how to verify the fix under load.
+
+---
+
+Goal: Implement a per-tenant rate limit of 100 requests per minute using Valkey.
+Context: Three API gateway replicas share one Valkey. A fixed window lets bursts of 200 through at the window boundary.
+Acceptance: a sliding-window or token-bucket implementation that is atomic (Lua script or a single command sequence), keys that expire, the response headers to return, and behavior when Valkey is unreachable.
+
+---
+
+Goal: Use a Redis/Valkey lock to make sure only one instance runs the nightly invoice job, and explain its limits.
+Context: Five replicas of a Spring service each trigger the job at 02:00. Today invoices are sometimes sent twice.
+Acceptance: SET key value NX PX with a unique value, a safe release that checks ownership, what happens when the job outlives the lock or the process pauses, why the invoice table should also enforce uniqueness, and when a database-based scheduler lock (ShedLock) is simpler.
+
+---
+
+Goal: Build a leaderboard of the top 100 sellers per month with Valkey.
+Context: Sales events arrive from Kafka. The page shows the top 100 and a seller's own rank. Data older than 3 months can go.
+Acceptance: a sorted set per month with ZINCRBY, top-N and rank queries, expiry of old months, rebuilding from Postgres if the cache is lost, and memory estimate.
+
+---
+
+Goal: Use Redis/Valkey Streams as a lightweight job queue with consumer groups.
+Context: Thumbnail generation jobs, 3 workers, each job must be processed once; workers crash sometimes.
+Acceptance: XADD, consumer group creation, XREADGROUP with blocking, XACK after success, claiming stuck messages from dead consumers, trimming the stream, and when Kafka would be the better choice.
+
+---
+
+Goal: Configure Valkey memory limits and eviction for a cache-only instance, and separately for one that holds sessions.
+Context: The cache instance hit maxmemory and started returning OOM errors on writes. Sessions must never be evicted silently.
+Acceptance: maxmemory and the eviction policy for each instance, why noeviction suits sessions, persistence settings for each (none, RDB, AOF), and the metrics to alert on.
+
+---
+
+Goal: Migrate our Redis deployment to Valkey.
+Context: Redis 7.2 open-source, used for caching and rate limiting by four services with the Lettuce client. We want to move because of the license change.
+Acceptance: compatibility of commands and the protocol, client changes (if any), a migration with replication or dual-write, the checks before switching traffic, and rollback.
+
+---
+
+Goal: Use SQLite correctly for a small internal tool that several processes write to.
+Context: A CLI and a background sync process share app.db. Users see "database is locked" errors.
+Acceptance: WAL mode, busy_timeout, short write transactions, what concurrency SQLite actually supports, and backups that are safe while the database is in use.
+
+---
+
+Goal: Our tests use SQLite in memory while production uses Postgres. Tests pass, production fails. Fix the testing strategy.
+Context: Failures in production: a JSONB query, a case-sensitive unique index, and a timestamp with time zone comparison. Tests run in 40 s and the team fears slower tests.
+Acceptance: why the in-memory substitute hides these bugs, Testcontainers with Postgres 18 and reuse, keeping the suite fast (shared container, transaction rollback per test), and which pure-logic tests do not need a database at all.
+
+---
+
+Goal: Set up a three-node Garage cluster as our S3-compatible object store.
+Context: Three servers in two sites (two in site A, one in site B), 4 TB each. We want three copies of every object across sites. Garage by Deuxfleurs.
+Acceptance: garage.toml essentials (replication factor, metadata and data directories, RPC secret, S3 API settings), connecting the nodes, the cluster layout with zones and capacities, applying the layout, and checking cluster health.
+Reference: replication factor 3; garage layout assign each node with -z (zone) and -c (capacity), garage layout show then garage layout apply --version N; garage status shows all nodes healthy.
+
+---
+
+Goal: Create a bucket and access keys in Garage for users-svc, with least privilege.
+Context: users-svc stores profile pictures; a separate analytics job only reads them.
+Acceptance: creating the bucket and two keys, granting read-write to one and read-only to the other, how the services receive the credentials, and how to rotate a key.
+
+---
+
+Goal: Configure the AWS SDK in our Spring service to talk to Garage instead of AWS S3.
+Context: AWS SDK for Java v2. Garage S3 endpoint at https://s3.storage.acme.internal, region name as configured in Garage. Uploads fail with a signature error and bucket names are being prepended to the hostname.
+Acceptance: endpoint override, region setting matching Garage's configuration, path-style access (or virtual-host style with a root domain configured in Garage), and a smoke test for put, get and list.
+
+---
+
+Goal: Let browsers upload profile pictures directly to Garage with presigned URLs.
+Context: Vue SPA, users-svc issues the URLs. Files up to 10 MB, images only, one per user.
+Acceptance: generating a presigned PUT with a short expiry, constraining content type and key, CORS configuration on the bucket for the SPA origin, verifying the upload server-side afterwards, and what a presigned URL leaks if shared.
+
+---
+
+Goal: Upload 20 GB database backups to Garage reliably.
+Context: Nightly pg_dump, single file, uploaded from a VM. Single PUT uploads fail halfway on a flaky network.
+Acceptance: multipart upload with part size choice, retrying failed parts, aborting incomplete uploads so they do not consume space, verifying the result, and the CLI or tool to use (aws cli or rclone against Garage).
+
+---
+
+Goal: Serve the static build of our documentation site from a Garage bucket.
+Context: The docs are static HTML built in CI. We want https://docs.acme.example served from Garage behind our reverse proxy.
+Acceptance: enabling website access on the bucket, index and error documents, the Garage web endpoint and its domain configuration, the reverse proxy in front with TLS, and CI uploading with sync and cache headers.
+
+---
+
+Goal: Migrate 8 TB of objects from MinIO to Garage without downtime.
+Context: Two buckets used by three services. Writes continue during the migration. MinIO and Garage both expose S3 APIs.
+Acceptance: an initial bulk copy with rclone, catching up changes, switching services by configuration, dual-read fallback during cutover, verification by object count and checksums, and decommissioning MinIO.
+
+---
+
+Goal: Check which S3 features our code uses that Garage may not support, before migrating.
+Context: The code uses: presigned URLs, multipart uploads, bucket versioning for audit files, object lock for invoices (legal retention), lifecycle rules for temp files, server-side encryption headers.
+Acceptance: a method to verify each feature against Garage's documented S3 compatibility (not assumptions), alternatives for unsupported ones (retention enforced in the application, a cleanup job instead of lifecycle), and a compatibility test suite to run against the new endpoint.
+
+---
+
+Goal: Rename a column in a busy Postgres table without downtime using Flyway.
+Context: users.full_name must become users.display_name. Three versions of users-svc run during a rolling deploy; a reporting job reads the column too.
+Acceptance: expand and contract steps across several releases (add column, dual write, backfill in batches, switch reads, stop writing old, drop old), the Flyway migrations for each step, and how long each phase must last.
+
+---
+
+Goal: Introduce Flyway to a database that already exists in production.
+Context: Postgres schema created by hand over three years; dev databases are built from a pg_dump. We want versioned migrations from now on.
+Acceptance: generating a baseline script from production's schema, baselineOnMigrate and baseline version, how new environments are created, and checking dev and prod schemas really match before starting.
+
+---
+
+Goal: Write Liquibase changesets for a new orders_archive table, with preconditions and a rollback.
+Context: Liquibase in YAML format. The table may already exist in some environments where a DBA created it manually.
+Acceptance: a changeset with a precondition that marks it ran when the table exists, explicit rollback, a separate changeset for the index created concurrently, and the context labels to keep test data out of production.
+
+---
+
+Goal: Decide where the rollback lives for database migrations.
+Context: Team debate: some want down migrations for every change, others say "never roll back schema". A failed release last month left the schema half-migrated.
+Acceptance: why down migrations rarely work for data changes, forward-fix with backward-compatible schema changes as the default, the cases where a tested down migration is worth it, and transactional DDL in Postgres as a safety net.
+
+---
+
+Goal: Run database migrations in CI against a real Postgres and check they are reversible-safe for the previous app version.
+Context: Flyway migrations, Testcontainers available. We have been bitten by migrations that broke the still-running old version during deploys.
+Acceptance: a CI job that applies all migrations to an empty database and to a snapshot of the previous release's schema, runs the previous version's tests against the new schema, and fails on incompatibility.
+
+---
+
+Goal: Keep the users cache consistent across five service instances when a user changes.
+Context: Each instance has a small in-process Caffeine cache in front of Valkey. Updates happen through users-svc and also through a nightly batch that writes directly to Postgres.
+Acceptance: invalidation messages (Valkey pub/sub or Kafka events from an outbox), handling of the batch path, TTL as a safety net, and the consistency guarantee the design actually gives.
+
+---
+
+Goal: Choose a data store for each of these needs: sessions, a product catalog search, audit logs kept 7 years, a job queue, and user-uploaded files.
+Context: Current estate: Postgres 18, Kafka 4.3, Valkey, Garage. Small platform team; adding a new database is expensive to operate.
+Acceptance: a choice per need with the reason, what Postgres can cover before adding anything new, and the signals that would justify a dedicated search engine later.

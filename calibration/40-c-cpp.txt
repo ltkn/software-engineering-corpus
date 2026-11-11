@@ -1,0 +1,163 @@
+Goal: Replace manual new/delete in this class with RAII and fix the double free.
+Context: class Frame { public: Frame(size_t n) : data(new uint8_t[n]), size(n) {} ~Frame() { delete[] data; } uint8_t* data; size_t size; };
+std::vector<Frame> frames; frames.push_back(Frame(1024));
+The program crashes with "double free or corruption" when the vector grows.
+Acceptance: why the implicit copy causes the double free, the rule of zero version using std::vector<uint8_t> or std::unique_ptr<uint8_t[]>, and what the rule of five would require if raw ownership had to stay.
+
+---
+
+Goal: Choose between unique_ptr, shared_ptr and plain references in this API.
+Context: A Parser owns a Lexer; several Rule objects need to read the Parser's symbol table during parsing; a cache of compiled regexes is shared by every Parser in the process. Today everything is shared_ptr "to be safe".
+Acceptance: an ownership decision for each relationship with reasons, the cost of shared_ptr that people forget (atomic refcounts, unclear lifetimes, cycles), and the resulting class declarations.
+
+---
+
+Goal: Find the bug: this function sometimes prints garbage.
+Context: std::string_view tenant_of(const Request& r) {
+    std::string header = r.header("X-Tenant");
+    return std::string_view(header);
+}
+Callers store the result and use it later.
+Acceptance: the dangling view explained, two fixes (return std::string, or view into storage that outlives the call), and the compiler warnings or sanitizers that catch this class of bug.
+
+---
+
+Goal: Explain why this loop runs forever with -O2 and not at -O0.
+Context: int count_steps(int start) { int steps = 0; for (int i = start; i > 0; i += 1000000) steps++; return steps; }
+Called with start = 1.
+Acceptance: signed overflow as undefined behavior, why the optimizer may assume i > 0 stays true, how UBSan reports it, and a correct version with an explicit bound or unsigned arithmetic.
+
+---
+
+Goal: Set up sanitizers for our C++ service's test suite in CI.
+Context: CMake project, GCC and Clang available, tests with GoogleTest. We suspect a heap overflow in the parser and a data race in the connection pool.
+Acceptance: separate CI jobs for ASan+UBSan and for TSan (and why they cannot be combined), the CMake options or presets that add the flags, symbolized reports, and making a sanitizer finding fail the job.
+
+---
+
+Goal: Modernize our CMakeLists.txt; it uses include_directories and global flags everywhere.
+Context: A library (libinvoice), an executable that uses it, and tests. Today: include_directories(src), add_definitions(-DDEBUG), CMAKE_CXX_FLAGS += -Wall, and link_libraries(ssl).
+Acceptance: target-based CMake with target_include_directories, target_compile_features and target_link_libraries using PUBLIC/PRIVATE correctly, warnings as a target property, and why the global commands leak settings into dependencies.
+
+---
+
+Goal: Add CMake presets so everyone builds the same way locally and in CI.
+Context: Configurations: debug with sanitizers, release, and a cross build for an ARM board with a toolchain file. People pass different -D options by hand today.
+Acceptance: a CMakePresets.json with configure, build and test presets, inheritance to avoid repetition, the toolchain file wired into the cross preset, and the commands developers and CI run.
+
+---
+
+Goal: Choose how to pull third-party dependencies into our CMake project: FetchContent, vcpkg or Conan.
+Context: Dependencies: fmt, spdlog, nlohmann_json, OpenSSL, GoogleTest. Builds on Linux, macOS and Windows. Some developers are offline on trains.
+Acceptance: what each approach does, the trouble with fetching OpenSSL from source, binary caching, reproducibility with pinned versions, and a recommendation for this project.
+
+---
+
+Goal: Fix "undefined reference to `Invoice::total() const`" at link time.
+Context: Invoice is declared in invoice.h and defined in invoice.cpp. The test executable links fine on my machine but fails in CI. CMake adds invoice.cpp to the library target; the test target links the library.
+Acceptance: a checklist of causes (source not in the target, link order or visibility, inline definition in a .cpp, mismatched signatures, ODR), how to read the linker message and inspect symbols with nm, and the most likely cause given that it differs between machines.
+
+---
+
+Goal: Turn on useful compiler warnings for the whole project and clean up without drowning.
+Context: 80k lines of C++17 compiled with no warnings flags. Turning on -Wall -Wextra produces 3,200 warnings.
+Acceptance: a warning set for GCC and Clang (conversion, shadowing, unused, etc.), applying it to our targets only (not dependencies), a ratchet strategy (warnings as errors on new code, baseline for old), and the warnings worth fixing first because they hide real bugs.
+
+---
+
+Goal: Write a clang-tidy configuration and run it in CI only on changed files.
+Context: Large codebase; a full run takes 25 minutes. We want modernize, bugprone, performance and cppcoreguidelines checks, minus a few noisy ones.
+Acceptance: a .clang-tidy with selected checks and justified exclusions, the compile_commands.json it needs, a CI step that runs on the diff of the PR, and how to suppress a finding locally with a reason.
+
+---
+
+Goal: Fix the data race in this counter and choose the right memory ordering.
+Context: struct Stats { int requests = 0; bool ready = false; };
+One thread increments requests and sets ready = true when a batch is done; a reporter thread checks ready, reads requests and resets both. TSan reports races.
+Acceptance: std::atomic for both fields or a mutex, why relaxed ordering is fine for a pure counter but not for the ready flag publishing other data, and the corrected code with acquire/release.
+
+---
+
+Goal: Replace our hand-written thread loop with std::jthread and cooperative cancellation.
+Context: A worker thread runs while (running) { poll(); sleep(100ms); } with a global bool running; shutdown sets running = false and joins. Sometimes shutdown hangs for seconds.
+Acceptance: std::jthread with stop_token, a condition variable wait that wakes on stop requests instead of sleeping, automatic join on destruction, and why the global bool was also a data race.
+
+---
+
+Goal: Make this template's error messages readable with concepts.
+Context: template<typename T> T average(const std::vector<T>& v) { T sum{}; for (auto& x : v) sum += x; return sum / v.size(); }
+average(std::vector<std::string>{...}) produces 60 lines of errors.
+Acceptance: a concept requiring addition and division by a size, the constrained template, the short error that results, and a note on integer division in the original.
+
+---
+
+Goal: Replace exceptions with std::expected in our parsing layer.
+Context: C++23 is available. The parser throws ParseError for bad input, which happens constantly with user data; profiling shows exception overhead and callers forget to catch.
+Acceptance: std::expected-based signatures, an error type with location information, chaining with and_then/transform, where exceptions still make sense, and the cost of the change for existing callers.
+
+---
+
+Goal: Write embedded-friendly C++ for a microcontroller: no exceptions, no RTTI, no heap after startup.
+Context: Cortex-M4 firmware compiled with -fno-exceptions -fno-rtti. A teammate used std::vector and std::function in an interrupt-adjacent module.
+Acceptance: what those types do behind the scenes, replacements (std::array, fixed-capacity containers, function pointers or a static delegate), constexpr lookup tables computed at compile time, and how to detect heap use at link time.
+
+---
+
+Goal: Review this C function for memory safety.
+Context: void copy_name(char *dst, const char *src) { strncpy(dst, src, 32); }
+char name[32]; copy_name(name, user_input); printf("Hello %s", name);
+Acceptance: the missing terminator when the input is 32 bytes or more, a safe version that takes the destination size, snprintf or a bounded copy that always terminates, and how the format string usage could be dangerous if changed slightly.
+
+---
+
+Goal: Design the C API of a small library so it is usable from C, Rust and Python.
+Context: The library compresses log records. Internals are C++. It needs to create a context, feed records, flush, and report errors.
+Acceptance: an opaque handle type, functions with explicit lengths, error codes plus an error-message getter, no C++ exceptions crossing the boundary, symbol visibility, versioning, and who owns returned buffers.
+
+---
+
+Goal: Fix the static initialization order bug that crashes the service at startup on one platform.
+Context: A global Registry in registry.cpp and a global Plugin in plugin.cpp whose constructor calls Registry::instance().add(this). Works on Linux, crashes on macOS.
+Acceptance: why the order of globals across translation units is unspecified, the function-local static fix and its thread-safety guarantee, and why the bug is platform-dependent.
+
+---
+
+Goal: Write unit tests with GoogleTest and wire them into CTest.
+Context: Library libinvoice with functions for tax rounding and currency formatting. Tests should run with ctest in CI, show which test failed, and run in parallel.
+Acceptance: test target with gtest_discover_tests, parameterized tests for rounding cases, a fixture for shared setup, and the ctest flags for parallel runs and output on failure.
+
+---
+
+Goal: Fuzz our binary message parser.
+Context: parse_message(const uint8_t* data, size_t len) handles a custom binary protocol from untrusted clients. We have seen two crashes in production.
+Acceptance: a libFuzzer harness, building it with Clang and sanitizers, a seed corpus from real messages, running it in CI for a bounded time, and turning each crash into a regression test.
+
+---
+
+Goal: Profile a slow C++ service on Linux and find the hot path.
+Context: CPU-bound request handler, p99 latency 40 ms, built with -O2 without frame pointers.
+Acceptance: perf record and report usage, building with frame pointers or using DWARF unwinding, generating a flame graph, and reading it to separate real work from allocation and locking overhead.
+
+---
+
+Goal: Explain why std::vector<bool> surprised us and what to use instead.
+Context: auto& flag = flags[3]; fails to compile, and taking addresses of elements does not work. We used it for a 10-million-entry bitmap.
+Acceptance: the proxy-object specialization explained, consequences for references and threads, and alternatives (std::vector<uint8_t>, std::bitset, a dedicated bitset class) by use case.
+
+---
+
+Goal: Use std::format and ranges to simplify this report code, if it helps.
+Context: The code builds strings with std::ostringstream and manual loops, filters records with if-continue, sorts a copy, and prints the top 10.
+Acceptance: a version using ranges views (filter, transform, take) and std::format, compile-time format string checking, and a judgement on readability and performance compared with the original.
+
+---
+
+Goal: Call our C++ library from Rust safely.
+Context: The C++ library exposes a class Compressor with feed(span<const uint8_t>) and finish() -> std::vector<uint8_t>. The Rust team wants to use it without writing a C layer by hand.
+Acceptance: the cxx bridge approach (or a C layer with bindgen), ownership of buffers across the boundary, error handling, the build integration with Cargo and CMake, and the main safety rule each side must keep.
+
+---
+
+Goal: Set up a CI matrix that builds and tests with GCC and Clang on Linux and with Apple Clang on macOS.
+Context: CMake presets exist. We want warnings as errors, sanitizers on Linux only, and ccache to keep builds fast.
+Acceptance: the matrix definition, ccache configuration and cache keys, preset selection per job, and how to keep one failing compiler from hiding results of the others.

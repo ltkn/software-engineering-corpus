@@ -1,0 +1,141 @@
+Goal: Rewrite this signup form so it is accessible and works without custom JavaScript validation.
+Context: <div class="form"><div>Email</div><input type="text" id="e"><div class="err" style="display:none">Invalid</div><div>Password</div><input type="text" id="p"><div onclick="submit()" class="btn">Sign up</div></div>
+Acceptance: semantic form, labels tied to inputs, correct input types and autocomplete values, native constraint validation with messages announced to screen readers, a real submit button, and keyboard-only usability.
+
+---
+
+Goal: Build an accessible modal dialog for "Delete project?".
+Context: Today it is a div with position fixed; focus stays behind it, Escape does nothing, and screen readers read the page underneath.
+Acceptance: the native dialog element opened as modal, focus moved inside and returned to the trigger on close, Escape and a visible close control, an accessible name and description, and inert background without extra libraries.
+
+---
+
+Goal: Make our custom dropdown accessible or replace it.
+Context: A div-based "select" with a list of 40 countries, opened on click, no keyboard support. Users can type to search in the design.
+Acceptance: when a native select is enough, otherwise the combobox pattern with listbox, keyboard behavior (arrows, Enter, Escape, typing), active descendant or roving focus, and testing with a screen reader.
+
+---
+
+Goal: Fix our color contrast and focus styles to meet WCAG 2.2 AA.
+Context: Body text is #8a8a8a on white, buttons show no visible focus (outline: none in the reset), and a sticky header covers focused elements when tabbing.
+Acceptance: contrast ratios required for text and UI components, a design-token fix, a visible focus indicator with :focus-visible, the "focus not obscured" criterion and scroll-padding for the sticky header, and an automated check in CI.
+
+---
+
+Goal: Lay out the dashboard with CSS grid so it works from phone to wide screen without media query soup.
+Context: Areas: header, sidebar, main content, a stats strip with 2-6 cards. Today it uses floats and 9 media queries.
+Acceptance: grid template areas, responsive columns with minmax and auto-fill for the cards, collapsing the sidebar on narrow screens, and logical properties so it works right-to-left.
+
+---
+
+Goal: Make a card component adapt to the space it is placed in, not the viewport.
+Context: The same ProductCard appears in a wide main column and a narrow sidebar. Media queries make it wrong in the sidebar on large screens.
+Acceptance: a container query setup (container-type on the parent), the card's layouts for narrow and wide containers, container query units for sizing, and the fallback in browsers that lack support.
+
+---
+
+Goal: Organize our CSS with cascade layers so third-party and utility styles stop fighting.
+Context: A reset, a component library's CSS, our components, and utility classes. Specificity hacks and !important are everywhere.
+Acceptance: an explicit @layer order, importing the third-party CSS into its own layer, where utilities go, how unlayered styles behave, and how to remove the !important hacks safely.
+
+---
+
+Goal: Add dark mode with design tokens, respecting the user's system setting and an in-app toggle.
+Context: Colors are hardcoded hex values across 60 components. The toggle must override the system preference and persist.
+Acceptance: CSS custom properties as tokens, prefers-color-scheme as the default, an attribute on the root element for the override, color-scheme so native controls follow, avoiding a flash of the wrong theme on load, and contrast checks for both themes.
+
+---
+
+Goal: Our LCP is 4.2 s on mobile. Diagnose and fix it.
+Context: The LCP element is the hero image (1.8 MB JPEG) loaded by a component after the JavaScript bundle runs. Fonts load from a third party.
+Acceptance: finding the LCP element and its timing breakdown, serving the image early in the HTML with responsive sizes and modern formats, fetchpriority, avoiding lazy-loading it, font loading that does not block, and measuring again in field data.
+
+---
+
+Goal: Fix layout shift (CLS 0.28) on our product pages.
+Context: Images without dimensions, an ad slot that appears late, and a cookie banner inserted at the top of the page.
+Acceptance: width/height or aspect-ratio on media, reserved space for late content, overlays instead of inserted banners, font fallback metrics to reduce shift, and how to find which elements shift with browser tools.
+
+---
+
+Goal: Improve INP on a page where clicking "Add to cart" freezes for 400 ms.
+Context: The click handler updates the cart store, re-renders a large product grid, and sends analytics synchronously.
+Acceptance: measuring the interaction in the performance panel, giving visual feedback first and deferring the rest, yielding to the main thread, scheduling analytics after paint, and avoiding re-rendering the whole grid.
+
+---
+
+Goal: Serve responsive images properly.
+Context: Product photos uploaded at 4000x3000 are shown at 300-1200 px wide depending on layout. We have an image resizing service available.
+Acceptance: srcset with width descriptors and an accurate sizes attribute, AVIF/WebP with fallback via picture, lazy-loading below the fold, decoding hints, and how to verify the browser picks the expected file.
+
+---
+
+Goal: Load our web fonts without invisible text and without layout jumps.
+Context: Two font families, four weights each, from Google Fonts. Text is invisible for up to 2 s on slow connections.
+Acceptance: self-hosting subsetted WOFF2 files, font-display choice, preloading only the critical one, size-adjust on the fallback to reduce shift, and dropping unused weights.
+
+---
+
+Goal: Configure Vite for our Vue app: code splitting, environment variables and a sane build target.
+Context: The production bundle is one 2.4 MB file. Some API keys ended up in the client bundle through environment variables.
+Acceptance: route-level lazy loading, manual chunks only where they help, how Vite exposes only VITE_-prefixed variables and why anything exposed is public, the build target for our supported browsers, and source maps for production without publishing them.
+
+---
+
+Goal: Find out what makes our bundle big and cut it.
+Context: Vite build, 2.4 MB JavaScript. Suspects: a date library with all locales, an icon library imported as a whole, and a charting library used on one page.
+Acceptance: a bundle visualizer report, tree-shakeable imports, dynamic import for the chart page, replacing or trimming the date library, and a size budget that fails CI when exceeded.
+
+---
+
+Goal: Add automated accessibility checks to our end-to-end tests.
+Context: Playwright tests exist for the main flows. We have no accessibility testing. A manual audit found issues on the checkout page.
+Acceptance: axe-core integrated into Playwright, scanning each page state in the flows (including opened dialogs), failing on serious and critical violations, a way to track known issues without hiding new ones, and what automated checks cannot find.
+
+---
+
+Goal: Set performance budgets with Lighthouse CI on every PR.
+Context: We want to catch regressions in LCP, CLS, total JavaScript size and accessibility score. Pages: home, product, checkout.
+Acceptance: a Lighthouse CI configuration with assertions per page, running against a preview deployment, multiple runs to reduce noise, and how to handle lab versus field data differences.
+
+---
+
+Goal: Write a stylelint configuration that enforces our CSS conventions.
+Context: Rules wanted: no hex colors outside the tokens file, no !important, logical properties instead of left/right, property ordering optional, and Vue single-file components included.
+Acceptance: a stylelint config with the plugins needed for Vue files, the custom rules or plugin rules for each convention, running it in CI and in the editor, and fixing existing violations gradually.
+
+---
+
+Goal: Support right-to-left languages in our app.
+Context: Arabic is the next locale. The layout uses margin-left, float: left, absolute positioning with left, and directional icons (arrows).
+Acceptance: the dir attribute on the root, logical properties replacing physical ones, mirroring directional icons only, bidirectional text in mixed content, and testing tips.
+
+---
+
+Goal: Add a service worker for offline support without breaking deployments.
+Context: Users reported seeing an old version of the app for days after a deploy when a previous service worker experiment was live.
+Acceptance: a caching strategy per resource type (hashed assets cache-first, HTML network-first), versioning and cleanup of old caches, an update flow that tells the user a new version is ready, and a kill switch to unregister a bad worker.
+
+---
+
+Goal: Respect users who prefer reduced motion.
+Context: Page transitions, a parallax hero and auto-playing carousels. One user reported motion sickness.
+Acceptance: prefers-reduced-motion in CSS and JavaScript, which animations to remove versus shorten, pausing auto-playing content with a visible control, and checking that nothing essential depends on the animation.
+
+---
+
+Goal: Use the View Transitions API for smooth route changes in our SPA, with a fallback.
+Context: Vue Router; we want the product image to animate from the list to the detail page.
+Acceptance: starting a view transition around the route change, naming the shared element, CSS for the transition, respecting reduced motion, and graceful behavior in browsers without support.
+
+---
+
+Goal: Make our app's Content Security Policy strict without breaking styles and scripts.
+Context: The current CSP allows 'unsafe-inline' for scripts and styles. The app uses Vite, inline style attributes in a few components, and one inline analytics snippet.
+Acceptance: a nonce- or hash-based script policy, moving the inline snippet to a file, handling inline styles, report-only rollout with a reporting endpoint, and the directives that also block clickjacking and base-tag injection.
+
+---
+
+Goal: Validate a form with the browser's Constraint Validation API and custom rules.
+Context: Fields: email, password (min 12 characters), password confirmation must match, birth date must make the user 16+. Messages must be translated.
+Acceptance: native attributes where possible, setCustomValidity for cross-field rules, showing messages accessibly next to fields and not only on submit, and server-side validation still in place.

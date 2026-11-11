@@ -50,6 +50,10 @@ BANDS = {
     "stack total 06-21 plus 31": ([f"0{i}" for i in range(6, 10)] + [str(i) for i in range(10, 22)] + ["31"], 66.0),
     # Task-first game and embedded files (PREP_PLAN.md §3), added 2026-11-11.
     "game and embedded 32-36": (["32", "33", "34", "35", "36"], 12.5),
+    # Task-first platform files (PREP_PLAN.md §14), added 2026-11-11.
+    "platform 40-46": (["40", "41", "42", "43", "44", "45", "46"], 15.5),
+    # Task-first radio and sensor files (PREP_PLAN.md §14), added 2026-11-11.
+    "radio and sensors 47-48": (["47", "48"], 4.5),
     # Task-first engineering-workflow files (PREP_PLAN.md §14), added 2026-11-11.
     "workflow 37-39": (["37", "38", "39"], 9.0),
 }

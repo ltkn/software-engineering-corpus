@@ -321,3 +321,131 @@ Schema: versioned collector configuration, canary cohort receiving changes first
 Incident reading: a bad pipeline change shows as canary-only degradation with instant rollback, never as fleet-wide blindness discovered at the next incident.
 Anti-pattern: hand-edited configs diverging per host until nobody can state what the fleet runs, and every incident response starts with configuration archaeology.
 Verification: canary drill (harmful batch sizing) contained to the cohort with automatic rollback; config-hash dashboard shows a single version fleet-wide; unmanaged-edit probe alerts within the stated window.
+
+---
+
+Goal: Configure an OpenTelemetry Collector pipeline for our services' traces, metrics and logs.
+Context: Services send OTLP to a Collector deployment in Kubernetes. Backends: Tempo for traces, Prometheus (remote write) for metrics, Loki for logs. The Collector was OOMKilled twice during traffic spikes.
+Acceptance: receivers, processors and exporters per signal, memory_limiter first and batch near the end of each pipeline, resource attributes (service, environment), redaction of sensitive attributes, and health and self-metrics of the Collector itself.
+
+---
+
+Goal: Keep only the useful traces with tail sampling.
+Context: 4,000 spans per second; storage cost is too high. We must keep every trace with an error and every trace slower than 1 s, plus 5% of the rest.
+Acceptance: a tail_sampling processor with those policies, the decision wait and memory implications, why all spans of a trace must reach the same Collector instance (load-balancing exporter by trace id), and verifying the sampling rates.
+
+---
+
+Goal: Instrument our Spring Boot 4.1 service with OpenTelemetry and send everything over OTLP.
+Context: The service uses Micrometer metrics today and logs to stdout in JSON. We want traces, metrics and logs correlated, configured only by environment variables in each environment.
+Acceptance: the Spring Boot OpenTelemetry starter, OTLP endpoint and service name from environment variables, trace and span ids in the JSON logs, sampling configuration, and a check that a request shows up in all three backends with the same trace id.
+
+---
+
+Goal: Write the PromQL for p95 latency per route and a recording rule for it.
+Context: Metric http_server_requests_seconds (histogram) with labels route, method, status. Dashboards compute the quantile on the fly and are slow.
+Acceptance: histogram_quantile over the rate of the bucket series summed by le and route, the 5-minute window choice, a recording rule with a conventional name, and why averaging per-pod quantiles is wrong.
+Reference: histogram_quantile(0.95, sum by (le, route) (rate(http_server_requests_seconds_bucket[5m]))); record as route:http_server_requests_seconds:p95_5m.
+
+---
+
+Goal: Write a Prometheus alert for a high 5xx rate with a runbook link, and unit test it.
+Context: Alert when more than 2% of users-svc requests return 5xx for 10 minutes. Runbook at https://runbooks.acme.internal/users-svc/5xx.
+Acceptance: the alerting rule with expr, for, labels (severity, team) and annotations (summary, runbook_url), a promtool test file with input series that fire and do not fire the alert, and the CI command.
+
+---
+
+Goal: Replace our latency threshold alerts with SLO burn-rate alerts.
+Context: SLO: 99.5% of requests succeed and complete under 500 ms over 30 days. Current alerts page on every short spike and miss slow burns.
+Acceptance: the SLI as recording rules, multi-window multi-burn-rate alerts (fast burn pages, slow burn tickets) with the window pairs and burn factors, and a dashboard showing the remaining error budget.
+
+---
+
+Goal: Route alerts so the right team gets paged and duplicates are suppressed.
+Context: Alertmanager receives alerts from three teams' services. When the database is down, 40 dependent alerts page everyone at once.
+Acceptance: a routing tree by team and severity, grouping and repeat intervals, inhibition rules so a database-down alert silences dependent alerts, silences for maintenance, and amtool to check the config and test routing.
+
+---
+
+Goal: Manage our Grafana dashboards as code.
+Context: 60 dashboards edited by hand in the UI; changes get lost and nobody reviews them. Grafana is self-hosted.
+Acceptance: provisioning dashboards from a git repository (or the Grafana Terraform provider), a folder and permission layout, generating repetitive panels from code, review in PRs, and preventing UI edits from drifting.
+
+---
+
+Goal: Find the errors for one tenant in Loki and turn them into a metric.
+Context: JSON logs with fields level, tenant, route, msg. Labels in Loki: app, namespace, env. Someone added tenant as a label last month and Loki's index exploded.
+Acceptance: a LogQL query filtering by app label then parsing JSON and filtering on tenant and level, a metric query counting errors per route, and why tenant must be a parsed field, not a label.
+
+---
+
+Goal: Find the slowest database spans in traces with TraceQL.
+Context: Tempo stores traces for all services. We want spans from users-svc to Postgres slower than 200 ms in the last hour, grouped by statement.
+Acceptance: a TraceQL query on service name, span kind or db attributes and duration, how to pivot from the result to the full trace and to the logs of that request, and exemplars linking the latency panel to these traces.
+
+---
+
+Goal: Fix a metrics cardinality explosion.
+Context: Prometheus memory doubled in a week. The culprit is a counter with a user_id label added by a developer, and a route label that contains raw URLs with ids.
+Acceptance: finding the top series by metric and label, fixing the instrumentation (route templates, removing user_id), relabeling to drop the label at scrape as a stopgap, and a cardinality budget enforced in review.
+
+---
+
+Goal: Add continuous profiling to our Kubernetes services.
+Context: CPU usage creeps up after releases and nobody knows which code changed. Services are Java and Go.
+Acceptance: Pyroscope deployment, Java agent or SDK and Go integration, labels for service and version, comparing profiles before and after a release, linking profiles from traces, and the overhead.
+
+---
+
+Goal: Get traces and metrics from a legacy service we cannot modify.
+Context: A closed-source HTTP service running in our cluster. We want request rates, latencies and traces without touching its code.
+Acceptance: eBPF-based auto-instrumentation (OpenTelemetry eBPF instrumentation, formerly Grafana Beyla), what it can see (HTTP/gRPC, latency, context propagation limits), deployment as a DaemonSet or sidecar, required privileges, and its limits compared with SDK instrumentation.
+
+---
+
+Goal: Alert on pods that are crash-looping or stuck pending.
+Context: kube-state-metrics and node-exporter are installed. We missed a CrashLoopBackOff in production for two hours.
+Acceptance: PromQL alerts for container restarts, pods waiting with reason CrashLoopBackOff, pods pending for too long, and deployments with unavailable replicas, with sensible for durations and team routing.
+
+---
+
+Goal: Probe our public endpoints from outside like a user would.
+Context: We want to know when https://shop.acme.example/api/health or the login page fails, and when the TLS certificate is about to expire.
+Acceptance: blackbox exporter modules for HTTP with expected status and body, TLS expiry alerting, probes from more than one location, and avoiding alerts on a single failed probe.
+
+---
+
+Goal: Send our logs and traces to Splunk through the OpenTelemetry Collector.
+Context: The security team uses Splunk Enterprise; we keep Grafana for engineering. Splunk HEC is available at https://splunk.acme.internal:8088 with a token and an index app_logs.
+Acceptance: a second exporter for Splunk HEC in the Collector with the token from a secret, index and sourcetype mapping, TLS verification, routing only the logs Splunk needs, and checking ingestion with a search.
+
+---
+
+Goal: Write the SPL search for p95 latency per route over the last 24 hours from our JSON access logs in Splunk.
+Context: Index app_logs, sourcetype app:json. Fields: route, status, ms, tenant. Some events have ms missing.
+Acceptance: a search with stats perc95 by route, excluding events without ms, a timechart variant, an error-rate column, and the field extraction setting that makes the JSON fields available.
+Reference: index=app_logs sourcetype=app:json ms=* | stats count, perc95(ms) as p95_ms, sum(eval(status>=500)) as errors by route | eval error_rate=round(errors/count*100,2)
+
+---
+
+Goal: Collect application log files on a VM into Splunk with the Universal Forwarder.
+Context: Legacy VM, logs in /var/log/billing/*.log, one event per line except Java stack traces spanning several lines. Timestamps like 2026-11-02 09:00:01,123.
+Acceptance: inputs.conf monitoring the path with index and sourcetype, props.conf for line breaking that keeps stack traces in one event, timestamp parsing with the right format, and checking with a search that events are not split.
+
+---
+
+Goal: Extract fields from an unstructured log format in Splunk.
+Context: Lines like: 2026-11-02T09:00:01Z INFO req=9f2 tenant=acme route="GET /users" ms=41 status=200
+Acceptance: automatic key-value extraction where it works, a regex-based extraction in props/transforms for the quoted route, search-time versus index-time extraction and why search-time is usually preferred.
+
+---
+
+Goal: Turn a Splunk search into an alert that notifies the team without spamming.
+Context: Alert when failed logins exceed 50 per 5 minutes for a tenant. Notifications go to a chat webhook.
+Acceptance: a scheduled saved search with the right time range, trigger condition per tenant, throttling by tenant field, the alert action, and testing it against historical data.
+
+---
+
+Goal: Cut observability costs without losing what matters during incidents.
+Context: Log and trace volume grew 3x in a year. Debug logs from two services make up 40% of log bytes; health-check spans are 30% of traces.
+Acceptance: dropping health-check spans and debug logs in the Collector, sampling strategies by service criticality, retention tiers, per-team usage reports, and a rule that any drop must keep error data.

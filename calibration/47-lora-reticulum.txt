@@ -1,0 +1,130 @@
+Goal: Choose LoRa settings for sensor nodes 3 km from the gateway in the EU, and check they respect duty cycle.
+Context: EU868, a 24-byte payload every 5 minutes, partly obstructed line of sight. Options considered: SF7/125 kHz up to SF12/125 kHz.
+Acceptance: time-on-air calculation for SF7, SF9 and SF12 with the payload and header settings, the 1% duty cycle limit in the sub-band used and how many messages per hour each setting allows, the range/sensitivity gain per SF step, and a recommendation.
+
+---
+
+Goal: Do a link budget for a LoRa link and decide whether it will work before buying hardware.
+Context: 14 dBm transmit power, 2 dBi antennas on both sides, 4 km through light woodland, SX1262 receivers at SF10/125 kHz. Cable and connector losses about 1 dB per side.
+Acceptance: free-space path loss plus a realistic obstruction margin, receiver sensitivity for the setting, the resulting fade margin, and what to change if the margin is too thin.
+
+---
+
+Goal: Get a Heltec WiFi LoRa 32 V4 sending raw LoRa packets with RadioLib.
+Context: ESP32-S3 with an SX1262, Arduino core 3.x. The begin() call returns error -2 (chip not found) with pins copied from an older Heltec example.
+Acceptance: taking the SPI and control pins (NSS, DIO1, RESET, BUSY) from Heltec's V4 documentation rather than older boards, the SPI bus setup, the TCXO voltage the radio module needs, the regulator setting, and a minimal transmit and receive with interrupt-driven reception.
+
+---
+
+Goal: Power the LoRa radio and GPS correctly on a LilyGO T-Beam Supreme.
+Context: ESP32-S3 with an SX1262 and a GPS module, power managed by an AXP2101 PMU. The radio does not respond and the GPS has no fix until the PMU is configured.
+Acceptance: initializing the PMU over I2C with a PMU library, enabling the rails for the radio and GPS (checked against LilyGO's board definitions), battery charging settings, reading battery voltage, and turning the GPS rail off to save power.
+
+---
+
+Goal: Make a LilyGO T-Deck show received LoRa messages on its screen and send messages typed on its keyboard.
+Context: T-Deck (ESP32-S3) with SX1262, ST7789 display, I2C keyboard, and SD card. The display and radio share the SPI bus; the screen flickers when packets arrive.
+Acceptance: power-on sequence for peripherals, shared SPI with separate chip selects and transactions, reading the keyboard over I2C, a non-blocking loop with interrupt-driven radio reception, and avoiding SPI use from the radio interrupt.
+
+---
+
+Goal: Design the payload for battery-powered LoRa sensor messages.
+Context: Each message carries node id, sequence number, temperature, humidity, battery voltage and a status flag. Today it is a JSON string of 90 bytes.
+Acceptance: a compact binary layout with fixed-point encodings, an integrity check, a version field, how sequence numbers detect loss and duplicates, the airtime saved compared with JSON, and a decoder on the gateway.
+
+---
+
+Goal: Decide between raw LoRa, LoRaWAN, Meshtastic and Reticulum for a farm monitoring project.
+Context: 25 sensors over 2 km², one barn with internet, no budget for a commercial LoRaWAN gateway, farmers also want to send short text messages between handhelds.
+Acceptance: what each option provides (addressing, routing, encryption, infrastructure needed), a recommendation for sensors and for messaging (possibly different), and the trade-offs accepted.
+
+---
+
+Goal: Join The Things Network with LoRaWAN OTAA from a Heltec board using RadioLib.
+Context: EU868, a TTN community gateway nearby. Device registered in the TTN console with JoinEUI, DevEUI and AppKey.
+Acceptance: RadioLib LoRaWAN node setup with the band plan, OTAA join with retries, persisting the session across deep sleep so it does not rejoin every wake, uplink with a port and payload, and respecting the network's fair-use limits.
+
+---
+
+Goal: Write LoRa transmit and receive code in Rust with lora-phy on embassy.
+Context: An RP2040 or STM32 board with an SX1262 module over SPI. The project already uses embassy.
+Acceptance: radio driver setup with the SPI device and control pins, modulation and packet parameters, async transmit, receive with a timeout, and error handling when the radio does not answer.
+
+---
+
+Goal: Set up Reticulum on a Raspberry Pi with an RNode as the radio.
+Context: A LilyGO T3-S3 flashed as an RNode, connected by USB to a Raspberry Pi. Frequency 867.2 MHz, 125 kHz bandwidth, SF8, coding rate 4/5, low transmit power for testing.
+Acceptance: installing rns, the RNodeInterface section in ~/.reticulum/config with those parameters, starting rnsd as a service, checking the interface with rnstatus, and the parameters every node on the same channel must share.
+Reference: [[RNode LoRa Interface]] type = RNodeInterface, interface_enabled = True, port = /dev/ttyACM0, frequency = 867200000, bandwidth = 125000, txpower = 7, spreadingfactor = 8, codingrate = 5; all peers need the same frequency, bandwidth, SF and coding rate.
+
+---
+
+Goal: Flash RNode firmware onto LilyGO and Heltec boards.
+Context: Boards: a T-Beam Supreme, a T3-S3 and a Heltec WiFi LoRa 32 V4. The rnodeconf utility is installed with rns.
+Acceptance: using rnodeconf's install mode, selecting the right board and band, provisioning, checking the device afterwards, and what to do when a board is not in the supported list yet.
+
+---
+
+Goal: Connect two Reticulum LoRa networks in different towns over the internet.
+Context: Town A and town B each have a few RNode-based devices and one Raspberry Pi with internet access. We want devices in A to reach destinations in B.
+Acceptance: TCP server and client interfaces between the two Pis, enabling transport on those nodes, how paths are discovered across the link, and the effect on LoRa airtime of announces arriving from the internet side.
+
+---
+
+Goal: Explain Reticulum's addressing and security model to a teammate used to IP networks.
+Context: The teammate asks where the IP addresses are, how routing works without them, and whether traffic is encrypted.
+Acceptance: identities and destinations (hashes of keys and names), announces and path discovery, transport nodes, why packets carry no source address, encryption for single destinations and forward secrecy on links, and what an observer on the radio channel can still see.
+
+---
+
+Goal: Write a small Python program with RNS that reports a sensor value to a collector over Reticulum.
+Context: The sensor node runs on a Raspberry Pi Zero with an RNode. The collector runs elsewhere on the network. Readings every 5 minutes; the collector should confirm receipt.
+Acceptance: creating or loading an identity from disk, the collector's destination and announce, the sensor resolving the collector's path, sending over a Link (or a packet with a proof), handling the collector being unreachable, and keeping announces infrequent on LoRa.
+
+---
+
+Goal: Set up LXMF messaging for a group of hikers with handheld devices.
+Context: T-Deck devices and phones running Sideband, a base station Pi at the hut, no cellular coverage on the trails.
+Acceptance: how Sideband and NomadNet use LXMF, running an LXMF propagation node at the hut so messages wait for offline devices, interface settings shared by all devices, and expected delivery times over LoRa.
+
+---
+
+Goal: Test a multi-node Reticulum network in Docker without radios.
+Context: We want to test our RNS application against a network of 5 nodes with a transport node in the middle, in CI.
+Acceptance: containers running rnsd with TCP or UDP interfaces wired into a chain, one node with transport enabled, the application container sending messages across the chain, assertions on delivery, and simulating a node going offline.
+
+---
+
+Goal: Our Reticulum LoRa network gets congested when many nodes announce. Reduce airtime use.
+Context: 30 nodes on one LoRa channel at SF9; announces from all nodes and from an internet-connected node fill the channel and messages are delayed.
+Acceptance: announce rate settings and interface modes on the boundary node, reducing how often applications announce, choosing a faster spreading factor for dense areas, and how to measure channel utilization.
+
+---
+
+Goal: Compare Meshtastic and Reticulum for an emergency communication network.
+Context: A volunteer group wants text messaging and position sharing between 40 devices in a region, with possible internet bridging. Devices: LilyGO and Heltec boards.
+Acceptance: architecture differences (flooding mesh vs routing with transport nodes), encryption and identity, the apps available, scaling with many nodes, firmware and maintenance effort, and a recommendation with its limits.
+
+---
+
+Goal: Never damage a LoRa radio during development. Write the bench rules for the team.
+Context: Several boards were bricked or lost range after testing; one was powered with no antenna attached.
+Acceptance: always attach an antenna before transmitting, matching the antenna to the band, transmit power limits for the region, ESD and connector care, and a check in firmware that refuses to transmit above the legal power for the configured region.
+
+---
+
+Goal: Use an LR1121-based board for both sub-GHz and 2.4 GHz LoRa.
+Context: A LilyGO board with an LR1121 radio. The firmware currently targets the SX1262 with RadioLib.
+Acceptance: the RadioLib class for the LR11x0 family, selecting the band and the RF switch configuration, differences from SX1262 initialization, and when 2.4 GHz LoRa makes sense (worldwide band, higher data rate, shorter range).
+
+---
+
+Goal: Make a solar-powered LoRa repeater that runs through winter.
+Context: A Heltec or LilyGO board as a Reticulum transport node or a mesh repeater on a hill. Receives often, transmits occasionally. Small solar panel and a LiFePO4 or Li-ion battery.
+Acceptance: average current estimate in receive mode, battery and panel sizing for short winter days, low-voltage cutoff, enclosure and antenna placement, and remote health reporting (battery voltage, uptime).
+
+---
+
+Goal: Debug why two LoRa nodes cannot hear each other on the bench.
+Context: Both use RadioLib with SX1262, same code, 30 cm apart. Transmit returns success; the receiver gets nothing.
+Acceptance: a checklist: same frequency, bandwidth, SF, coding rate, sync word, preamble, CRC and IQ settings; TCXO voltage; antenna connected; receiver actually in receive mode; interrupt pin wiring; and a known-good test with a second receiver or an SDR.

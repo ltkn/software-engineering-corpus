@@ -1,0 +1,148 @@
+Goal: Write the README for users-svc.
+Context: Spring Boot 4.1 service, Java 25, Postgres 18, Kafka 4.3. New developers currently need a day and two people's help to run it. Docker Compose file exists; tests use Testcontainers.
+Acceptance: what the service does in two sentences, prerequisites, run locally in under five commands, run the tests, configuration table, where the API docs and runbooks live, and who owns it; nothing that will go stale quickly.
+
+---
+
+Goal: Write an ADR for choosing Garage as our S3-compatible object store.
+Context: Options considered: keep MinIO, Garage (Deuxfleurs), a managed cloud bucket. Constraints: self-hosted on our servers in two sites, small ops team, license concerns with the current setup, need for replication across sites.
+Acceptance: an ADR with context, decision, alternatives with reasons for rejection, consequences (good and bad), and the conditions that would make us revisit it.
+
+---
+
+Goal: Write the changelog entry for release 4.2.0.
+Context: Changes: cursor pagination on GET /users (offset still supported, deprecated), new endpoint POST /users/import, fixed tenant check on GET /orders/{id}/invoice (security), dependency upgrades, dropped Java 21 support.
+Acceptance: Keep a Changelog format with Added, Changed, Deprecated, Removed, Fixed and Security sections, the breaking change made obvious, and wording a user of the API understands without reading code.
+
+---
+
+Goal: Write the migration guide for API clients moving from offset to cursor pagination.
+Context: Offset pagination will be removed in API v5 in six months. Clients include our Vue app, two partner integrations and internal scripts.
+Acceptance: why the change, a side-by-side request and response example, step-by-step migration, edge cases (sorting, deleted items between pages), the timeline with dates, and how to get help.
+
+---
+
+Goal: Write the runbook for the "orders consumer lag high" alert.
+Context: Alert fires when the orders-invoicing consumer group lag exceeds 50,000 for 10 minutes. Causes seen before: slow invoice PDF rendering, a poison message, a stuck rebalance, and the database being slow.
+Acceptance: what the alert means and its impact on customers, the first three checks with exact commands and dashboard links, a decision tree for the known causes, safe mitigations (and dangerous ones to avoid), and escalation.
+
+---
+
+Goal: Improve the descriptions in our OpenAPI spec so the generated docs are actually useful.
+Context: Every operation has a summary like "Get users" and no descriptions; parameters have no examples; error responses are not documented.
+Acceptance: an improved example for GET /users with description, parameter descriptions and examples, the cursor semantics explained, documented error responses with problem details examples, and a lint rule that keeps descriptions present.
+
+---
+
+Goal: Rewrite these error messages so users and support can act on them.
+Context: "Error 500", "Invalid input", "Operation failed: NullPointerException", "Token invalid".
+Acceptance: each message rewritten to say what happened, why if known, and what to do next; separate the user-facing text from the details logged for support; include a correlation id; avoid leaking internals.
+
+---
+
+Goal: Write a blameless postmortem for last week's checkout outage.
+Context: 47 minutes of failed checkouts. A config change raised the payment client timeout from 2 s to 30 s; when the provider slowed down, threads were exhausted. Detection took 15 minutes; rollback took 12.
+Acceptance: summary, impact with numbers, timeline, contributing factors (not a single root cause, no blaming a person), what went well, and action items with owners and dates that address detection, prevention and recovery.
+
+---
+
+Goal: Write a design document for adding multi-region read replicas.
+Context: Audience: engineering leads and the platform team. They need to approve cost and the change to consistency for users in Asia.
+Acceptance: problem and goals with non-goals, the proposed design, alternatives, consistency trade-offs explained plainly, rollout and rollback plan, cost estimate, open questions, and a length readable in 15 minutes.
+
+---
+
+Goal: Write the onboarding guide for a new backend engineer's first week.
+Context: Team of eight; stack Java/Spring, Postgres, Kafka, Vue; on-call rotation starts after one month. Knowledge is spread over Slack threads.
+Acceptance: day-by-day plan for week one, access to request, the three services to understand first, a first small task, who to ask for what, and links rather than copied content.
+
+---
+
+Goal: Draw the OAuth authorization code flow with PKCE as a Mermaid sequence diagram.
+Context: Participants: browser (Vue SPA), authorization server, users-svc API. Include the code verifier and challenge, the redirect with the code, the token exchange, and the API call with the access token.
+Acceptance: valid Mermaid sequenceDiagram syntax that renders, correct order of messages, notes for where the verifier is stored, and short labels readable at a glance.
+
+---
+
+Goal: Draw our deploy pipeline as a Mermaid flowchart.
+Context: Steps: PR checks (build, unit, integration, lint), merge to main, image build and sign, deploy to staging, smoke tests, manual approval, canary 10% then 100%, automatic rollback on failed analysis.
+Acceptance: a flowchart with decision nodes for the checks and the canary analysis, subgraphs for CI and CD, left-to-right direction, and valid syntax.
+
+---
+
+Goal: Draw the order lifecycle as a Mermaid state diagram.
+Context: States: created, payment_pending, paid, fulfilled, shipped, delivered, cancelled, refunded. Cancellation is allowed until shipped; refunds after delivery only within 30 days.
+Acceptance: a stateDiagram-v2 with all states and transitions labeled by event, start and end states, and a note for the 30-day rule.
+
+---
+
+Goal: Draw the users and orders data model as a Mermaid ER diagram.
+Context: Tables: tenants, users (tenant_id), orders (tenant_id, user_id), order_lines (order_id, product_id), products (tenant_id). Users can have many orders; an order has one or more lines.
+Acceptance: an erDiagram with entities, key attributes with types, relationship cardinalities correct, and valid syntax.
+
+---
+
+Goal: Draw a system context diagram of the shop platform in Mermaid.
+Context: Actors: customers, support staff. Systems: shop web app, users-svc, orders-svc, payments-svc, Kafka, Postgres, external card provider, email provider.
+Acceptance: a C4-style context or container view (Mermaid's C4 syntax or a flowchart with clear grouping), external systems visually distinct, labeled relationships, and readable at slide size.
+
+---
+
+Goal: Fix this Mermaid diagram; it does not render.
+Context: flowchart LR
+  A[Client] --> B(API Gateway)
+  B --> C{Auth OK?}
+  C -->|yes| D[users-svc (v4)]
+  C -->|no| E[401]
+  D --> F[(Postgres)]
+The renderer reports a parse error near "(v4)".
+Acceptance: the cause (parentheses inside a node label), the fixed diagram with quoted labels, and a CI check that renders every Mermaid block in the docs so this is caught in the PR.
+
+---
+
+Goal: Add docs checks to CI: Markdown style, broken links, and Mermaid diagrams.
+Context: docs/ has 140 Markdown files with Mermaid blocks and many links to internal and external pages. Links break silently.
+Acceptance: markdownlint with a config, a link checker with caching and exclusions for flaky external sites, rendering every Mermaid block with the Mermaid CLI, and running only on changed files for speed.
+
+---
+
+Goal: Rewrite this paragraph for product managers who are not engineers.
+Context: "We migrated the cursor-based keyset pagination to an HMAC-signed opaque token to prevent tampering and decoupled it from the offset semantics, which reduces p95 latency from 900 ms to 35 ms at deep pages due to index range scans instead of OFFSET row skipping."
+Acceptance: two or three sentences a non-engineer understands, keeping the user-visible benefit and the reason, without jargon or loss of accuracy.
+
+---
+
+Goal: Write two release notes for the same release: one for customers, one for internal teams.
+Context: Release 4.2: faster user lists, bulk user import (beta), a security fix for invoice downloads, deprecated offset pagination, removed Java 21 support (internal impact only).
+Acceptance: a short customer-facing note focused on benefits and actions required, and an internal note with technical details, rollout plan and support guidance; the security fix described responsibly in both.
+
+---
+
+Goal: Write the deprecation notice for the offset pagination parameters.
+Context: Parameters page and size on GET /users will be removed on 2027-05-01. We need to tell API consumers in docs, in responses, and by email.
+Acceptance: the notice text, the Deprecation and Sunset response headers with values, the docs banner, the email to registered integrators, and a reminder schedule.
+
+---
+
+Goal: Write the Javadoc for this public method so callers use it correctly.
+Context: public Page<User> findPage(TenantId tenant, @Nullable Cursor after, int limit)
+Behavior: limit 1-100 (otherwise IllegalArgumentException), results ordered by createdAt then id, cursor from a previous page's nextCursor, null cursor for the first page; cursors expire after 24 h.
+Acceptance: Javadoc with summary, parameter and return descriptions, the ordering guarantee, exceptions, the expiry rule, and a short usage example.
+
+---
+
+Goal: Make our architecture diagrams accessible.
+Context: Docs contain Mermaid diagrams and PNG exports with no text alternative. A blind colleague cannot follow the architecture pages.
+Acceptance: alt text or accessible descriptions for each diagram type, a text summary next to complex diagrams, Mermaid's accessibility title and description fields, and color choices that do not rely on color alone.
+
+---
+
+Goal: Document a team decision in a short RFC and collect feedback asynchronously.
+Context: Proposal: require two approvals for changes to payments-svc and infra/. Some people object it will slow everyone down.
+Acceptance: an RFC template filled in (motivation, proposal, drawbacks, alternatives, unresolved questions), a comment period with a deadline, and how the decision is recorded at the end.
+
+---
+
+Goal: Draw our branching strategy as a Mermaid gitGraph.
+Context: main with short-lived feature branches merged through PRs, release branches cut for each minor version, hotfixes cherry-picked to the release branch.
+Acceptance: a gitGraph showing two features, a release branch with a hotfix, and the cherry-pick, with valid syntax and short commit labels.

@@ -1,0 +1,141 @@
+Goal: Make POST /payments idempotent so client retries never charge twice.
+Context: The mobile app retries on timeout. payments-svc calls a card provider and writes to Postgres. Two charges happened last week after a gateway timeout.
+Acceptance: an Idempotency-Key header contract, a table storing key, request hash, status and response, the race between two concurrent requests with the same key, responses for a replay with a different body, and key expiry.
+
+---
+
+Goal: Add retries to our HTTP client calls without making outages worse.
+Context: orders-svc calls inventory-svc. Today: 5 immediate retries on any error. During the last inventory incident, our retries tripled its load.
+Acceptance: which errors are retryable (and which methods), exponential backoff with full jitter, a retry budget or cap per time window, respecting Retry-After, and how retries interact with the caller's own timeout.
+
+---
+
+Goal: Set timeouts end to end so a slow dependency cannot hold our threads forever.
+Context: Gateway timeout 30 s; users-svc calls three services with default client timeouts (infinite read timeout on one). Under load, threads pile up waiting.
+Acceptance: connect and read timeouts per call, a deadline propagated from the incoming request (budget shrinking per hop), what to return when the budget runs out, and the order of timeouts from edge to database.
+
+---
+
+Goal: Add a circuit breaker around the recommendation service so the product page stays fast when it fails.
+Context: Spring Boot 4.1. The product page calls recommendations; when they are slow, page latency goes from 120 ms to 5 s. Recommendations are optional.
+Acceptance: breaker thresholds (failure rate, slow-call rate, minimum calls), open and half-open behavior, a fallback that returns an empty list, metrics on breaker state, and how this combines with retries and timeouts in the right order.
+
+---
+
+Goal: Publish an event reliably every time an order is created, without two-phase commit.
+Context: orders-svc writes to Postgres and publishes OrderCreated to Kafka. Today it does both in sequence; a crash between them lost events, and a Kafka hiccup after commit produced orders with no event.
+Acceptance: a transactional outbox table written in the same transaction, a relay (polling or CDC) publishing to Kafka, ordering per order id, cleanup of published rows, and the duplicate-delivery consequence consumers must handle.
+
+---
+
+Goal: Make the invoice consumer handle duplicate OrderPaid events.
+Context: Events can be delivered more than once (outbox relay restarts, consumer rebalances). Today a duplicate creates a second invoice.
+Acceptance: an inbox or processed-events table keyed by event id written in the same transaction as the invoice, or a natural unique constraint, and why "exactly once" here means effectively once.
+
+---
+
+Goal: Design the checkout saga across orders, payments and inventory.
+Context: Steps: reserve stock, charge card, confirm order. Any step can fail or time out. Services own their databases and communicate through Kafka.
+Acceptance: orchestration versus choreography for this case with a choice, the state machine of the saga, compensating actions (release stock, refund), timeouts per step, what the user sees while it runs, and how to recover a saga stuck mid-way.
+
+---
+
+Goal: Explain what Kafka's exactly-once semantics guarantee and whether we need them.
+Context: A stream job reads payments, aggregates per merchant and writes results to another topic. A teammate wants to turn on transactions everywhere.
+Acceptance: idempotent producer, transactions and read_committed explained, the read-process-write loop they protect, what they do not cover (side effects outside Kafka, like an HTTP call or a database write), and the cost.
+
+---
+
+Goal: Users update their profile and then see the old one on the next page. Fix read-your-writes.
+Context: Writes go to the Postgres primary; reads go to a replica with up to 2 s of lag.
+Acceptance: options (read from primary for a short window after a write, session-tracked LSN and waiting for the replica to catch up, routing per endpoint), their costs, and the one to implement first.
+
+---
+
+Goal: Stop ordering events by wall-clock timestamps.
+Context: Two services stamp events with System.currentTimeMillis(); a consumer sorts by timestamp to rebuild state. After an NTP correction, an older status overwrote a newer one.
+Acceptance: why clocks across machines cannot order events, per-entity version numbers or sequence from the source of truth, Kafka partition ordering by key, and where hybrid logical clocks help.
+
+---
+
+Goal: Run a scheduled job on exactly one of our six replicas.
+Context: Spring @Scheduled job that sends reminder emails every 10 minutes. All six replicas run it today.
+Acceptance: options (database lock such as ShedLock, Kubernetes CronJob, leader election with a lease), the failure mode of each when the holder dies or pauses, and making the job itself safe to run twice.
+
+---
+
+Goal: Use a distributed lock correctly for updating an external resource, with fencing.
+Context: Workers acquire a lock before writing a customer's file to object storage. A worker paused in GC for 40 s, lost the lock, woke up and overwrote the newer file written by another worker.
+Acceptance: why a lock with a TTL cannot prevent this by itself, fencing tokens checked by the resource (or a conditional write with versions/ETags), and how to apply it with Postgres or an S3-compatible store.
+
+---
+
+Goal: Add backpressure so a traffic spike does not take down the order pipeline.
+Context: The API accepts orders and pushes work to an in-memory queue; under a spike the queue grows until the service runs out of memory.
+Acceptance: bounded queues, rejecting early with 429 and Retry-After, load shedding by priority, moving the buffer to Kafka for load leveling, and the metrics that show you are near the limit.
+
+---
+
+Goal: Handle a poison message that blocks our Kafka consumer partition.
+Context: One malformed event makes the consumer throw on every retry; the partition lag grows and all later events for those keys wait.
+Acceptance: classifying errors (transient vs permanent), bounded retries with backoff, a dead-letter topic with the original headers and error, alerting, and the ordering consequences of skipping a message for that key.
+
+---
+
+Goal: Deliver webhooks to customers reliably.
+Context: We notify customers' HTTPS endpoints when an invoice is paid. Endpoints are sometimes down for hours or slow. Customers complain about missing and duplicate calls.
+Acceptance: an outbox-backed delivery queue, retries with backoff over 24-72 hours, a signature header with timestamp, an event id for deduplication on their side, ordering expectations stated in the docs, and a replay endpoint.
+
+---
+
+Goal: Test how our services behave when the network misbehaves.
+Context: Integration tests run with Testcontainers: users-svc, Postgres, Kafka. We want to simulate latency, dropped connections and a database that hangs.
+Acceptance: Toxiproxy in front of Postgres and Kafka, toxics for latency, timeouts and connection resets, assertions on timeouts, retries and circuit breaker state, and keeping these tests deterministic enough for CI.
+
+---
+
+Goal: Plan a first chaos experiment in staging.
+Context: Kubernetes, three services, Postgres and Kafka managed outside the cluster. The team has never done chaos testing.
+Acceptance: a hypothesis, steady-state metrics, the experiment (kill one users-svc pod during load, then add 300 ms latency to Kafka), blast radius limits, abort conditions, and what to write up afterwards.
+
+---
+
+Goal: Explain why we should not use two-phase commit between Postgres and Kafka, and what to do instead.
+Context: A colleague found that Postgres supports PREPARE TRANSACTION and wants XA transactions across the database and the broker.
+Acceptance: blocking on coordinator failure, operational cost, lack of support in Kafka's model, and the alternatives (outbox, idempotent consumers, sagas) mapped to our use case.
+
+---
+
+Goal: Apply CAP and PACELC to a concrete choice: our session store replicated across two regions.
+Context: Sessions in Valkey; two regions active-active; a network partition between regions happened once last year for 20 minutes.
+Acceptance: what each option means for users during a partition (logouts, stale sessions, cross-region latency), the choice for sessions versus for payments, and the design that follows.
+
+---
+
+Goal: Implement a distributed rate limiter for an external API with a global quota.
+Context: Our 8 replicas share a third-party quota of 100 requests per second. Exceeding it gets us blocked for an hour.
+Acceptance: a shared token bucket (Valkey with an atomic script) or a central dispatcher, local smoothing to reduce shared calls, a safety margin, and behavior when the shared store is unavailable.
+
+---
+
+Goal: Diagnose why our three replicas of a consumer process far fewer messages than expected after a rebalance storm.
+Context: Kafka consumers in Kubernetes, 12 partitions. Pods restart often, and logs show "Attempt to heartbeat failed since group is rebalancing" every few minutes.
+Acceptance: the causes (processing exceeding max.poll.interval.ms, slow shutdowns, eager rebalancing), the consumer group protocol settings or the newer protocol, static membership, and graceful shutdown that commits offsets.
+
+---
+
+Goal: Choose a leader-election mechanism for a singleton component on Kubernetes.
+Context: A component that must have exactly one active instance: it assigns tenants to shards. We use Kubernetes and Postgres; no etcd of our own.
+Acceptance: Kubernetes Lease-based election versus Postgres advisory locks, lease durations and the split-brain window, fencing the shard assignments, and why we should not implement consensus ourselves.
+
+---
+
+Goal: Model the failure modes of a single call from orders-svc to payments-svc and decide what orders-svc should do in each.
+Context: The call charges a card. Possible outcomes: success, explicit decline, timeout, connection refused, 500 error, response lost after the charge happened.
+Acceptance: a table of outcomes with what is known about the charge, the action (retry with the same idempotency key, query status, compensate, mark for reconciliation), and the reconciliation job that resolves unknowns.
+
+---
+
+Goal: Prevent a thundering herd when 10,000 clients reconnect after an outage.
+Context: Mobile clients reconnect to our WebSocket gateway; after a 5-minute outage they all reconnect at once and knock it over again.
+Acceptance: client-side jittered exponential backoff, server-side admission control and connection rate limits, a "come back in N seconds" response, and testing the recovery path.

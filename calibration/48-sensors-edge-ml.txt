@@ -1,0 +1,165 @@
+Goal: Choose a temperature and humidity sensor for an indoor air monitor and get accurate readings.
+Context: Candidates: DHT22, SHT40, BME280. The sensor sits in a small enclosure next to an ESP32-C6 that gets warm when Wi-Fi is active. Readings run 2 °C high.
+Acceptance: accuracy and interface of each sensor, self-heating and board-heat effects, enclosure placement and venting, measuring less often to reduce heating, and a simple offset calibration against a reference.
+
+---
+
+Goal: Read several DS18B20 temperature probes on one wire and identify each one.
+Context: Five waterproof probes in different tanks on one GPIO of an ESP32-S3. Some readings come back as 85.0 °C or -127 °C.
+Acceptance: the pull-up resistor value, reading each sensor's ROM address and labeling them, what 85 and -127 mean (no conversion done, read failure), parasite power versus normal power, cable length limits, and retry handling.
+
+---
+
+Goal: Calibrate an analog sensor with a two-point calibration and store the result.
+Context: A soil moisture probe reads 2,850 in dry soil and 1,250 in saturated soil on the ESP32's ADC; readings drift with temperature.
+Acceptance: computing slope and offset from the two points, mapping to 0-100%, storing calibration in NVS, a calibration mode triggered by a button, and noting the limits (nonlinearity, temperature drift, probe corrosion).
+
+---
+
+Goal: Filter a noisy sensor signal on a microcontroller.
+Context: A distance sensor reading at 20 Hz with occasional spikes (single outliers) and constant small noise. The output drives a display and an alarm threshold.
+Acceptance: a median filter for spikes followed by an exponential moving average, choosing the smoothing factor from the desired response time, hysteresis on the alarm threshold, and integer-only implementations.
+
+---
+
+Goal: Estimate a value from a noisy sensor with a simple Kalman filter.
+Context: Tank level from an ultrasonic sensor, noise ±1 cm, the true level changes slowly (filling at most 2 cm per minute). Samples every second.
+Acceptance: a one-dimensional Kalman filter with process and measurement noise chosen from these numbers, the code, how the filter behaves when the tank is filled fast, and when a moving average would be enough.
+
+---
+
+Goal: Use an MQ-135 gas sensor sensibly, knowing its limits.
+Context: A hobby air-quality project wants "CO2 ppm" from an MQ-135 on an ESP32. Readings drift during the first day and change with humidity.
+Acceptance: burn-in and preheat time, measuring R0 in clean air, the load resistor and voltage divider math (and 5 V heater with 3.3 V ADC), temperature and humidity compensation, why it cannot report accurate CO2 ppm, and that it must never be used for safety alarms.
+
+---
+
+Goal: Measure CO2 properly with an SCD41.
+Context: ESP32-C6 over I2C, the sensor in a bedroom. Values climb slowly over weeks even when the window is open daily.
+Acceptance: periodic versus low-power single-shot measurement, automatic self-calibration and its requirement for regular fresh-air exposure, forced recalibration with a known reference, pressure or altitude compensation, and the first-reading warm-up behavior.
+
+---
+
+Goal: Get a VOC and NOx index from an SGP41.
+Context: SGP41 on I2C next to an SHT40. The raw signals change all the time and mean nothing to users.
+Acceptance: why raw values need Sensirion's gas index algorithm, feeding temperature and humidity compensation, the sampling interval the algorithm expects, the learning period after power-up, and how to explain the index (relative to recent conditions) to users.
+
+---
+
+Goal: Build a home air-quality station with clear readings and honest limits.
+Context: Sensors available: SCD41 (CO2), SGP41 (VOC/NOx index), SHT40 (temperature/humidity), a PM2.5 sensor over UART. ESP32-C6, a small display, Home Assistant at home.
+Acceptance: wiring and bus plan, sampling intervals per sensor, compensation between sensors, thresholds with colors for the display, publishing to Home Assistant, and a statement of what the device cannot detect.
+
+---
+
+Goal: Detect carbon monoxide with an electrochemical sensor module and explain why it is not a safety alarm.
+Context: A CO sensor module with an analog output for a garage workshop project.
+Acceptance: the transimpedance amplifier and output voltage, calibration against a known concentration or the module's sensitivity value, temperature effects, sensor lifetime, the clear statement that certified CO alarms are required for life safety, and logging trends only.
+
+---
+
+Goal: Configure an HLK-LD2410 mmWave presence sensor for a desk occupancy detector.
+Context: Mounted under a monitor facing the chair. It reports presence when nobody is there because of a ceiling fan behind the desk.
+Acceptance: what the sensor measures (moving and stationary targets by distance gates), configuring max distance gates and per-gate sensitivity over its UART protocol or the vendor app, using the OUT pin versus UART data, and placement to avoid the fan.
+
+---
+
+Goal: Track people's positions in a room with an HLK-LD2450.
+Context: Want to know which zone of a living room people are in (sofa, door, kitchen corner), up to three people. ESP32-S3 reads the UART stream.
+Acceptance: parsing the target frames (x, y, speed), coordinate system and mounting orientation, defining zones as polygons, smoothing jumps, handling target dropouts, and privacy considerations of position tracking.
+
+---
+
+Goal: Add an LD2410 presence sensor to Home Assistant with ESPHome.
+Context: ESP32-C6 board, LD2410 on UART pins, Home Assistant already running.
+Acceptance: ESPHome YAML with the UART and LD2410 components, presence and distance sensors exposed, gate sensitivity numbers adjustable from Home Assistant, a timeout before reporting "clear", and OTA updates.
+
+---
+
+Goal: Read breathing and heart rate from a 60 GHz mmWave sensor, and understand what it can and cannot do.
+Context: A Seeed MR60BHA2-style module for a sleep tracking hobby project, mounted above the bed.
+Acceptance: what the radar detects (micro-motion of the chest), conditions for valid readings (distance, the person still, one person in range), filtering invalid frames, and that the readings are not medical-grade.
+
+---
+
+Goal: Detect presence in a room from Wi-Fi channel state information (CSI) with ESP32 boards.
+Context: Two ESP32-S3 boards (or C6) in the same room: one sends packets at a fixed rate, the other collects CSI using ESP-IDF's CSI API and Espressif's esp-csi tools.
+Acceptance: the transmitter and receiver setup, packet rate, extracting amplitude per subcarrier, a moving-variance feature for motion, calibration with an empty room, and why stillness is much harder to detect than motion.
+
+---
+
+Goal: Make CSI-based motion detection robust across rooms and over time.
+Context: Our threshold detector works in the test room but triggers falsely in another room and drifts after furniture moves.
+Acceptance: per-room calibration, adaptive baselines, features less sensitive to environment changes, a small trained classifier versus thresholds, collecting labeled data, and evaluating false positive rates per hour.
+
+---
+
+Goal: Run keyword spotting ("lights on", "lights off") on an ESP32-S3 with TensorFlow Lite Micro.
+Context: An I2S MEMS microphone. A small model trained on the desktop. The ESP32-S3 has vector instructions that ESP-NN can use.
+Acceptance: audio capture at 16 kHz, feature extraction (MFCC or log-mel) matching the training pipeline exactly, int8 model conversion, tensor arena sizing, inference timing, and the false trigger rate measured on background audio.
+
+---
+
+Goal: Quantize my model to int8 for a microcontroller without losing too much accuracy.
+Context: A float32 model for vibration anomaly classification, 92% accuracy on the desktop, 180 KB. Target: ESP32-C6 with about 300 KB of free RAM.
+Acceptance: post-training full-integer quantization with a representative dataset, checking input and output quantization parameters, comparing accuracy before and after on the same test set, and quantization-aware training if the drop is too large.
+
+---
+
+Goal: Detect anomalies in motor vibration on the device.
+Context: An accelerometer at 1.6 kHz on a pump. Normal operation data is easy to collect; failures are rare, so there are almost no labeled failure examples.
+Acceptance: windowing and FFT-based features, a model trained only on normal data (autoencoder or statistical baseline), an anomaly score with a threshold chosen from validation data, running it on the device, and handling normal operating-mode changes.
+
+---
+
+Goal: Use Edge Impulse to build and deploy a gesture recognition model.
+Context: An IMU on an ESP32-S3 board; gestures: circle, swipe left, swipe right, idle. The team has no ML experience.
+Acceptance: collecting and labeling data per gesture with several people, the processing block and model choice, testing on held-out data, exporting a library for the firmware, and integrating inference into the main loop.
+
+---
+
+Goal: Size the tensor arena and measure inference time for a TFLite Micro model.
+Context: Model runs on an ESP32-C6; AllocateTensors fails with "Arena size is too small". Increasing it blindly breaks the Wi-Fi stack's memory.
+Acceptance: finding the minimum arena size the interpreter reports, registering only the operators the model needs, measuring inference time with the system timer, and the memory budget left for Wi-Fi.
+
+---
+
+Goal: Run a person detection model on the ESP32-P4 with a camera.
+Context: ESP32-P4 board with a MIPI camera. Espressif provides ESP-DL and example models.
+Acceptance: the camera pipeline, image preprocessing to the model's input size and format, an ESP-DL model deployment, frames per second achieved, and memory placement in PSRAM.
+
+---
+
+Goal: Check that the on-device model behaves like the desktop model.
+Context: The int8 model reports 90% accuracy in Python but the device's predictions look worse.
+Acceptance: running the same test samples on the device and comparing outputs, common mismatches (feature extraction differences, input scaling, channel order, sample rate), logging intermediate features, and a regression test that runs on every model update.
+
+---
+
+Goal: Collect and label sensor data for training a model.
+Context: We want to classify activities from an accelerometer worn on the wrist: walking, running, cycling, sitting. Data from 10 volunteers.
+Acceptance: a recording firmware with timestamps, labeling protocol, splitting train and test by person (not by window), handling class imbalance, and storing the dataset with metadata so the work is reproducible.
+
+---
+
+Goal: Expose all sensors of a node to Home Assistant over MQTT with discovery.
+Context: Custom firmware (not ESPHome) on an ESP32-C6 with temperature, CO2, presence and battery level.
+Acceptance: Home Assistant MQTT discovery config topics per entity with device information, state topics, availability with last will, units and device classes, and retained messages used correctly.
+
+---
+
+Goal: Write an ESPHome configuration for a battery-powered sensor node with deep sleep.
+Context: ESP32-C6, SHT40 and a battery voltage divider. Wake every 10 minutes, send readings, sleep. Must still accept OTA updates sometimes.
+Acceptance: ESPHome YAML with the sensors, the deep sleep component, a way to prevent sleep for OTA (a Home Assistant switch or a GPIO), API or MQTT choice for fast reporting after wake, and the battery-life estimate.
+
+---
+
+Goal: Write a custom ESPHome component for a sensor that has no built-in support.
+Context: An I2C sensor with a simple register map. ESPHome is used for all other devices in the house.
+Acceptance: an external component with a polling sensor class, configuration schema in Python, reading registers in update(), error handling and status reporting, and using it from YAML.
+
+---
+
+Goal: Design a privacy-respecting occupancy system for an office using mmWave and CSI instead of cameras.
+Context: The office wants to know which meeting rooms are occupied and how many desks are used, without identifying people.
+Acceptance: sensor choice per space, what data leaves the device (counts and flags only), on-device processing, retention, informing employees, and what the system cannot be used for by design.

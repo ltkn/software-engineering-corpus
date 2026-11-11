@@ -12,8 +12,8 @@
   },
   "bundle": {
     "target_tokens": "200k-250k weighted",
-    "blocks_counted": 1846,
-    "unweighted_estimate": "~255.0k est of 1846 counted blocks (bytes/5.5 pre-check; 2026-11-11 added the task-first files 32-39 (32-godot 34, 33-arduino 31, 34-rust 31, 35-rust-embedded 31, 36-esp-idf 32, 37-git-code-review 42, 38-shell-cli 37, 39-cicd-iac 44), whose blocks are prompts for oQ-T generation rather than calibration text; ~1003.1k as sum(tokens x weight))",
+    "blocks_counted": 2083,
+    "unweighted_estimate": "~274.2k est of 2083 counted blocks (bytes/5.5 pre-check; 2026-11-11 added the task-first files 32-48 and 21 task-first blocks in 20-observability, whose blocks are prompts for oQ-T generation rather than calibration text; ~1046.5k as sum(tokens x weight))",
     "eval": [
       "eval/heldout-se.txt",
       "eval/heldout-general.txt",
@@ -159,8 +159,8 @@
     },
     {
       "id": "20-observability",
-      "blocks": 35,
-      "tokens": "est ~5.0k (pre-check 27.0 KB, ~144/block, 2026-10-09)",
+      "blocks": 56,
+      "tokens": "est ~6.8k (pre-check 36.3 KB, ~121/block, 2026-11-11)",
       "share": 2.5,
       "code_forward_target": ">=25%"
     },
@@ -295,6 +295,69 @@
       "blocks": 44,
       "tokens": "est ~3.9k (pre-check 21.1 KB, ~89/block, 2026-11-11)",
       "share": 3.0,
+      "code_forward_target": null
+    },
+    {
+      "id": "40-c-cpp",
+      "blocks": 26,
+      "tokens": "est ~2.1k (pre-check 11.5 KB, ~82/block, 2026-11-11)",
+      "share": 2.5,
+      "code_forward_target": null
+    },
+    {
+      "id": "41-data-stores",
+      "blocks": 25,
+      "tokens": "est ~2.0k (pre-check 11.0 KB, ~82/block, 2026-11-11)",
+      "share": 2.5,
+      "code_forward_target": null
+    },
+    {
+      "id": "42-distributed-systems",
+      "blocks": 24,
+      "tokens": "est ~2.0k (pre-check 10.5 KB, ~81/block, 2026-11-11)",
+      "share": 2.5,
+      "code_forward_target": null
+    },
+    {
+      "id": "43-performance",
+      "blocks": 22,
+      "tokens": "est ~1.7k (pre-check 9.1 KB, ~77/block, 2026-11-11)",
+      "share": 2.0,
+      "code_forward_target": null
+    },
+    {
+      "id": "44-frontend-platform",
+      "blocks": 24,
+      "tokens": "est ~1.9k (pre-check 10.1 KB, ~79/block, 2026-11-11)",
+      "share": 2.0,
+      "code_forward_target": null
+    },
+    {
+      "id": "45-docs-writing",
+      "blocks": 24,
+      "tokens": "est ~1.9k (pre-check 10.3 KB, ~80/block, 2026-11-11)",
+      "share": 2.0,
+      "code_forward_target": null
+    },
+    {
+      "id": "46-supply-chain",
+      "blocks": 21,
+      "tokens": "est ~1.7k (pre-check 9.1 KB, ~81/block, 2026-11-11)",
+      "share": 2.0,
+      "code_forward_target": null
+    },
+    {
+      "id": "47-lora-reticulum",
+      "blocks": 22,
+      "tokens": "est ~1.9k (pre-check 10.1 KB, ~86/block, 2026-11-11)",
+      "share": 2.0,
+      "code_forward_target": null
+    },
+    {
+      "id": "48-sensors-edge-ml",
+      "blocks": 28,
+      "tokens": "est ~2.2k (pre-check 12.0 KB, ~80/block, 2026-11-11)",
+      "share": 2.5,
       "code_forward_target": null
     }
   ],

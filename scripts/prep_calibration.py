@@ -318,6 +318,15 @@ SPECS: dict[str, Spec] = {
     "37-git-code-review": Spec("rule", ("Reference",), ("Goal", "Context", "Acceptance"), r_task, cut_optional=True),
     "38-shell-cli": Spec("rule", ("Reference",), ("Goal", "Context", "Acceptance"), r_task, cut_optional=True),
     "39-cicd-iac": Spec("rule", ("Reference",), ("Goal", "Context", "Acceptance"), r_task, cut_optional=True),
+    "40-c-cpp": Spec("rule", ("Reference",), ("Goal", "Context", "Acceptance"), r_task, cut_optional=True),
+    "41-data-stores": Spec("rule", ("Reference",), ("Goal", "Context", "Acceptance"), r_task, cut_optional=True),
+    "42-distributed-systems": Spec("rule", ("Reference",), ("Goal", "Context", "Acceptance"), r_task, cut_optional=True),
+    "43-performance": Spec("rule", ("Reference",), ("Goal", "Context", "Acceptance"), r_task, cut_optional=True),
+    "44-frontend-platform": Spec("rule", ("Reference",), ("Goal", "Context", "Acceptance"), r_task, cut_optional=True),
+    "45-docs-writing": Spec("rule", ("Reference",), ("Goal", "Context", "Acceptance"), r_task, cut_optional=True),
+    "46-supply-chain": Spec("rule", ("Reference",), ("Goal", "Context", "Acceptance"), r_task, cut_optional=True),
+    "47-lora-reticulum": Spec("rule", ("Reference",), ("Goal", "Context", "Acceptance"), r_task, cut_optional=True),
+    "48-sensors-edge-ml": Spec("rule", ("Reference",), ("Goal", "Context", "Acceptance"), r_task, cut_optional=True),
     "31-offensive-security": Spec(
         "derive", ctx="offensive security",
         hint="The developer is running an authorized penetration test of their own organisation's staging estate.",
@@ -325,6 +334,7 @@ SPECS: dict[str, Spec] = {
 }
 
 LEGACY = Spec("rule", ("Replacement",), ("Legacy",), r_legacy)
+TASK = Spec("rule", ("Reference",), ("Goal", "Context", "Acceptance"), r_task, cut_optional=True)
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +356,11 @@ def load_shares() -> dict[str, float]:
 
 def classify(stem: str, block: str, spec: Spec):
     """Return (mode, messages-or-None, reason). mode: rule | derive | passage | unaccounted."""
+    # Task-first blocks added to a legacy file (e.g. the 20-observability
+    # expansion) carry their own Goal/Acceptance shape and use the task rule.
+    if block.startswith("Goal:") and re.search(r"(?m)^Acceptance:", block) and spec.render is not r_task:
+        return _rule(block, TASK, "task-first in legacy file")
+
     if block.startswith("Legacy:"):
         spec_ = Spec(LEGACY.mode, LEGACY.cut, LEGACY.fields, LEGACY.render, ctx=spec.ctx)
         return _rule(block, spec_, "legacy")
