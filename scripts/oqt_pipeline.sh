@@ -10,6 +10,7 @@
 #   preflight  checks: oMLX branch, source model, the model that writes answers, disk, RAM
 #   extract    corpus blocks -> prompts                       (offline, seconds)
 #   derive     model writes the questions for knowledge cards (oMLX server)
+#   seed       model writes generic and broad prompts from seeds/*.txt (oMLX server)
 #   generate   model answers the prompts, thinking on         (oMLX server, hours)
 #   render     answers -> one calibration file in the chat template
 #   build      oQ-T quant from that file                      (streamed, hours)
@@ -28,6 +29,12 @@
 #   BUDGET_TOKENS=1000000  how much text to generate (thinking included)
 #   EFFORT_MIX=max=70,medium=15,low=15
 #   CONCURRENCY=4          parallel requests to the server
+#   OQT_PROFILE=profile    'profile' = corpus + generic + broad prompts; 'generic' = no
+#                          corpus (the comparison arm). Answers are cached in
+#                          ~/oqup/prep-cache, so a second run with the other profile
+#                          only generates what is missing.
+#   OQT_MIX=corpus=50,generic=25,broad=25   token shares per prompt group
+#   PROMPTS_PER_SEED=8     prompts the model writes per seed
 #   PORT=8765              port for the pipeline's own oMLX server
 #   plus any omlx_oqt.sh option (OQ_SAMPLES, OQ_SEQLEN, NGRAM_BITS, PRESERVE_MTP, ...)
 set -euo pipefail
@@ -43,7 +50,11 @@ BUDGET_TOKENS="${BUDGET_TOKENS:-1000000}"
 EFFORT_MIX="${EFFORT_MIX:-max=70,medium=15,low=15}"
 CONCURRENCY="${CONCURRENCY:-4}"
 PREP="$CORPUS_REPO/scripts/prep_calibration.py"
-STAGES=(preflight extract derive generate render build score)
+STAGES=(preflight extract derive seed generate render build score)
+OQT_PROFILE="${OQT_PROFILE:-profile}"
+OQT_MIX="${OQT_MIX:-corpus=50,generic=25,broad=25}"
+PROMPTS_PER_SEED="${PROMPTS_PER_SEED:-8}"
+case "$OQT_PROFILE" in profile|generic) ;; *) echo "OQT_PROFILE must be profile or generic" >&2; exit 2 ;; esac
 export OMLX_REPO VENV_PY OQUP MODELS_OUT
 
 usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
@@ -51,6 +62,7 @@ ts() { date '+%Y-%m-%d %H:%M:%S'; }
 hash_of() { shasum -a 256 | awk '{print substr($1, 1, 16)}'; }
 
 # ----------------------------------------------------------------- status
+CACHE_ROOT="$OQUP/prep-cache"
 if [ "${1:-}" = "status" ]; then
     NAME="${2:-}"; [ -n "$NAME" ] || usage
     RUN="$OQUP/runs/$NAME"
@@ -144,10 +156,12 @@ import json, sys
 kind, path = sys.argv[1], sys.argv[2]
 d = json.load(open(path))
 if kind == "generate":
-    print("{}/{} answers kept, {:,} tokens, {}".format(d["kept"], d["requests"], d["tokens"], d["verdicts"]))
+    print("[{}] {}/{} answers kept, {:,} tokens {}, {} with tool calls, {}".format(
+        d["profile"], d["kept"], d["requests"], d["tokens"], d.get("tokens_by_group", {}),
+        d.get("with_tool_calls", 0), d["verdicts"]))
 elif kind == "render":
-    print("{} conversations + {} passages, {:,} tokens ({})".format(
-        d["conversations"], d["passages"], d["tokens"], d["mode"]))
+    print("[{}] {} conversations ({} with tools) + {} passages, {:,} tokens ({})".format(
+        d["profile"], d["conversations"], d.get("with_tools", 0), d["passages"], d["tokens"], d["mode"]))
 else:
     s = d.get("summary") or {}
     if s:
@@ -255,6 +269,7 @@ log "source    : $SRC"
 log "answers by: $GENERATOR"
 log "level     : oQ${LEVEL}t -> $MODELS_OUT/*-oQ${LEVEL}t-$NAME"
 log "budget    : $BUDGET_TOKENS tokens, effort $EFFORT_MIX, concurrency $CONCURRENCY"
+log "prompts   : profile $OQT_PROFILE, mix $OQT_MIX, $PROMPTS_PER_SEED prompts per seed"
 log "machine   : ${ram_gb} GB RAM, ${free_gb:-?} GB free under $OQUP"
 [ "$ram_gb" -ge 96 ] || log "WARNING: ${ram_gb} GB RAM; this pipeline is planned for the 128 GB Mac"
 [ -n "$free_gb" ] && [ "$free_gb" -lt 150 ] && log "WARNING: only ${free_gb} GB free"
@@ -270,7 +285,9 @@ PREP_SHA="$(hash_of < "$PREP")"
 # ----------------------------------------------------------------- digests
 D_EXTRACT="$( { cat "$CORPUS_REPO"/calibration/*.txt "$CORPUS_REPO/manifest.json"; echo "$PREP_SHA"; } | hash_of)"
 D_DERIVE="$(printf '%s|%s|%s' "$D_EXTRACT" "$GEN_ID" "$( { cat "$GENERATOR/config.json"; ls -l "$GENERATOR"/*.safetensors 2>/dev/null; } | hash_of)" | hash_of)"
-D_GENERATE="$(printf '%s|%s|%s|%s' "$D_DERIVE" "$BUDGET_TOKENS" "$EFFORT_MIX" "${MAX_TOKENS:-16384}" | hash_of)"
+D_SEED="$(printf '%s|%s|%s|%s' "$( cat "$CORPUS_REPO"/seeds/*.txt | hash_of)" "$PREP_SHA" "$GEN_ID" "$PROMPTS_PER_SEED" | hash_of)"
+D_GENERATE="$(printf '%s|%s|%s|%s|%s|%s|%s' "$D_DERIVE" "$D_SEED" "$BUDGET_TOKENS" "$EFFORT_MIX" \
+    "${MAX_TOKENS:-16384}" "$OQT_PROFILE" "$OQT_MIX" | hash_of)"
 D_RENDER="$(printf '%s|%s' "$D_GENERATE" "$( cat "$SRC"/tokenizer*.json "$SRC"/*.jinja 2>/dev/null | hash_of)" | hash_of)"
 
 # ------------------------------------------------------------------ server
@@ -302,19 +319,22 @@ start_server() {
 # ------------------------------------------------------------------ stages
 run_stage extract "$D_EXTRACT" python3 "$PREP" extract --out "$PREP_OUT"
 
-if ! is_done derive "$D_DERIVE" || ! is_done generate "$D_GENERATE"; then
+if ! is_done derive "$D_DERIVE" || ! is_done seed "$D_SEED" || ! is_done generate "$D_GENERATE"; then
     start_server
 fi
-run_stage derive "$D_DERIVE" python3 "$PREP" derive --out "$PREP_OUT" \
+run_stage derive "$D_DERIVE" python3 "$PREP" derive --out "$PREP_OUT" --cache-root "$CACHE_ROOT" \
     --model "$GEN_ID" --server "$SERVER" --concurrency "$CONCURRENCY"
-run_stage generate "$D_GENERATE" python3 "$PREP" generate --out "$PREP_OUT" \
+run_stage seed "$D_SEED" python3 "$PREP" seed --out "$PREP_OUT" --cache-root "$CACHE_ROOT" \
+    --model "$GEN_ID" --server "$SERVER" --concurrency "$CONCURRENCY" --prompts-per-seed "$PROMPTS_PER_SEED"
+run_stage generate "$D_GENERATE" python3 "$PREP" generate --out "$PREP_OUT" --cache-root "$CACHE_ROOT" \
+    --profile "$OQT_PROFILE" --mix "$OQT_MIX" \
     --model "$GEN_ID" --server "$SERVER" --concurrency "$CONCURRENCY" \
     --budget-tokens "$BUDGET_TOKENS" --effort-mix "$EFFORT_MIX" --max-tokens "${MAX_TOKENS:-16384}"
-[ -f "$PREP_OUT/answers/$GEN_ID/generate.json" ] && \
-    log "generate: $(summary generate "$PREP_OUT/answers/$GEN_ID/generate.json")"
+[ -f "$PREP_OUT/answers/$GEN_ID/generate-$OQT_PROFILE.json" ] && \
+    log "generate: $(summary generate "$PREP_OUT/answers/$GEN_ID/generate-$OQT_PROFILE.json")"
 stop_server
 
-run_stage render "$D_RENDER" "$VENV_PY" "$PREP" render --out "$PREP_OUT" \
+run_stage render "$D_RENDER" "$VENV_PY" "$PREP" render --out "$PREP_OUT" --profile "$OQT_PROFILE" \
     --model "$GEN_ID" --source "$SRC" --bundle "$BUNDLE"
 
 # The build needs the memory: no other oMLX server may be running.
@@ -343,6 +363,6 @@ log "quant     : $OUT"
 if [ -n "$OUT" ] && [ -f "$OUT/oqt_report.json" ]; then
     log "oQ-T      : $(summary oqt "$OUT/oqt_report.json")"
 fi
-[ -f "$PREP_OUT/answers/$GEN_ID/render.json" ] && \
-    log "calibration: $(summary render "$PREP_OUT/answers/$GEN_ID/render.json")"
+[ -f "$PREP_OUT/answers/$GEN_ID/render-$OQT_PROFILE.json" ] && \
+    log "calibration: $(summary render "$PREP_OUT/answers/$GEN_ID/render-$OQT_PROFILE.json")"
 log "serve it  : ln -s \"$OUT\" ~/.omlx/models/"

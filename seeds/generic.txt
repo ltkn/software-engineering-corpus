@@ -1,0 +1,53 @@
+# Generic seed list: software tasks OUTSIDE the corpus's own stack.
+# One seed per line: "id: description", optional tags [tools] or [lang=xx].
+# The model writes several realistic prompts per seed (prep stage "seed").
+go-service: a Go HTTP service or CLI: handlers, context cancellation, goroutine leaks, error wrapping
+go-concurrency: Go concurrency bugs with channels, mutexes and worker pools
+dotnet-api: an ASP.NET Core Web API with Entity Framework Core
+csharp-async: C# async/await deadlocks, LINQ performance, nullable reference types
+swift-ios: a Swift/SwiftUI iOS app: state management, networking, concurrency with actors
+kotlin-android: a Kotlin Android app with Jetpack Compose, coroutines and Room
+flutter-dart: a Flutter app: widgets, state management, platform channels
+react-native: a React Native app: navigation, performance, native modules
+ruby-rails: a Ruby on Rails app: ActiveRecord queries, background jobs, migrations
+php-laravel: a PHP Laravel app: Eloquent, queues, validation, upgrades
+django-fastapi: a Python Django or FastAPI backend: ORM, async views, auth
+node-express: a Node.js/Express or NestJS backend: middleware, streams, memory leaks
+svelte-angular: a Svelte or Angular frontend component and its state
+mysql-sqlserver: MySQL or SQL Server queries, indexes, deadlocks and migrations
+mongodb: MongoDB schema design, aggregation pipelines and indexes
+elasticsearch: Elasticsearch or OpenSearch mappings, queries and relevance tuning
+data-pandas: data cleaning and analysis with pandas or polars on a messy CSV
+data-spark: Apache Spark or Databricks jobs: partitioning, skew, joins
+data-airflow-dbt: data pipelines with Airflow, Dagster or dbt models and tests
+ml-pytorch: training a PyTorch model: data loaders, overfitting, GPU memory, mixed precision
+ml-sklearn: classical machine learning with scikit-learn: features, cross-validation, leakage
+llm-app: building an application on an LLM API: prompts, retrieval, evaluation, cost
+numerics-julia-fortran: numerical computing in Julia, Fortran or NumPy: stability, vectorization
+r-stats: statistics in R: models, plots with ggplot2, tidyverse transformations
+algorithms: algorithm and data structure problems with complexity analysis
+competitive: competitive programming problems with tight constraints
+unity-csharp: a Unity game in C#: physics, ScriptableObjects, performance on mobile
+unreal-cpp: an Unreal Engine C++ gameplay system or Blueprint integration
+shaders-glsl: GLSL, HLSL or WGSL shaders for effects and lighting
+compilers: writing a lexer, parser or interpreter for a small language
+os-systems: operating systems concepts: scheduling, memory, file systems, syscalls
+networking: debugging TCP, DNS, TLS and HTTP/2 issues with packet captures
+crypto-basics: using cryptography correctly: hashing, signatures, key management
+smart-contracts: Solidity smart contracts: reentrancy, gas, upgradeability
+powershell-windows: PowerShell scripts and Windows administration
+cloud-aws-azure-gcp: cloud architecture and services on AWS, Azure or GCP
+serverless: serverless functions: cold starts, timeouts, event sources
+mainframe-cobol: COBOL or mainframe modernization and data migration
+scala-jvm: Scala or Kotlin on the server: functional patterns, effects, JVM tuning
+elixir-erlang: Elixir/Erlang: OTP supervision, GenServers, Phoenix LiveView
+haskell-ocaml: Haskell or OCaml: types, monads, performance and laziness
+lua-scripting: Lua scripting for games, Neovim or Redis
+zig-low-level: Zig or low-level systems code: allocators, comptime, C interop
+assembly: reading or writing x86-64 or ARM assembly and calling conventions
+regex-text: writing and debugging regular expressions and text parsing
+spreadsheets: Excel or Google Sheets formulas, pivot tables and Apps Script
+latex-typst: documents in LaTeX or Typst: layout, bibliography, math
+accessibility-mobile: mobile accessibility on iOS and Android
+code-explain: explaining an unfamiliar piece of legacy code in any language
+career-engineering: engineering career questions: interviews, estimation, code review culture

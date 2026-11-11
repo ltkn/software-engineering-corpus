@@ -9,6 +9,9 @@ Implements step 1 of PREP_PLAN.md (§2, §4 stages 1-3):
   derive    For knowledge-card blocks (no question in them), ask the served
             model, thinking off, to write the request a developer would send.
             Each answer passes a leakage check; rejected drafts are retried.
+  seed      Have the served model write prompts from seeds/generic.txt (software
+            outside the corpus) and seeds/broad.txt (non-coding, multilingual,
+            tool calling); the corpus-free material (PREP_PLAN.md §2 D, F).
   generate  Have the served model answer the prompts (thinking on, generic
             effort levels), sampled by manifest share up to a token budget.
             Every request is cached, so a rerun resumes exactly.
@@ -596,7 +599,7 @@ def do_derive(out: Path, args, only: set[str] | None) -> int:
         print("nothing to derive (run extract first?)")
         return 0
     fam = family_of(args.model, args.family)
-    cache_dir = out / "cache" / "derive"
+    cache_dir = cache_root(out, args) / "cache" / "derive"
     cache_dir.mkdir(parents=True, exist_ok=True)
     shares = load_shares()
 
@@ -645,11 +648,172 @@ def do_derive(out: Path, args, only: set[str] | None) -> int:
 
 
 # ---------------------------------------------------------------------------
-# generate (PREP_PLAN.md §4 stages 4-5, §4a)
+# seed (PREP_PLAN.md §2 D and F): prompts written by the model from seed lists
+# ---------------------------------------------------------------------------
+
+SEED_VERSION = "seed-v1"
+SEED_GROUPS = ("generic", "broad")
+SEEDS_DIR = REPO / "seeds"
+
+SEED_SYSTEM = (
+    "You write realistic requests that people send to an AI assistant. Return only a JSON "
+    "array of {n} objects, each {{\"prompt\": \"...\"}}. Vary length (one line to several "
+    "paragraphs), tone and expertise; include pasted code, data, logs or text when a real "
+    "person would. Each request must be self-contained and must not contain its answer. "
+    "No commentary outside the JSON."
+)
+SEED_TOOLS = (
+    " Each object must also have a \"tools\" array of 1 to 4 function definitions in the "
+    "OpenAI format ({{\"type\": \"function\", \"function\": {{\"name\", \"description\", "
+    "\"parameters\" as JSON Schema}}}}), and answering the prompt must require calling at "
+    "least one of them."
+)
+
+
+def load_seeds(group: str) -> list[dict]:
+    """Parse seeds/<group>.txt: 'id: description [tools] [lang=xx]' per line."""
+    path = SEEDS_DIR / f"{group}.txt"
+    seeds = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        sid, _, desc = line.partition(":")
+        tags = re.findall(r"\[([^\]]+)\]", desc)
+        desc = re.sub(r"\s*\[[^\]]+\]", "", desc).strip()
+        lang = next((t.split("=", 1)[1] for t in tags if t.startswith("lang=")), None)
+        seeds.append({"id": sid.strip(), "desc": desc, "tools": "tools" in tags, "lang": lang,
+                      "group": group})
+    return seeds
+
+
+def _parse_json_array(text: str):
+    text = strip_think(text)
+    start, end = text.find("["), text.rfind("]")
+    if start < 0 or end <= start:
+        return None
+    try:
+        data = json.loads(text[start : end + 1])
+    except ValueError:
+        return None
+    return data if isinstance(data, list) else None
+
+
+def _normalize_tools(tools) -> list[dict] | None:
+    if not isinstance(tools, list) or not tools:
+        return None
+    out = []
+    for t in tools:
+        if not isinstance(t, dict):
+            return None
+        fn = t.get("function") if t.get("type") == "function" else t
+        if not isinstance(fn, dict) or not isinstance(fn.get("name"), str):
+            return None
+        params = fn.get("parameters") if isinstance(fn.get("parameters"), dict) else {
+            "type": "object", "properties": {}}
+        out.append({"type": "function", "function": {
+            "name": fn["name"], "description": str(fn.get("description", "")), "parameters": params}})
+    return out
+
+
+def seed_one(seed: dict, args, fam: str, cache_dir: Path) -> dict:
+    n = args.prompts_per_seed
+    system = SEED_SYSTEM.format(n=n) + (SEED_TOOLS.format() if seed["tools"] else "")
+    user_msg = f"Topic: {seed['desc']}."
+    if seed["lang"]:
+        user_msg += f" Write every request in the language with code {seed['lang']}."
+    payload = {"model": args.model,
+               "messages": [{"role": "system", "content": system},
+                            {"role": "user", "content": user_msg}],
+               "temperature": 0.9, "max_tokens": 6000,
+               "chat_template_kwargs": FAMILIES[fam]["thinking_off"]}
+    key = sha(json.dumps([SEED_VERSION, seed, n, payload], sort_keys=True))
+    cpath = cache_dir / f"{key}.json"
+    if cpath.exists():
+        return json.loads(cpath.read_text(encoding="utf-8"))
+    prompts, err = [], None
+    for attempt in range(3):
+        try:
+            text = chat(args.server, args.api_key, dict(payload, temperature=0.9 + 0.05 * attempt),
+                        args.timeout)
+        except (urllib.error.URLError, TimeoutError, KeyError, ValueError) as e:
+            err = str(e)
+            time.sleep(min(10, 2 ** attempt))
+            continue
+        items = _parse_json_array(text) or []
+        for it in items:
+            if not isinstance(it, dict) or not isinstance(it.get("prompt"), str):
+                continue
+            p = it["prompt"].strip()
+            if not 10 <= len(p) <= 8000:
+                continue
+            row = {"prompt": p}
+            if seed["tools"]:
+                tools = _normalize_tools(it.get("tools"))
+                if tools is None:
+                    continue
+                row["tools"] = tools
+            prompts.append(row)
+        if prompts:
+            break
+        err = "no usable prompts in the reply"
+    rec = {"seed": seed, "prompts": prompts, "error": None if prompts else err,
+           "version": SEED_VERSION}
+    if prompts:
+        tmp = cpath.with_suffix(".tmp")
+        tmp.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, cpath)
+    return rec
+
+
+def do_seed(out: Path, args) -> int:
+    fam = family_of(args.model, args.family)
+    cache_dir = cache_root(out, args) / "cache" / "seed"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    seeds = [s for g in SEED_GROUPS for s in load_seeds(g)]
+    rows, failed = [], []
+    with cf.ThreadPoolExecutor(max_workers=args.concurrency) as ex:
+        for rec in ex.map(lambda sd: seed_one(sd, args, fam, cache_dir), seeds):
+            sd = rec["seed"]
+            if not rec["prompts"]:
+                failed.append(f"{sd['group']}:{sd['id']} ({rec.get('error')})")
+            seen = set()
+            for k, pr in enumerate(rec["prompts"]):
+                if pr["prompt"] in seen:
+                    continue
+                seen.add(pr["prompt"])
+                row = {"id": f"seed-{sd['group']}:{sd['id']}#{k:02d}", "file": f"seed-{sd['group']}",
+                       "sha": sha(json.dumps(pr, sort_keys=True)), "source": f"seed-{sd['group']}",
+                       "reason": "seed", "share": 1.0, "messages": user(pr["prompt"])}
+                if pr.get("tools"):
+                    row["tools"] = pr["tools"]
+                rows.append(row)
+    write_jsonl(out / "seed_prompts.jsonl", rows)
+    by = {g: sum(1 for r in rows if r["source"] == f"seed-{g}") for g in SEED_GROUPS}
+    tools = sum(1 for r in rows if r.get("tools"))
+    print(f"seed: {len(rows)} prompts from {len(seeds)} seeds ({by}, {tools} with tools) -> "
+          f"{out / 'seed_prompts.jsonl'}", flush=True)
+    for f in failed:
+        print(f"  seed failed: {f}", file=sys.stderr)
+    return 1 if len(failed) > len(seeds) // 4 else 0
+
+
+# ---------------------------------------------------------------------------
+# generate (PREP_PLAN.md §4 stages 4-5, §4a, §6)
 # ---------------------------------------------------------------------------
 
 GENERATE_VERSION = "generate-v1"
 EFFORT_LEVELS = ("max", "medium", "low")
+PROFILES = {
+    # profile name -> prompt groups it draws from
+    "profile": ("corpus", "generic", "broad"),
+    "generic": ("generic", "broad"),
+}
+
+
+def cache_root(out: Path, args) -> Path:
+    """Where request caches live: shared across runs when --cache-root is given."""
+    return Path(args.cache_root).expanduser() if getattr(args, "cache_root", None) else out
 
 
 def parse_effort_mix(text: str) -> list[tuple[str, float]]:
@@ -671,10 +835,32 @@ def parse_effort_mix(text: str) -> list[tuple[str, float]]:
     return out
 
 
+def parse_mix(text: str, profile: str) -> dict[str, float]:
+    """'corpus=50,generic=25,broad=25' restricted to the profile's groups, normalized."""
+    groups = PROFILES[profile]
+    raw = {}
+    for item in text.split(","):
+        name, _, val = item.partition("=")
+        name = name.strip()
+        if name not in ("corpus", "generic", "broad"):
+            raise SystemExit(f"--mix: unknown group {name!r} (use corpus, generic, broad)")
+        raw[name] = float(val)
+    sel = {g: raw.get(g, 0.0) for g in groups}
+    total = sum(sel.values())
+    if total <= 0:
+        raise SystemExit(f"--mix gives no weight to the groups of profile {profile!r}")
+    return {g: v / total for g, v in sel.items() if v > 0}
+
+
 def _unit(*parts) -> float:
     """Deterministic number in [0, 1) from the given parts."""
     h = hashlib.sha256("|".join(str(p) for p in parts).encode()).digest()
     return int.from_bytes(h[:8], "big") / 2**64
+
+
+def prompt_group(p: dict) -> str:
+    src = p.get("source", "")
+    return src.split("-", 1)[1] if src.startswith("seed-") else "corpus"
 
 
 def plan_requests(prompts: list[dict], args) -> list[dict]:
@@ -693,24 +879,24 @@ def plan_requests(prompts: list[dict], args) -> list[dict]:
         spp = max(1, min(args.max_samples, round(args.samples_per_prompt * share / mean_share)))
         for k in range(spp):
             u = _unit(args.seed, "effort", p["id"], p["sha"], k)
-            effort = next(name for name, cut in mix if u < cut)
+            effort = next(name for name, cut_ in mix if u < cut_)
             items.append({"prompt": p, "sample": k, "effort": effort,
                           "order": _unit(args.seed, "order", p["id"], p["sha"], k)})
     items.sort(key=lambda it: it["order"])
     return items
 
 
-def verdict(content: str, reasoning: str, finish: str | None) -> tuple[bool, str]:
+def verdict(content: str, reasoning: str, finish: str | None, tool_calls=None) -> tuple[bool, str]:
     import zlib
 
     text = f"{reasoning}\n{content}".strip()
-    if not text:
+    if not text and not tool_calls:
         return False, "empty"
     if len(text) > 4000:
         ratio = len(zlib.compress(text.encode("utf-8"))) / len(text.encode("utf-8"))
         if ratio < 0.08:
             return False, "repetition loop"
-    if len(content) < 400 and re.search(
+    if len(content) < 400 and not tool_calls and re.search(
             r"(?i)\b(i can(no|')t (help|assist)|i'm not able to help|i won't (help|provide))", content):
         return False, "refusal"
     if finish == "length":
@@ -731,12 +917,15 @@ def generate_one(item: dict, args, fam: str, cache_dir: Path) -> dict:
         "seed": int(_unit(args.seed, "seed", p["id"], item["sample"]) * 2**31),
         "chat_template_kwargs": {**f["thinking_on"], "reasoning_effort": f["effort"][item["effort"]]},
     }
+    if p.get("tools"):
+        payload["tools"] = p["tools"]
     key = sha(json.dumps([GENERATE_VERSION, p["sha"], p["messages"], item["sample"], payload],
                          sort_keys=True))
     cpath = cache_dir / f"{key}.json"
     if cpath.exists():
         rec = json.loads(cpath.read_text(encoding="utf-8"))
         rec["cached"] = True
+        rec["group"] = prompt_group(p)
         return rec
     last_err = None
     for attempt in range(3):
@@ -750,14 +939,15 @@ def generate_one(item: dict, args, fam: str, cache_dir: Path) -> dict:
             if not reasoning:
                 m = re.search(r"(?s)<think>(.*?)</think>", msg.get("content") or "")
                 reasoning = m.group(1).strip() if m else ""
+            tool_calls = msg.get("tool_calls") or None
             usage = body.get("usage") or {}
             tokens = int(usage.get("completion_tokens")
-                         or (len(content) + len(reasoning)) // 4)
-            ok, why = verdict(content, reasoning, choice.get("finish_reason"))
+                         or (len(content) + len(reasoning) + len(json.dumps(tool_calls or ""))) // 4)
+            ok, why = verdict(content, reasoning, choice.get("finish_reason"), tool_calls)
             rec = {"key": key, "id": p["id"], "file": p["file"], "sha": p["sha"],
                    "sample": item["sample"], "effort": item["effort"],
-                   "model": args.model, "messages": p["messages"],
-                   "reasoning": reasoning, "content": content,
+                   "model": args.model, "messages": p["messages"], "tools": p.get("tools"),
+                   "reasoning": reasoning, "content": content, "tool_calls": tool_calls,
                    "finish_reason": choice.get("finish_reason"), "tokens": tokens,
                    "seconds": round(time.time() - t0, 2), "keep": ok, "why": why,
                    "version": GENERATE_VERSION}
@@ -765,51 +955,40 @@ def generate_one(item: dict, args, fam: str, cache_dir: Path) -> dict:
             tmp.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
             os.replace(tmp, cpath)
             rec["cached"] = False
+            rec["group"] = prompt_group(p)
             return rec
         except (urllib.error.URLError, TimeoutError, KeyError, ValueError, IndexError) as e:
             last_err = e
             time.sleep(min(30, 3 * 2 ** attempt))
     return {"id": p["id"], "file": p["file"], "error": str(last_err), "keep": False,
-            "why": "request failed", "tokens": 0, "cached": False}
+            "why": "request failed", "tokens": 0, "cached": False, "group": prompt_group(p)}
 
 
 def model_tag(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", name)
 
 
-def do_generate(out: Path, args) -> int:
-    prompts = read_jsonl(out / "prompts.jsonl")
-    if not prompts:
-        print("no prompts (run extract and derive first)", file=sys.stderr)
-        return 1
-    fam = family_of(args.model, args.family)
-    adir = out / "answers" / model_tag(args.model)
-    cache_dir = adir / "cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    items = plan_requests(prompts, args)
-    budget = int(args.budget_tokens)
-    print(f"generate: {len(items)} planned requests over {len({i['prompt']['id'] for i in items})} "
-          f"prompts; budget {budget:,} tokens; model {args.model}; concurrency {args.concurrency}",
-          flush=True)
+def answers_dir(out: Path, args) -> Path:
+    return out / "answers" / model_tag(args.model)
 
+
+def _run_group(group: str, items: list[dict], budget: int, args, fam: str, cache_dir: Path,
+               clock: dict) -> tuple[list[dict], int]:
+    """Generate one prompt group up to its token budget (shared progress clock)."""
     results: list[dict] = []
     tokens_done = 0
-    fresh_tokens, fresh_seconds_start = 0, None
     failures_in_row = 0
-    t0 = time.time()
     it = iter(items)
     pending: dict = {}
-    pilot_reported = False
     with cf.ThreadPoolExecutor(max_workers=args.concurrency) as ex:
         def submit_next():
-            nonlocal fresh_seconds_start
             if tokens_done >= budget:
                 return False
             nxt = next(it, None)
             if nxt is None:
                 return False
-            if fresh_seconds_start is None:
-                fresh_seconds_start = time.time()
+            if clock["fresh_start"] is None:
+                clock["fresh_start"] = time.time()
             pending[ex.submit(generate_one, nxt, args, fam, cache_dir)] = nxt
             return True
 
@@ -823,33 +1002,66 @@ def do_generate(out: Path, args) -> int:
                 rec = fut.result()
                 results.append(rec)
                 tokens_done += int(rec.get("tokens") or 0)
+                clock["tokens"] += int(rec.get("tokens") or 0)
+                clock["answers"] += 1
                 if not rec.get("cached"):
-                    fresh_tokens += int(rec.get("tokens") or 0)
+                    clock["fresh_tokens"] += int(rec.get("tokens") or 0)
                 failures_in_row = failures_in_row + 1 if rec.get("why") == "request failed" else 0
                 if failures_in_row >= 10:
                     print("generate: 10 failed requests in a row; is the server up? "
                           f"last error: {rec.get('error')}", file=sys.stderr, flush=True)
                     ex.shutdown(cancel_futures=True)
-                    return 2
-                n = len(results)
-                if not pilot_reported and fresh_tokens and n >= args.pilot:
-                    rate = fresh_tokens / max(time.time() - (fresh_seconds_start or t0), 1e-6)
-                    remaining = max(budget - tokens_done, 0)
+                    raise SystemExit(2)
+                n = clock["answers"]
+                rate = clock["fresh_tokens"] / max(time.time() - (clock["fresh_start"] or clock["t0"]), 1e-6)
+                if not clock["pilot_reported"] and clock["fresh_tokens"] and n >= args.pilot:
+                    remaining = max(clock["budget"] - clock["tokens"], 0)
                     print(f"generate: pilot {n} answers, {rate:.0f} tokens/s overall -> "
                           f"about {remaining / max(rate, 1e-6) / 3600:.1f} h for the remaining "
                           f"{remaining:,} tokens", flush=True)
-                    pilot_reported = True
+                    clock["pilot_reported"] = True
                 if n % args.log_every == 0:
-                    el = time.time() - t0
-                    rate = fresh_tokens / max(time.time() - (fresh_seconds_start or t0), 1e-6)
-                    eta = max(budget - tokens_done, 0) / max(rate, 1e-6) if fresh_tokens else 0
-                    kept = sum(1 for r in results if r.get("keep"))
-                    print(f"generate: {n} answers ({kept} kept), {tokens_done:,}/{budget:,} tokens, "
-                          f"{el / 60:.0f} min elapsed, ~{eta / 60:.0f} min left", flush=True)
+                    el = time.time() - clock["t0"]
+                    eta = (max(clock["budget"] - clock["tokens"], 0) / max(rate, 1e-6)
+                           if clock["fresh_tokens"] else 0)
+                    print(f"generate: [{group}] {n} answers, {clock['tokens']:,}/{clock['budget']:,} "
+                          f"tokens, {el / 60:.0f} min elapsed, ~{eta / 60:.0f} min left", flush=True)
                 submit_next()
+    return results, tokens_done
+
+
+def do_generate(out: Path, args) -> int:
+    prompts = read_jsonl(out / "prompts.jsonl") + read_jsonl(out / "seed_prompts.jsonl")
+    if not prompts:
+        print("no prompts (run extract, derive and seed first)", file=sys.stderr)
+        return 1
+    fam = family_of(args.model, args.family)
+    adir = answers_dir(out, args)
+    adir.mkdir(parents=True, exist_ok=True)
+    cache_dir = cache_root(out, args) / "answers" / model_tag(args.model) / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    mix = parse_mix(args.mix, args.profile)
+    budget = int(args.budget_tokens)
+    groups = {g: [p for p in prompts if prompt_group(p) == g] for g in mix}
+    missing = [g for g, ps in groups.items() if not ps]
+    if missing:
+        print(f"generate: no prompts for group(s) {missing}; run the seed stage first", file=sys.stderr)
+        return 1
+    print(f"generate: profile {args.profile}, mix "
+          + ", ".join(f"{g} {f:.0%} ({len(groups[g])} prompts)" for g, f in mix.items())
+          + f"; budget {budget:,} tokens; model {args.model}; concurrency {args.concurrency}", flush=True)
+    clock = {"t0": time.time(), "fresh_start": None, "fresh_tokens": 0, "tokens": 0,
+             "answers": 0, "pilot_reported": False, "budget": budget}
+    results: list[dict] = []
+    group_tokens = {}
+    for g, frac in mix.items():
+        items = plan_requests(groups[g], args)
+        res, tok = _run_group(g, items, int(round(budget * frac)), args, fam, cache_dir, clock)
+        results += res
+        group_tokens[g] = tok
 
     kept = [r for r in results if r.get("keep")]
-    write_jsonl(adir / "answers.jsonl", sorted(kept, key=lambda r: (r["id"], r["sample"])))
+    write_jsonl(adir / f"answers-{args.profile}.jsonl", sorted(kept, key=lambda r: (r["id"], r["sample"])))
     why_counts: dict[str, int] = {}
     effort_counts: dict[str, int] = {}
     for r in results:
@@ -861,14 +1073,16 @@ def do_generate(out: Path, args) -> int:
         acc = by_file.setdefault(r["file"], [0, 0, 0])
         acc[0 if r.get("keep") else 1] += 1
         acc[2] += int(r.get("tokens") or 0)
-    summary = {"model": args.model, "requests": len(results), "kept": len(kept),
-               "tokens": tokens_done, "budget": budget, "verdicts": why_counts,
+    summary = {"model": args.model, "profile": args.profile, "mix": mix,
+               "requests": len(results), "kept": len(kept), "tokens": clock["tokens"],
+               "tokens_by_group": group_tokens, "budget": budget, "verdicts": why_counts,
                "kept_by_effort": effort_counts,
+               "with_tool_calls": sum(1 for r in kept if r.get("tool_calls")),
                "by_file": {k: {"kept": a, "dropped": b, "tokens": t} for k, (a, b, t) in sorted(by_file.items())},
-               "minutes": round((time.time() - t0) / 60, 1)}
-    (adir / "generate.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
-    print(f"generate: done — {len(kept)}/{len(results)} answers kept, {tokens_done:,} tokens, "
-          f"verdicts {why_counts} -> {adir}", flush=True)
+               "minutes": round((time.time() - clock["t0"]) / 60, 1)}
+    (adir / f"generate-{args.profile}.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
+    print(f"generate: done — {len(kept)}/{len(results)} answers kept, {clock['tokens']:,} tokens "
+          f"{group_tokens}, verdicts {why_counts} -> {adir}", flush=True)
     return 0
 
 
@@ -887,10 +1101,11 @@ def do_render(out: Path, args) -> int:
         print("render needs --source <source model dir> (for its tokenizer and chat template)",
               file=sys.stderr)
         return 1
-    adir = out / "answers" / model_tag(args.model)
-    answers = read_jsonl(adir / "answers.jsonl")
+    adir = answers_dir(out, args)
+    answers = read_jsonl(adir / f"answers-{args.profile}.jsonl")
     if not answers:
-        print(f"no kept answers in {adir} (run generate first)", file=sys.stderr)
+        print(f"no kept answers for profile {args.profile} in {adir} (run generate first)",
+              file=sys.stderr)
         return 1
     tok = AutoTokenizer.from_pretrained(args.source)
     if not getattr(tok, "chat_template", None):
@@ -899,18 +1114,23 @@ def do_render(out: Path, args) -> int:
     fam = family_of(args.model, args.family)
     kwargs = FAMILIES[fam]["render_kwargs"]
 
-    def render(messages):
-        return tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=False, **kwargs)
+    def render(messages, tools):
+        extra = {"tools": tools} if tools else {}
+        return tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=False,
+                                       **extra, **kwargs)
 
     mode = "template"
     texts = []
+    tools_dropped = 0
     for r in answers:
         assistant = {"role": "assistant", "content": r["content"]}
         if r.get("reasoning"):
             assistant["reasoning_content"] = r["reasoning"]
+        if r.get("tool_calls"):
+            assistant["tool_calls"] = r["tool_calls"]
         msgs = [*r["messages"], assistant]
         if mode == "template":
-            text = render(msgs)
+            text = render(msgs, r.get("tools"))
             if r.get("reasoning") and r["reasoning"][:80] not in text:
                 # This template drops reasoning_content: put the thinking in
                 # the content as <think> blocks, the format the model emits.
@@ -920,10 +1140,16 @@ def do_render(out: Path, args) -> int:
             inline.pop("reasoning_content", None)
             if r.get("reasoning"):
                 inline["content"] = f"<think>\n{r['reasoning']}\n</think>\n\n{r['content']}"
-            text = render([*r["messages"], inline])
+            text = render([*r["messages"], inline], r.get("tools"))
+        if r.get("tool_calls"):
+            names = [((c.get("function") or {}).get("name") or "") for c in r["tool_calls"]]
+            if not all(n and n in text for n in names):
+                tools_dropped += 1
         texts.append((sha(f"{args.seed}|{r['key']}"), text))
 
-    passages = [b["text"] for b in read_jsonl(out / "blocks.jsonl") if b["mode"] == "passage"]
+    passages = []
+    if "corpus" in PROFILES[args.profile]:
+        passages = [b["text"] for b in read_jsonl(out / "blocks.jsonl") if b["mode"] == "passage"]
     texts += [(sha(f"{args.seed}|passage|{t}"), t) for t in passages]
     texts.sort(key=lambda x: x[0])
     bundle = "\n".join(t for _, t in texts) + "\n"
@@ -941,17 +1167,23 @@ def do_render(out: Path, args) -> int:
         print(f"special tokens do not survive as single tokens: {broken[:5]}", file=sys.stderr)
         return 1
 
-    path = Path(args.bundle).expanduser() if args.bundle else adir / "bundle.txt"
+    path = Path(args.bundle).expanduser() if args.bundle else adir / f"bundle-{args.profile}.txt"
     tmp = path.with_suffix(".tmp")
     tmp.write_text(bundle, encoding="utf-8")
     os.replace(tmp, path)
     n_tokens = len(tok(bundle, add_special_tokens=False)["input_ids"])
-    summary = {"bundle": str(path), "sha256": sha(bundle), "conversations": len(answers),
-               "passages": len(passages), "tokens": n_tokens, "mode": mode,
+    summary = {"bundle": str(path), "profile": args.profile, "sha256": sha(bundle),
+               "conversations": len(answers), "passages": len(passages),
+               "with_tools": sum(1 for r in answers if r.get("tools")),
+               "tool_calls_missing_after_render": tools_dropped,
+               "tokens": n_tokens, "mode": mode,
                "special_tokens_checked": sorted(sp for sp in specials if sp and sp in bundle)}
-    (adir / "render.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
-    print(f"render: {len(answers)} conversations + {len(passages)} passages, {n_tokens:,} tokens, "
-          f"mode {mode} -> {path}", flush=True)
+    (adir / f"render-{args.profile}.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
+    if tools_dropped:
+        print(f"render: WARNING {tools_dropped} answers had tool calls that the chat template did "
+              "not render; check the template's tool-call support", file=sys.stderr)
+    print(f"render: [{args.profile}] {len(answers)} conversations ({summary['with_tools']} with tools) "
+          f"+ {len(passages)} passages, {n_tokens:,} tokens, mode {mode} -> {path}", flush=True)
     return 0
 
 
@@ -1004,7 +1236,7 @@ def write_report(out: Path, table, problems, derive_results) -> None:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("stage", choices=["extract", "derive", "generate", "render", "all"])
+    ap.add_argument("stage", choices=["extract", "derive", "seed", "generate", "render", "all"])
     ap.add_argument("--run", default="default", help="run name (output folder)")
     ap.add_argument("--out", help="output folder (default ~/oqup/prep/<run>)")
     ap.add_argument("--only", help="comma-separated file stems to process")
@@ -1029,6 +1261,12 @@ def main(argv=None) -> int:
     g.add_argument("--seed", type=int, default=0)
     g.add_argument("--pilot", type=int, default=20, help="answers before the time estimate")
     g.add_argument("--log-every", type=int, default=25)
+    g.add_argument("--profile", choices=sorted(PROFILES), default="profile",
+                   help="generate/render: 'profile' = corpus + generic + broad, 'generic' = no corpus")
+    g.add_argument("--mix", default="corpus=50,generic=25,broad=25",
+                   help="token shares per prompt group (restricted to the profile's groups)")
+    g.add_argument("--prompts-per-seed", type=int, default=8, help="seed: prompts written per seed")
+    g.add_argument("--cache-root", help="share request caches across runs (default: the run folder)")
     g.add_argument("--source", help="render: source model dir (tokenizer + chat template)")
     g.add_argument("--bundle", help="render: output path (default <out>/answers/<model>/bundle.txt)")
     args = ap.parse_args(argv)
@@ -1045,6 +1283,10 @@ def main(argv=None) -> int:
         if not args.model:
             ap.error("derive needs --model (the served model name)")
         rc = do_derive(out, args, only)
+    if args.stage == "seed":
+        if not args.model:
+            ap.error("seed needs --model (the served model name)")
+        rc = do_seed(out, args)
     if args.stage == "generate":
         if not args.model:
             ap.error("generate needs --model (the served model name)")

@@ -44,7 +44,19 @@ scripts/oqt_pipeline.sh status v1          # which stage, how long, last lines
 tail -f ~/oqup/runs/v1/pipeline.log        # one line per stage start/end
 ```
 
-The stages are: `extract` → `derive` → `generate` → `render` → `build` → `score`.
+The stages are: `extract` → `derive` → `seed` → `generate` → `render` → `build` → `score`.
+
+## Does the corpus help? Build the comparison arm
+
+The pipeline mixes three kinds of prompts: your corpus, **generic** software tasks outside your stack (`seeds/generic.txt`), and **broad** non-coding tasks including several languages and tool calling (`seeds/broad.txt`). The generic and broad prompts keep experts your domain rarely uses from being starved.
+
+To see what your corpus adds, build a second quant without it:
+
+```bash
+OQT_PROFILE=generic nohup scripts/oqt_pipeline.sh 4 v1-generic > ~/oqup/oqt-v1-generic.out 2>&1 &
+```
+
+Prompts and answers are cached in `~/oqup/prep-cache`, so this run reuses the generic and broad answers from your main run and only generates what is missing. Then compare the two quants' heldout scores: if `v1` beats `v1-generic` on your domain without losing on `heldout-general`, the corpus earns its place.
 
 ## Stop, resume, change something
 
@@ -84,6 +96,9 @@ Put them in front of the command, for example `BUDGET_TOKENS=500000 scripts/oqt_
 | `BUDGET_TOKENS` | `1000000` | How much text to generate (thinking included). More = longer run, more calibration data |
 | `EFFORT_MIX` | `max=70,medium=15,low=15` | Thinking levels. `max` is the model's top level, whatever it's called |
 | `CONCURRENCY` | `4` | Parallel requests while generating |
+| `OQT_PROFILE` | `profile` | `profile`: your corpus plus generic and broad prompts. `generic`: no corpus (the comparison arm) |
+| `OQT_MIX` | `corpus=50,generic=25,broad=25` | Share of the generated text per prompt group |
+| `PROMPTS_PER_SEED` | `8` | Prompts the model writes per seed in `seeds/generic.txt` and `seeds/broad.txt` |
 | `OQT_COMPARE=1` | off | Also build a plain oQe quant from the same text and score both |
 | `OQT_REFINE_EXPERTS=1` | off | Also polish the routed experts' rounding (always on for the other tensors). Better, but about 8 extra hours on Qwen3.8-Flash-Next |
 | `OQT_ROUTING=0` | on | Turn off routing protection |
@@ -121,7 +136,7 @@ The pipeline log says which stage failed and shows the last lines of that stage'
 
 - Resume is per request (answers), per layer (oQ-T sweep) and per output shard (file writing). One step still restarts from its own beginning if interrupted: oMLX's imatrix pass. Its duration on your Mac decides whether it's worth making resumable.
 - Expert tiers (more bits for popular experts) need a change in oMLX's serving code; they will be built only if your builds show a strong tiering signal.
-- The variation pass and agent sessions from `PREP_PLAN.md` are not in yet: prompts are the corpus prompts as written.
+- The variation pass and agent sessions from `PREP_PLAN.md` are not in yet: corpus prompts are used as written, plus the generic and broad seed prompts.
 - Not yet: scoring against the original model with full KL and routing flips, routing-aware bits, expert tiers, DeepSeek V4.1.
 
 ## Lower-level: build from a text file directly

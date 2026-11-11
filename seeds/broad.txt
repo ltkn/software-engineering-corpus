@@ -1,0 +1,34 @@
+# Broad seed list: non-coding tasks so rarely used experts still see data.
+# One seed per line: "id: description", optional tags [tools] or [lang=xx].
+math-word: math word problems needing several steps of reasoning
+math-proof: short proofs and explanations of mathematical ideas
+logic-puzzles: logic puzzles, riddles and constraint problems
+science-explain: explaining a science concept at a chosen level
+history-society: questions about history, geography, politics and society
+summarize: summarizing a long pasted text (article, report, meeting notes)
+writing-email: drafting or improving professional emails and messages
+writing-creative: short stories, poems or dialogue with constraints
+editing-grammar: correcting grammar and improving style of a pasted paragraph
+translation: translating text between English and another language with nuance
+advice-personal: practical personal advice: planning, habits, decisions
+finance-personal: personal finance questions: budgets, loans, saving
+health-general: general health and nutrition questions answered with care
+travel: planning a trip with constraints on budget and time
+cooking: recipes, substitutions and cooking techniques
+product-compare: comparing products or options against stated needs
+brainstorm: brainstorming ideas for a project, name or event
+support-roleplay: customer support conversations with an unhappy customer
+extraction-json: extracting structured JSON from messy text
+classification: classifying or tagging items with stated categories
+table-reasoning: answering questions about a pasted table of numbers
+philosophy-ethics: philosophy and ethics questions with several viewpoints
+tools-weather-calendar: assistant tasks that need calling tools such as weather, calendar or email [tools]
+tools-data-api: tasks that need calling a search, database or HTTP API tool and then answering [tools]
+tools-multi-step: tasks needing two or more tool calls in sequence with arguments from the request [tools]
+lang-fr: everyday and technical questions written in French [lang=fr]
+lang-de: everyday and technical questions written in German [lang=de]
+lang-es: everyday and technical questions written in Spanish [lang=es]
+lang-zh: everyday and technical questions written in Chinese [lang=zh]
+lang-ja: everyday and technical questions written in Japanese [lang=ja]
+lang-ar: everyday questions written in Arabic [lang=ar]
+lang-pt-it: everyday questions written in Portuguese or Italian [lang=pt]

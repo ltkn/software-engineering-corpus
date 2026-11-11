@@ -49,7 +49,7 @@ before="$(count generate)"; sleep 2
 [ "$(count generate)" = "$before" ] || fail "requests continued after the kill"
 pgrep -f "stub_omlx.py .*$T/" >/dev/null && fail "server left running after the kill"
 reset; BUDGET_TOKENS=60000 "$P" 4 t >/dev/null 2>&1 || fail "resume run failed"
-total="$(python3 -c "import json,glob,sys;print(json.load(open(glob.glob(sys.argv[1])[0]))['requests'])" "$T/oqup/runs/t/prep/answers/*/generate.json")"
+total="$(python3 -c "import json,glob,sys;print(json.load(open(glob.glob(sys.argv[1])[0]))['requests'])" "$T/oqup/runs/t/prep/answers/*/generate-profile.json")"
 [ "$(count generate)" -lt "$total" ] || fail "resume re-requested cached answers"
 pass "kill mid-generate: stopped at once, server stopped; resume reused $((total - $(count generate)))/$total answers"
 
@@ -59,4 +59,27 @@ pass "dead server: clear error"
 
 st="$("$P" status t)"; grep -q "build      done" <<< "$st" || fail "status does not show the finished build"
 pass "status command"
+
+GJ="$T/oqup/runs/t/prep/answers/Qwen3.8-Flash-Next-oQ5e-gen/generate-profile.json"
+python3 - "$GJ" "$T/oqup/runs/t/prep/seed_prompts.jsonl" <<'PYCHECK' || fail "profile mix or tool calls missing"
+import json, sys
+g = json.load(open(sys.argv[1]))
+seeds = [json.loads(l) for l in open(sys.argv[2])]
+assert set(g["tokens_by_group"]) == {"corpus", "generic", "broad"}, g["tokens_by_group"]
+assert all(v > 0 for v in g["tokens_by_group"].values()), g["tokens_by_group"]
+assert any(s.get("tools") for s in seeds), "no tool-carrying seed prompts"
+assert g["with_tool_calls"] > 0, "no answers with tool calls"
+PYCHECK
+pass "profile mix: corpus + generic + broad, tool calls kept"
+
+reset; OQT_PROFILE=generic BUDGET_TOKENS=6000 "$P" 4 g >/dev/null 2>&1 || fail "generic profile run failed"
+[ "$(count seed)" = 0 ] && [ "$(count derive)" = 0 ] || fail "generic run re-requested cached seeds or derives"
+GG="$T/oqup/runs/g/prep/answers/Qwen3.8-Flash-Next-oQ5e-gen/generate-generic.json"
+python3 - "$GG" <<'PYCHECK' || fail "generic profile used corpus prompts"
+import json, sys
+g = json.load(open(sys.argv[1]))
+assert set(g["tokens_by_group"]) == {"generic", "broad"}, g["tokens_by_group"]
+PYCHECK
+[ -f "$T/models-out/Qwen3.8-Flash-Next-oQ4t-g/oqt_report.json" ] || fail "generic arm quant not built"
+pass "generic arm: no corpus prompts, shared cache reused ($(count generate) new answers)"
 echo "all pipeline checks passed"
