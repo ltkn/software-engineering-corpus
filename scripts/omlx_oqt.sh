@@ -32,6 +32,11 @@
 #   PRESERVE_MTP=1     keep the MTP draft head
 #   OQ_SKIP_PPL=1      skip heldout scoring
 #   OQT_SCORE_ONLY=1   only (re)score an existing build
+#   OQT_REFINE_EXPERTS=1  also run the rounding refinement (M6) on routed experts
+#                      (better, but roughly 8 extra hours on Qwen3.8-Flash-Next)
+#   OQT_ROUTING=0      turn off routing protection (M4)
+#   OQT_ROUTING_THRESHOLD=0.02   routing mass shift that triggers more bits
+#   OQT_ROUTING_MAX_LAYERS=0.25  at most this share of layers gets upgraded
 #   OMLX_REPO, VENV_PY, OQUP, MODELS_OUT   paths (defaults below)
 #   --dry-run          (last argument) print the plan and write the runner only
 set -euo pipefail
@@ -49,6 +54,11 @@ VENV_PY="${VENV_PY:-$OMLX_REPO/.venv-3.12/bin/python}"
 OQUP="${OQUP:-$HOME/oqup}"
 MODELS_OUT="${MODELS_OUT:-$HOME/models-out}"
 OQ_SAMPLES="${OQ_SAMPLES:-256}"
+OQT_REFINE_EXPERTS="${OQT_REFINE_EXPERTS:-0}"
+OQT_ROUTING="${OQT_ROUTING:-1}"
+OQT_ROUTING_THRESHOLD="${OQT_ROUTING_THRESHOLD:-0.02}"
+OQT_ROUTING_MAX_LAYERS="${OQT_ROUTING_MAX_LAYERS:-0.25}"
+if [ "$OQT_ROUTING" = "1" ]; then ROUTING_PY=True; else ROUTING_PY=False; fi
 OQ_SEQLEN="${OQ_SEQLEN:-2048}"
 NGRAM_BITS="${NGRAM_BITS:-8}"
 PRESERVE_MTP="${PRESERVE_MTP:-1}"
@@ -181,6 +191,14 @@ quantize_oq_streaming(
     imatrix_reuse_cache=True,
     imatrix_num_samples=$OQ_SAMPLES,
     imatrix_seq_length=$OQ_SEQLEN,
+    resume_writer=True,
+    oqt_options=dict(
+        refine_sweeps=1,
+        refine_expert_sweeps=$OQT_REFINE_EXPERTS,
+        routing_protect=$ROUTING_PY,
+        routing_mass_threshold=$OQT_ROUTING_THRESHOLD,
+        routing_max_layers_frac=$OQT_ROUTING_MAX_LAYERS,
+    ),
 )
 EOF
 }
@@ -200,7 +218,10 @@ fi
 echo "$$" > "$PIDFILE"
 trap 'rm -f "$PIDFILE"' EXIT
 
-[ -e "$OUT" ] && rm -rf "$OUT"
+# An interrupted build leaves a writer journal: keep it so the writer resumes.
+# Anything else at that path is a finished build being replaced.
+if [ -e "$OUT" ] && [ ! -f "$OUT/.oq_writer_journal.json" ]; then rm -rf "$OUT"; fi
+[ -f "$OUT/.oq_writer_journal.json" ] && echo "resuming the interrupted write of $OUT"
 [ -f "$LOG" ] && mv "$LOG" "$LOG.prev"
 say "building oQ${LEVEL}t (several hours; follow with: tail -f $LOG)"
 start=$(date +%s)
@@ -229,6 +250,12 @@ print(f"skipped in sweep     : {len(rep['skipped_in_sweep'])} (these used plain 
 if s:
     print(f"vs oQe, same bits    : median output error x{s['median_err_ratio_oqt_vs_oqe']:.2f}, "
           f"better on {s['share_tensors_improved']:.0%} of tensors")
+if "routing_mass_shift_median" in s:
+    print(f"routing protection   : median routing shift {s['routing_mass_shift_median']:.3f}, "
+          f"{s['routing_layers_upgraded']} layers / {s['routing_tensors_upgraded']} tensors got more bits")
+if "expert_tiering_signal" in s:
+    print(f"expert usage skew    : top 20% of experts carry {s['expert_top20pct_share_median']:.0%} "
+          f"of tokens (median) -> tiering signal: {s['expert_tiering_signal']}")
 PY
 
 crepo="$(git -C "$CORPUS_REPO" rev-parse HEAD 2>/dev/null || true)"

@@ -63,6 +63,11 @@ oQ-T      : output error x0.NN vs oQe (median), better on NN% of N tensors
 
 `x0.NN` is how much output error remains compared with a normal oQe quant of the same size, measured on the real model: lower is better. Heldout scores are in `~/oqup/runs/v1/logs/score.log`.
 
+The build log (`~/oqup/runs/v1/logs/build.log`) also reports:
+
+- **Routing protection.** For each MoE layer, how much router probability moved to different experts after quantization. Where it moved too much, the tensors that feed the router got a bit more precision. The summary says how many layers and tensors that was.
+- **Expert usage skew.** How unevenly your text uses the experts. A **strong** tiering signal means a minority of experts carries most tokens, which is when giving popular experts more bits (expert tiers) would pay off. Send me that line after your first build.
+
 Serve it like any other quant:
 
 ```bash
@@ -80,6 +85,10 @@ Put them in front of the command, for example `BUDGET_TOKENS=500000 scripts/oqt_
 | `EFFORT_MIX` | `max=70,medium=15,low=15` | Thinking levels. `max` is the model's top level, whatever it's called |
 | `CONCURRENCY` | `4` | Parallel requests while generating |
 | `OQT_COMPARE=1` | off | Also build a plain oQe quant from the same text and score both |
+| `OQT_REFINE_EXPERTS=1` | off | Also polish the routed experts' rounding (always on for the other tensors). Better, but about 8 extra hours on Qwen3.8-Flash-Next |
+| `OQT_ROUTING=0` | on | Turn off routing protection |
+| `OQT_ROUTING_THRESHOLD` | `0.02` | Routing shift (share of router probability) that triggers more bits |
+| `OQT_ROUTING_MAX_LAYERS` | `0.25` | At most this share of layers gets the extra bits, which caps the size cost |
 | `OQ_SKIP_PPL=1` | off | Skip heldout scoring |
 | `NGRAM_BITS` | `8` | n-gram table bits |
 | `PRESERVE_MTP=0` | keep | Drop the MTP draft head |
@@ -110,7 +119,8 @@ The pipeline log says which stage failed and shows the last lines of that stage'
 
 ## Limits of this version
 
-- Resume is per request (answers) and per layer (oQ-T sweep). Two steps restart from their own beginning if interrupted: oMLX's imatrix pass, and the final file writing (about an hour).
+- Resume is per request (answers), per layer (oQ-T sweep) and per output shard (file writing). One step still restarts from its own beginning if interrupted: oMLX's imatrix pass. Its duration on your Mac decides whether it's worth making resumable.
+- Expert tiers (more bits for popular experts) need a change in oMLX's serving code; they will be built only if your builds show a strong tiering signal.
 - The variation pass and agent sessions from `PREP_PLAN.md` are not in yet: prompts are the corpus prompts as written.
 - Not yet: scoring against the original model with full KL and routing flips, routing-aware bits, expert tiers, DeepSeek V4.1.
 

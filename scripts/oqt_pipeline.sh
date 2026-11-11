@@ -322,9 +322,10 @@ if pgrep -f "omlx.*serve" >/dev/null 2>&1 && [ "${OQT_IGNORE_SERVER:-0}" != "1" 
     die "an oMLX server is running; stop it before the build (it needs the memory), then rerun"
 fi
 OMLX_COMMIT="$(git -C "$OMLX_REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
-D_BUILD="$(printf '%s|%s|%s|%s|%s|%s|%s|%s' "$(hash_of < "$BUNDLE")" "$LEVEL" "${OQ_SAMPLES:-256}" \
+D_BUILD="$(printf '%s|%s|%s|%s|%s|%s|%s|%s|%s' "$(hash_of < "$BUNDLE")" "$LEVEL" "${OQ_SAMPLES:-256}" \
     "${OQ_SEQLEN:-2048}" "${NGRAM_BITS:-8}" "${PRESERVE_MTP:-1}" "$OMLX_COMMIT" \
-    "$(hash_of < "$CORPUS_REPO/scripts/omlx_oqt.sh")" | hash_of)"
+    "$(hash_of < "$CORPUS_REPO/scripts/omlx_oqt.sh")" \
+    "${OQT_REFINE_EXPERTS:-0}/${OQT_ROUTING:-1}/${OQT_ROUTING_THRESHOLD:-0.02}/${OQT_ROUTING_MAX_LAYERS:-0.25}" | hash_of)"
 run_stage build "$D_BUILD" env CORPUS_FILE="$BUNDLE" OQT_OVERWRITE=1 OQ_SKIP_PPL=1 \
     "$CORPUS_REPO/scripts/omlx_oqt.sh" "$LEVEL" "$NAME"
 
