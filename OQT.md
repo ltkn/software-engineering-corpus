@@ -36,42 +36,58 @@ You need three things already on the Mac:
 
 ## Build a quant
 
-1. **Stop your oMLX server** (the pipeline starts its own, then needs all the memory for the build).
-2. **Start with a pilot**, a small run that checks everything works and measures how long the real run will take:
+Before you start: **stop your oMLX server** (the pipeline starts its own, then needs all the memory for the build), and `mkdir -p ~/oqup` once (the log files go there).
+
+The source model (the original BF16 weights the quant is matched to) is found by itself: the newest complete, unquantized snapshot of the official `Qwen/Qwen3.8-Flash-Next` in the Hugging Face cache. Fine-tunes in the cache are ignored unless you name them (example 2).
+
+### Example 1: the official Qwen3.8-Flash-Next
+
+**Pilot first**, a small run that checks everything works and measures how long the real run will take:
 
 ```bash
 cd ~/dev/software-engineering-corpus
-mkdir -p ~/oqup
 GENERATOR=~/models-out/Qwen3.8-Flash-Next-oQ6e-coder-q8-ngram-mtp \
 BUDGET_TOKENS=100000 \
 nohup scripts/oqt_pipeline.sh 4 pilot > ~/oqup/oqt-pilot.out 2>&1 &
 ```
 
-- `4` is the level of the quant to build (`3`, `5`, `6`, `8` also work).
-- `pilot` is just the name of this run. You can choose any name. It names the run folder (`~/oqup/runs/pilot/`) and the result (`~/models-out/Qwen3.8-Flash-Next-oQ4t-pilot`). What makes it a pilot is `BUDGET_TOKENS=100000`: a tenth of the default 1,000,000 generated tokens. It runs every stage (answers, agent sessions, long windows, build, score), so problems show up in hours, not after a day, and the log estimates the full run's time. The pilot quant works, but it is calibrated on little text, so judge the method by the full run.
-- `GENERATOR` is the local quant that writes the answers. It is a folder, not an API: the pipeline serves it on its own oMLX server (port 8765). Use the best quant that fits; on 128 GB an oQ6e or oQ5e. Without `GENERATOR` the pipeline picks the only Qwen3.8-Flash-Next quant in `~/.omlx/models`, else the newest oQ5, then oQ6, oQ4, oQ8 in `~/models-out` (so it would pick the oQ5e above, not the oQ6e). DeepSeek quants are never picked. The first lines of `~/oqup/runs/pilot/pipeline.log` show `answers by: ...`. Requests go one at a time (`CONCURRENCY=1`, the default), which keeps memory lowest with a large generator.
-3. **Then the real run**, with the same generator. Answers are cached by content, so the pilot's answers are reused and only the rest is generated:
+**Then the real run**, with the same generator (the pilot's answers are reused, only the rest is generated):
 
 ```bash
 GENERATOR=~/models-out/Qwen3.8-Flash-Next-oQ6e-coder-q8-ngram-mtp \
 nohup scripts/oqt_pipeline.sh 4 v1 > ~/oqup/oqt-v1.out 2>&1 &
 ```
 
-- The result is `~/models-out/Qwen3.8-Flash-Next-oQ4t-v1`.
-- It takes many hours: generating the answers, then building. After about 20 answers the log prints an estimate of the generation time.
-- Changing `GENERATOR` later means new answers: each cached answer belongs to the model that wrote it.
+Results: `~/models-out/Qwen3.8-Flash-Next-oQ4t-pilot`, then `~/models-out/Qwen3.8-Flash-Next-oQ4t-v1`.
 
-## Quantize a fine-tune instead (abliterated, uncensored, ...)
+### Example 2: an abliterated fine-tune (orcarouter Qwen3.8-Flash-Next-Uncensored)
 
-Any fine-tune with the same architecture works. Name its repo, give it its own run name, and let a quant **of that fine-tune** write the answers (the pipeline stops if `GENERATOR` is missing, so the answers never come from the official model by accident):
+Any fine-tune with the same architecture works. Name its repo with `SOURCE_REPO`, give the run its own name, and let a quant **of that fine-tune** write the answers. The pipeline stops if `GENERATOR` is missing, so the answers never come from the official model by accident. If you have no quant of the fine-tune yet, build a plain oQ5e or oQ6e of it first, the same way you built your current quants.
 
 ```bash
+cd ~/dev/software-engineering-corpus
 SOURCE_REPO=orcarouter/Qwen3.8-Flash-Next-Uncensored \
-GENERATOR=~/models-out/<a quant of Qwen3.8-Flash-Next-Uncensored> \
+GENERATOR=~/models-out/Qwen3.8-Flash-Next-Uncensored-oQ6e \
+BUDGET_TOKENS=100000 \
+nohup scripts/oqt_pipeline.sh 4 uncensored-pilot > ~/oqup/oqt-uncensored-pilot.out 2>&1 &
+
+# then the real run
+SOURCE_REPO=orcarouter/Qwen3.8-Flash-Next-Uncensored \
+GENERATOR=~/models-out/Qwen3.8-Flash-Next-Uncensored-oQ6e \
 nohup scripts/oqt_pipeline.sh 4 uncensored-v1 > ~/oqup/oqt-uncensored-v1.out 2>&1 &
 ```
 
-The result is `~/models-out/Qwen3.8-Flash-Next-Uncensored-oQ4t-uncensored-v1`. Its oQ-T cache and M3 reference are kept apart from the official model's. If you have no quant of the fine-tune yet, build a plain oQ5e or oQ6e of it first, the same way you built your current quants. `scripts/omlx_oqt.sh` (the lower-level oQ-T build) accepts `SOURCE_REPO` too. Without `SOURCE_REPO`, only the official `Qwen/Qwen3.8-Flash-Next` is ever picked.
+Results: `~/models-out/Qwen3.8-Flash-Next-Uncensored-oQ4t-uncensored-pilot`, then `...-oQ4t-uncensored-v1`. Its oQ-T cache and M3 reference are kept apart from the official model's. (`GENERATOR` above is the name your oQ6e build of the fine-tune would get; use the real folder.)
+
+### What the parts mean
+
+- `4` is the level of the quant to build (`3`, `5`, `6`, `8` also work).
+- `pilot`, `v1`, `uncensored-v1` are names you choose. A name labels the run folder (`~/oqup/runs/<name>/`) and the result. What makes a pilot is `BUDGET_TOKENS=100000`: a tenth of the default 1,000,000 generated tokens. It runs every stage (answers, agent sessions, long windows, build, score), so problems show up in hours, not after a day, and the log estimates the full run's time. The pilot quant works, but it is calibrated on little text, so judge the method by the full run.
+- `GENERATOR` is the local quant that writes the answers. It is a folder, not an API: the pipeline serves it on its own oMLX server (port 8765), with your `OMLX_API_KEY` if it is set. Use the best quant that fits; on 128 GB an oQ6e or oQ5e. For the official model you may leave it out: the pipeline then picks the only Qwen3.8-Flash-Next quant in `~/.omlx/models`, else the newest oQ5, then oQ6, oQ4, oQ8 in `~/models-out` (it would pick an oQ5e over your oQ6e, so pass it). The first lines of `~/oqup/runs/<name>/pipeline.log` show `source:` and `answers by:`; check them.
+- Changing `GENERATOR` later means new answers: each cached answer belongs to the model that wrote it.
+- Requests go one at a time (`CONCURRENCY=1`, the default), which keeps memory lowest with a large generator.
+- It takes many hours: generating the answers, then building. After about 20 answers the log prints an estimate of the generation time.
+- `SRC=<snapshot dir>` instead of `SOURCE_REPO` points at a source folder directly.
 
 ## Watch it
 
@@ -157,6 +173,8 @@ Put them in front of the command, for example `BUDGET_TOKENS=500000 scripts/oqt_
 
 | Option | Default | Effect |
 |---|---|---|
+| `SOURCE_REPO=<org/name>` | `Qwen/Qwen3.8-Flash-Next` | Quantize a fine-tune of the same architecture (needs `GENERATOR`) |
+| `SRC=<dir>` | found in the HF cache | The source snapshot folder, given directly |
 | `GENERATOR=<quant dir>` | the only Qwen quant in `~/.omlx/models`, else the newest oQ5/6/4/8 in `~/models-out` | Which local quant writes the answers (see Build a quant) |
 | `BUDGET_TOKENS` | `1000000` | How much text to generate (thinking included). More = longer run, more calibration data |
 | `EFFORT_MIX` | `max=70,medium=15,low=15` | Thinking levels. `max` is the model's top level, whatever it's called |
@@ -190,7 +208,8 @@ The pipeline log says which stage failed and shows the last lines of that stage'
 | "an oMLX server is running; stop it before the build" | Stop your oMLX server, rerun. |
 | "something already answers on port 8765" | Something else uses that port: stop it, or add `PORT=8790`. |
 | "no quant found to write the answers" | Add `GENERATOR=<path to a Qwen3.8-Flash-Next quant>`. |
-| "found N … source snapshots" | Add `SRC=<path to the snapshot>`. |
+| "no BF16 source found" | The lines above it say why: the official repo is missing or its download is incomplete (run the `huggingface-cli download` it prints), or you meant a fine-tune (add `SOURCE_REPO=<org>/<name>`). `SRC=<snapshot dir>` always works. |
+| "source is not the official Qwen/Qwen3.8-Flash-Next" | Add `GENERATOR=<a quant of that same fine-tune>`. |
 | "this oMLX checkout has no oQ-T" | Redo setup step 1 (`git checkout feat/oqt`). |
 | "the oMLX server exited" | See `~/oqup/runs/v1/logs/server.log` (often: not enough memory, or a model that doesn't load). |
 
