@@ -36,7 +36,11 @@ tk.add_special_tokens(specials[:5])
 template = (
     "{% for m in messages %}<|im_start|>{{ m.role }}\n"
     "{% if m.role == 'assistant' and m.reasoning_content and preserve_thinking %}<think>\n{{ m.reasoning_content }}\n</think>\n\n{% endif %}"
-    "{{ m.content }}<|im_end|>\n{% endfor %}"
+    "{{ m.content }}"
+    # Qwen-style tool calls: arguments must be a mapping (OpenAI sends a JSON string).
+    "{% for tc in m.tool_calls or [] %}\n<tool_call>\n<function={{ tc.function.name }}>\n"
+    "{% for k, v in tc.function.arguments|items %}<parameter={{ k }}>\n{{ v }}\n</parameter>\n{% endfor %}"
+    "</function>\n</tool_call>{% endfor %}<|im_end|>\n{% endfor %}"
     "{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}")
 fast = PreTrainedTokenizerFast(tokenizer_object=tk, eos_token="<|im_end|>", unk_token="[UNK]",
                                pad_token="<|endoftext|>", chat_template=template)

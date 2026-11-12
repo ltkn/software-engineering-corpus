@@ -1187,6 +1187,34 @@ def do_agent(out: Path, args) -> int:
 # ---------------------------------------------------------------------------
 
 
+def template_messages(messages: list[dict]) -> list[dict]:
+    """Messages as chat templates expect them: tool-call arguments as a mapping.
+
+    The OpenAI API returns ``arguments`` as a JSON string, but Qwen-style
+    templates iterate it with ``|items``. Arguments that are not a JSON object
+    (the model wrote broken JSON) are kept as {"arguments": <raw text>}, so the
+    text the model produced still reaches the calibration.
+    """
+    fixed = []
+    for m in messages:
+        if not m.get("tool_calls"):
+            fixed.append(m)
+            continue
+        calls = []
+        for tc in m["tool_calls"]:
+            fn = dict(tc.get("function") or {})
+            raw = fn.get("arguments")
+            if not isinstance(raw, dict):
+                try:
+                    parsed = json.loads(raw) if isinstance(raw, str) else None
+                except ValueError:
+                    parsed = None
+                fn["arguments"] = parsed if isinstance(parsed, dict) else {"arguments": "" if raw is None else str(raw)}
+            calls.append({**tc, "function": fn})
+        fixed.append({**m, "tool_calls": calls})
+    return fixed
+
+
 def do_render(out: Path, args) -> int:
     try:
         from transformers import AutoTokenizer
@@ -1214,8 +1242,8 @@ def do_render(out: Path, args) -> int:
 
     def render(messages, tools):
         extra = {"tools": tools} if tools else {}
-        return tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=False,
-                                       **extra, **kwargs)
+        return tok.apply_chat_template(template_messages(messages), tokenize=False,
+                                       add_generation_prompt=False, **extra, **kwargs)
 
     mode = "template"
     texts = []
