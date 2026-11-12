@@ -7,7 +7,8 @@
 #   scripts/omlx_oqt.sh 3 v1        # oQ3t
 #
 # What it does, in order:
-#   1. finds the source model (newest Qwen3.8-Flash-Next snapshot in the
+#   1. finds the source model (newest complete BF16 snapshot of the official
+#      Qwen/Qwen3.8-Flash-Next repo in the
 #      Hugging Face cache, or SRC=<dir>)
 #   2. builds the calibration bundle from this repo's calibration/*.txt
 #      (or CORPUS_FILE=<file>)
@@ -73,6 +74,7 @@ OQ_SEQLEN="${OQ_SEQLEN:-2048}"
 NGRAM_BITS="${NGRAM_BITS:-8}"
 PRESERVE_MTP="${PRESERVE_MTP:-1}"
 HUB="${HF_HUB_CACHE:-$HOME/.cache/huggingface/hub}"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/find_source.sh"
 mkdir -p "$OQUP" "$MODELS_OUT"
 
 say() { printf '\n== %s ==\n' "$*"; }
@@ -86,19 +88,7 @@ say "preflight"
 case " 2 3 4 5 6 8 " in *" $NGRAM_BITS "*) ;; *) die "NGRAM_BITS must be one of 2 3 4 5 6 8" ;; esac
 
 if [ -z "${SRC:-}" ]; then
-    MATCHES=""
-    for model_dir in "$HUB"/models--*; do
-        [ -d "$model_dir/snapshots" ] || continue
-        newest=""
-        for snap in "$model_dir"/snapshots/*/; do
-            [ -f "$snap/config.json" ] && grep -q 'qwen4_exp' "$snap/config.json" || continue
-            if [ -z "$newest" ] || [ "$snap" -nt "$newest" ]; then newest="$snap"; fi
-        done
-        [ -n "$newest" ] && MATCHES="$MATCHES${MATCHES:+$'\n'}${newest%/}"
-    done
-    n=0; [ -n "$MATCHES" ] && n=$(printf '%s\n' "$MATCHES" | wc -l | tr -d ' ')
-    [ "$n" = "1" ] || { printf '%s\n' "$MATCHES" >&2; die "found $n Qwen3.8-Flash-Next snapshots; pass SRC=<dir>"; }
-    SRC="$MATCHES"
+    SRC="$(find_bf16_source "$HUB")" || die "no BF16 source found (see above)"
 fi
 [ -f "$SRC/config.json" ] || die "no config.json in SRC=$SRC"
 if grep -q 'deepseek_v41' "$SRC/config.json"; then

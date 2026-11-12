@@ -26,7 +26,9 @@
 #   GENERATOR=<quant dir>  model that writes the answers (default: the Qwen
 #                          quant in ~/.omlx/models, else the newest oQ5, oQ6,
 #                          oQ4 or oQ8 quant in ~/models-out, in that order)
-#   SRC=<dir>              BF16 source checkpoint (default: found in the HF cache)
+#   SRC=<dir>              BF16 source checkpoint (default: the newest complete,
+#                          unquantized snapshot of Qwen/Qwen3.8-Flash-Next in the
+#                          HF cache; fine-tunes from other repos are never picked)
 #   BUDGET_TOKENS=1000000  how much text to generate (thinking included)
 #   EFFORT_MIX=max=70,medium=15,low=15
 #   CONCURRENCY=1          parallel requests to the server (1: one request at a
@@ -52,6 +54,7 @@ VENV_PY="${VENV_PY:-$OMLX_REPO/.venv-3.12/bin/python}"
 OQUP="${OQUP:-$HOME/oqup}"
 MODELS_OUT="${MODELS_OUT:-$HOME/models-out}"
 HUB="${HF_HUB_CACHE:-$HOME/.cache/huggingface/hub}"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/find_source.sh"
 PORT="${PORT:-8765}"
 BUDGET_TOKENS="${BUDGET_TOKENS:-1000000}"
 EFFORT_MIX="${EFFORT_MIX:-max=70,medium=15,low=15}"
@@ -268,19 +271,9 @@ log "=== oQ-T pipeline: oQ${LEVEL}t '$NAME' ==="
 command -v perl >/dev/null || die "perl is needed for log timestamps"
 
 if [ -z "${SRC:-}" ]; then
-    MATCHES=""
-    for model_dir in "$HUB"/models--*; do
-        [ -d "$model_dir/snapshots" ] || continue
-        newest=""
-        for snap in "$model_dir"/snapshots/*/; do
-            [ -f "$snap/config.json" ] && grep -q 'qwen4_exp' "$snap/config.json" || continue
-            if [ -z "$newest" ] || [ "$snap" -nt "$newest" ]; then newest="$snap"; fi
-        done
-        [ -n "$newest" ] && MATCHES="$MATCHES${MATCHES:+$'\n'}${newest%/}"
-    done
-    n=0; [ -n "$MATCHES" ] && n=$(printf '%s\n' "$MATCHES" | wc -l | tr -d ' ')
-    [ "$n" = "1" ] || die "found $n Qwen3.8-Flash-Next source snapshots in $HUB; pass SRC=<dir>"
-    SRC="$MATCHES"
+    why="$(mktemp)"
+    SRC="$(find_bf16_source "$HUB" 2>"$why")" || { while IFS= read -r l; do log "$l"; done < "$why"; rm -f "$why"; die "no BF16 source found"; }
+    rm -f "$why"
 fi
 [ -f "$SRC/config.json" ] || die "no config.json in SRC=$SRC"
 grep -q 'deepseek_v41' "$SRC/config.json" && die "oQ-T does not support DeepSeek V4.1 yet"
