@@ -49,7 +49,7 @@ nohup scripts/oqt_pipeline.sh 4 pilot > ~/oqup/oqt-pilot.out 2>&1 &
 
 - `4` is the level of the quant to build (`3`, `5`, `6`, `8` also work).
 - `pilot` is just the name of this run. You can choose any name. It names the run folder (`~/oqup/runs/pilot/`) and the result (`~/models-out/Qwen3.8-Flash-Next-oQ4t-pilot`). What makes it a pilot is `BUDGET_TOKENS=100000`: a tenth of the default 1,000,000 generated tokens. It runs every stage (answers, agent sessions, long windows, build, score), so problems show up in hours, not after a day, and the log estimates the full run's time. The pilot quant works, but it is calibrated on little text, so judge the method by the full run.
-- `GENERATOR` is the local quant that writes the answers. It is a folder, not an API: the pipeline serves it on its own oMLX server (port 8765). Use the best quant that fits; on 128 GB an oQ6e or oQ5e. Without `GENERATOR` the pipeline picks the only Qwen3.8-Flash-Next quant in `~/.omlx/models`, else the newest oQ5, then oQ6, oQ4, oQ8 in `~/models-out` (so it would pick the oQ5e above, not the oQ6e). DeepSeek quants are never picked. The first lines of `~/oqup/runs/pilot/pipeline.log` show `answers by: ...`. If the Mac starts swapping while generating, add `CONCURRENCY=2`.
+- `GENERATOR` is the local quant that writes the answers. It is a folder, not an API: the pipeline serves it on its own oMLX server (port 8765). Use the best quant that fits; on 128 GB an oQ6e or oQ5e. Without `GENERATOR` the pipeline picks the only Qwen3.8-Flash-Next quant in `~/.omlx/models`, else the newest oQ5, then oQ6, oQ4, oQ8 in `~/models-out` (so it would pick the oQ5e above, not the oQ6e). DeepSeek quants are never picked. The first lines of `~/oqup/runs/pilot/pipeline.log` show `answers by: ...`. Requests go one at a time (`CONCURRENCY=1`, the default), which keeps memory lowest with a large generator.
 3. **Then the real run**, with the same generator. Answers are cached by content, so the pilot's answers are reused and only the rest is generated:
 
 ```bash
@@ -148,7 +148,8 @@ Put them in front of the command, for example `BUDGET_TOKENS=500000 scripts/oqt_
 | `GENERATOR=<quant dir>` | the only Qwen quant in `~/.omlx/models`, else the newest oQ5/6/4/8 in `~/models-out` | Which local quant writes the answers (see Build a quant) |
 | `BUDGET_TOKENS` | `1000000` | How much text to generate (thinking included). More = longer run, more calibration data |
 | `EFFORT_MIX` | `max=70,medium=15,low=15` | Thinking levels. `max` is the model's top level, whatever it's called |
-| `CONCURRENCY` | `4` | Parallel requests while generating |
+| `CONCURRENCY` | `1` | Parallel requests while generating. 1 uses the least memory; batching can raise total speed, so try 2 if memory allows and compare the pilot's estimate. Changing it never regenerates answers. |
+| `AGENT_CONCURRENCY` | `CONCURRENCY` | Agent sessions run at the same time |
 | `OQT_PROFILE` | `profile` | `profile`: your corpus plus generic and broad prompts. `generic`: no corpus (the comparison arm) |
 | `OQT_MIX` | `corpus=50,generic=25,broad=25` | Share of the generated text per prompt group. `OQT_MIX=corpus=100` uses only your corpus and skips the seed stage |
 | `PROMPTS_PER_SEED` | `8` | Prompts the model writes per seed in `seeds/generic.txt` and `seeds/broad.txt` |

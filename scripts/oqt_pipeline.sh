@@ -29,7 +29,9 @@
 #   SRC=<dir>              BF16 source checkpoint (default: found in the HF cache)
 #   BUDGET_TOKENS=1000000  how much text to generate (thinking included)
 #   EFFORT_MIX=max=70,medium=15,low=15
-#   CONCURRENCY=4          parallel requests to the server
+#   CONCURRENCY=1          parallel requests to the server (1: one request at a
+#                          time, least memory; try 2 if the Mac has headroom)
+#   AGENT_CONCURRENCY      parallel agent sessions (default: CONCURRENCY)
 #   OQT_PROFILE=profile    'profile' = corpus + generic + broad prompts; 'generic' = no
 #                          corpus (the comparison arm). Answers are cached in
 #                          ~/oqup/prep-cache, so a second run with the other profile
@@ -53,7 +55,8 @@ HUB="${HF_HUB_CACHE:-$HOME/.cache/huggingface/hub}"
 PORT="${PORT:-8765}"
 BUDGET_TOKENS="${BUDGET_TOKENS:-1000000}"
 EFFORT_MIX="${EFFORT_MIX:-max=70,medium=15,low=15}"
-CONCURRENCY="${CONCURRENCY:-4}"
+CONCURRENCY="${CONCURRENCY:-1}"
+AGENT_CONCURRENCY="${AGENT_CONCURRENCY:-$CONCURRENCY}"
 PREP="$CORPUS_REPO/scripts/prep_calibration.py"
 STAGES=(preflight extract derive seed agent generate render build score)
 OQT_AGENT="${OQT_AGENT:-1}"
@@ -317,7 +320,7 @@ log "level     : oQ${LEVEL}t -> $MODELS_OUT/*-oQ${LEVEL}t-$NAME"
 log "budget    : $BUDGET_TOKENS tokens, effort $EFFORT_MIX, concurrency $CONCURRENCY"
 log "prompts   : profile $OQT_PROFILE, mix $OQT_MIX, $PROMPTS_PER_SEED prompts per seed"
 [ "$OQT_PROFILE" = generic ] && OQT_AGENT=0
-log "agent     : $([ "$OQT_AGENT" = 1 ] && echo "$AGENT_SAMPLES sessions per task, $AGENT_SANDBOX sandbox" || echo off)"
+log "agent     : $([ "$OQT_AGENT" = 1 ] && echo "$AGENT_SAMPLES sessions per task, $AGENT_CONCURRENCY at a time, $AGENT_SANDBOX sandbox" || echo off)"
 log "long ctx  : $(awk -v s="$OQT_LONG_SHARE" 'BEGIN{exit !(s>0)}' && echo "${OQT_LONG_SHARE} of tokens in ${OQT_LONG_LEN}-token windows" || echo off)"
 if [ "$OQT_AGENT" = 1 ] && [ "$AGENT_SANDBOX" = docker ]; then
     docker info >/dev/null 2>&1 || die "agent sessions need Docker (start colima or OrbStack), or set OQT_AGENT=0"
@@ -393,7 +396,7 @@ if [ "$OQT_AGENT" = 1 ]; then
         fi
         python3 "$PREP" agent --out "$PREP_OUT" --cache-root "$CACHE_ROOT" \
             --model "$GEN_ID" --server "$SERVER" --sandbox "$AGENT_SANDBOX" \
-            --agent-samples "$AGENT_SAMPLES" --effort-mix "$EFFORT_MIX" \
+            --agent-samples "$AGENT_SAMPLES" --effort-mix "$EFFORT_MIX" --agent-concurrency "$AGENT_CONCURRENCY" \
             ${AGENT_TASKS:+--agent-tasks "$AGENT_TASKS"}
     }
     run_stage agent "$D_AGENT" agent_stage
