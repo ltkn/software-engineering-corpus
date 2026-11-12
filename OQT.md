@@ -22,7 +22,7 @@ scripts/testing/test_oqt_pipeline.sh                                  # expect "
 You need three things already on the Mac:
 - the original **Qwen3.8-Flash-Next** weights in the Hugging Face cache (as for the oQe scripts);
 - a **quant of it that you can serve** (the one in `~/.omlx/models`, or any oQ4/oQ5/oQ6 build in `~/models-out`). It writes the answers.
-- **Docker** (colima or OrbStack running) for the agent sessions. The first run builds six small sandbox images (needs internet once); check them any time with `agent_tasks/verify_tasks.sh` (expect 12 `ok` lines).
+- **Docker** (colima or OrbStack running) for the agent sessions. The first run builds seven sandbox images (needs internet once; the Spring one pre-fetches its Maven dependencies and is the largest); check them any time with `agent_tasks/verify_tasks.sh` (expect 17 `ok` lines, a few minutes). Toolchains are pinned to the latest stable releases (JDK 27, Spring Boot 4.1, PostgreSQL 18, Node 26 with TypeScript 7, Python 3.15, Go 1.27, Rust 1.99, Debian 13); bump them on purpose, not by floating tags, so runs stay comparable.
 
 ## Build a quant
 

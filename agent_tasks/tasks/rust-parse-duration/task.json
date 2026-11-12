@@ -2,6 +2,6 @@
  "id": "rust-parse-duration",
  "domain": "rust",
  "image": "oqt-agent-rust",
- "prompt": "`parse_duration(\"1h30m\")` returns the wrong value and `\"90s\"` is rejected. Fix src/lib.rs so durations with h, m, s and ms units (in any combination, largest first) parse correctly, and invalid input returns a descriptive error instead of panicking. Run `cargo test`.",
- "check": "cargo test --offline -q"
+ "prompt": "`parse_duration(\"1h30m\")` returns the wrong value, `\"90s\"` is rejected and bad input panics. Fix src/lib.rs so durations with h, m, s and ms units (each at most once, largest first) parse correctly, and invalid input returns the matching `ParseError` variant instead of panicking, including overflow. `ParseError` must be a proper error type (Display and std::error::Error). The code must be idiomatic: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` must pass along with `cargo test`.",
+ "check": "cargo fmt --check && cargo clippy --offline -q --all-targets -- -D warnings && cargo test --offline -q"
 }

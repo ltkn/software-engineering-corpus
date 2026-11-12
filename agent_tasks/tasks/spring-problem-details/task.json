@@ -1,0 +1,10 @@
+{
+ "id": "spring-problem-details",
+ "domain": "spring",
+ "image": "oqt-agent-spring",
+ "prompt": "POST /users returns 500 with a stack trace for invalid input and for an email that already exists. Return RFC 9457 problem details (application/problem+json) instead: 400 when the body is invalid (email required and well formed, displayName required and at most 100 characters) with an `errors` array of {field, message}; 409 when the tenant already has a user with that email, ignoring case, without exposing SQL or constraint names. A created user returns 201 with a Location header. PostgreSQL 18 runs locally (database and user `app`; `pg-up` starts it if needed). Run the tests with `sh test.sh` (Maven works offline: every dependency is already in ~/.m2).",
+ "check": "sh test.sh",
+ "setup": [
+  "pg-up"
+ ]
+}

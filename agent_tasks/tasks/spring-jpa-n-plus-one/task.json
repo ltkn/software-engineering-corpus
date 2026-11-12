@@ -1,0 +1,10 @@
+{
+ "id": "spring-jpa-n-plus-one",
+ "domain": "spring",
+ "image": "oqt-agent-spring",
+ "prompt": "GET /customers/{customer}/orders is slow for customers with many orders: it runs one query per order to load the lines. Make it load the orders and their lines in a constant number of queries (at most 2) without changing the response, and add the missing index for looking up lines by order with a new Flyway migration. V1 is already applied in production, so it must not change. PostgreSQL 18 runs locally (database and user `app`; `pg-up` starts it if needed). Run the tests with `sh test.sh` (Maven works offline: every dependency is already in ~/.m2).",
+ "check": "sh test.sh",
+ "setup": [
+  "pg-up"
+ ]
+}

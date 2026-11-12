@@ -1,0 +1,15 @@
+#!/bin/sh
+# Start a local PostgreSQL 18 (database "app", user "app", no password) if it is not running.
+set -e
+PG=/usr/lib/postgresql/18/bin
+DATA=/var/lib/pg-tasks
+if "$PG/pg_isready" -q -h localhost -p 5432 2>/dev/null; then exit 0; fi
+if [ ! -f "$DATA/PG_VERSION" ]; then
+    mkdir -p "$DATA" && chown postgres:postgres "$DATA"
+    runuser -u postgres -- "$PG/initdb" -D "$DATA" -A trust -U postgres >/dev/null
+fi
+mkdir -p /var/run/postgresql && chown postgres:postgres /var/run/postgresql
+runuser -u postgres -- "$PG/pg_ctl" -D "$DATA" -l "$DATA/server.log" -w -o "-c listen_addresses=localhost" start >/dev/null
+"$PG/psql" -h localhost -U postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='app'" | grep -q 1 \
+    || { "$PG/psql" -h localhost -U postgres -qc "CREATE ROLE app LOGIN"
+         "$PG/psql" -h localhost -U postgres -qc "CREATE DATABASE app OWNER app"; }

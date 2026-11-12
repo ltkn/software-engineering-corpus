@@ -1,0 +1,10 @@
+{
+ "id": "spring-flyway-display-name",
+ "domain": "spring",
+ "image": "oqt-agent-spring",
+ "prompt": "Users need a display name. Add a required (NOT NULL) `display_name` column to `users` with a new Flyway migration: existing users get the part of their email before the @. POST /users accepts an optional `displayName` (default: the same rule) and both POST /users and GET /users/{id} return `displayName`. V1 and V2 are already applied in production, so they must not change. PostgreSQL 18 runs locally (database and user `app`; `pg-up` starts it if needed). Run the tests with `sh test.sh` (Maven works offline: every dependency is already in ~/.m2).",
+ "check": "sh test.sh",
+ "setup": [
+  "pg-up"
+ ]
+}

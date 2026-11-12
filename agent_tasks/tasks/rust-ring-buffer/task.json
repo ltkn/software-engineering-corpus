@@ -2,6 +2,6 @@
  "id": "rust-ring-buffer",
  "domain": "rust",
  "image": "oqt-agent-rust",
- "prompt": "Implement the fixed-capacity RingBuffer in src/lib.rs (no heap growth after creation). When full, `push` must overwrite the oldest element and return it. Run `cargo test`.",
- "check": "cargo test --offline -q"
+ "prompt": "Implement the fixed-capacity RingBuffer in src/lib.rs: no heap growth after creation, and when full, `push` overwrites the oldest element and returns it. Use only the standard library, no unsafe code. The code must be idiomatic: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` must pass along with `cargo test`.",
+ "check": "cargo fmt --check && cargo clippy --offline -q --all-targets -- -D warnings && cargo test --offline -q"
 }

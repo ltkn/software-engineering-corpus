@@ -1,0 +1,7 @@
+{
+ "id": "spring-scoped-value",
+ "domain": "spring",
+ "image": "oqt-agent-spring",
+ "prompt": "The tenant of a request is kept in a ThreadLocal set by TenantFilter. It is never cleared, so a request without the X-Tenant-Id header can run as the previous tenant, and the report sections loaded on virtual threads see no tenant at all. Replace the ThreadLocal with a ScopedValue (Java 25+, final API; no preview features) bound only for the duration of the request. A request without the header gets 400. Every report section must be computed for the caller's tenant. No ThreadLocal may remain in src/main. Run the tests with `sh test.sh` (Maven works offline: every dependency is already in ~/.m2).",
+ "check": "sh test.sh"
+}

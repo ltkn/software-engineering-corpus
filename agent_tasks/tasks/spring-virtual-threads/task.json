@@ -1,0 +1,7 @@
+{
+ "id": "spring-virtual-threads",
+ "domain": "spring",
+ "image": "oqt-agent-spring",
+ "prompt": "GET /products/{id}/summary calls the pricing and stock services one after the other on a small platform thread pool, and under load requests queue for seconds. Make it scale with virtual threads: run request handling on virtual threads (keep `server.tomcat.threads.max` as it is) and call the two services concurrently, without adding a fixed-size thread pool. If either service fails, respond 502 Bad Gateway instead of 500. Run the tests with `sh test.sh` (Maven works offline: every dependency is already in ~/.m2).",
+ "check": "sh test.sh"
+}
