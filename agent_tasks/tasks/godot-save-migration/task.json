@@ -1,0 +1,7 @@
+{
+ "id": "godot-save-migration",
+ "domain": "godot",
+ "image": "oqt-agent-godot",
+ "prompt": "Saving and loading in scripts/save_game.gd needs to handle versions. Version 2 saves look like {\"version\": 2, \"player\": {\"health\": int, \"position\": {\"x\": float, \"y\": float}}, \"inventory\": [ids], \"settings\": {\"music_volume\": float}}. Old saves have no version and look like {\"hp\": 80, \"x\": 1.5, \"y\": -2, \"items\": [...]}: migrate them with music_volume 0.8. `load_game` returns {\"ok\": bool, \"data\": Dictionary, \"error\": String}: never crash on a missing, corrupt or newer-version file, and return integers as int (JSON numbers come back as floats). `save_game` writes the current version to a temporary file and renames it over the old one so a crash never leaves a half-written save. GDScript only, Godot 4.7, static typing where it helps. Run the tests with `sh test.sh` (headless Godot).",
+ "check": "sh test.sh"
+}

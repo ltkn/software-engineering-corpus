@@ -1,0 +1,7 @@
+{
+ "id": "rust-int8-dense",
+ "domain": "embedded-rust",
+ "image": "oqt-agent-rust-embedded",
+ "prompt": "Implement the int8 fully connected layer in src/lib.rs for on-device inference so it is bit-exact with TensorFlow Lite Micro's reference kernel (double rounding): `quantize_multiplier` turns a real multiplier into a Q31 value and a shift like TFLite's QuantizeMultiplier, `multiply_by_quantized_multiplier` is SaturatingRoundingDoublingHighMul followed by RoundingDivideByPOT, and `Dense::forward` adds the input offset, accumulates in i32 with the bias, rescales, adds the output offset and clamps to the activation range. `forward` must use integer math only and panic on mismatched slice lengths. The crate is `no_std` (tests run on the host) and must also build for the ESP32-C6 (`cargo build --target riscv32imac-unknown-none-elf`). No unsafe code, no new dependencies (the sandbox is offline). `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` must pass.",
+ "check": "cargo fmt --check && cargo clippy --offline -q --all-targets -- -D warnings && cargo test --offline -q && cargo build --offline -q --target riscv32imac-unknown-none-elf"
+}

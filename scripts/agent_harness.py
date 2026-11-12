@@ -145,9 +145,10 @@ def load_task(task_dir: Path) -> dict:
 
 
 class Tools:
-    def __init__(self, workdir: Path, sandbox):
+    def __init__(self, workdir: Path, sandbox, command_timeout: int = 120):
         self.root = workdir.resolve()
         self.sandbox = sandbox
+        self.command_timeout = command_timeout
         self.finished = None
 
     def _path(self, rel: str) -> Path:
@@ -201,7 +202,7 @@ class Tools:
                 p.write_text(text.replace(args["old_text"], args["new_text"]), encoding="utf-8")
                 return f"edited {args['path']}"
             if name == "run":
-                code, out = self.sandbox.run(args["command"])
+                code, out = self.sandbox.run(args["command"], timeout=self.command_timeout)
                 return _clip(f"exit code {code}\n{out}")
             if name == "finish":
                 self.finished = args.get("summary", "")
@@ -226,7 +227,8 @@ def run_session(task: dict, chat_fn, payload_base: dict, *, work_root: Path, san
         sandbox.start()
         for cmd in task.get("setup", []):
             sandbox.run(cmd, timeout=300)
-        tools = Tools(work, sandbox)
+        # Firmware builds (ESP-IDF, Arduino) need longer than the default per command.
+        tools = Tools(work, sandbox, int(task.get("command_timeout", 120)))
         while steps < max_steps:
             steps += 1
             body = chat_fn({**payload_base, "messages": messages, "tools": TOOLS})

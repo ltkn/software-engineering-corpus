@@ -1,0 +1,8 @@
+{
+ "id": "idf-face-match",
+ "domain": "esp-idf",
+ "image": "oqt-agent-esp-idf",
+ "prompt": "On-device face recognition: the detector and embedding model already run (ESP-DL); fix the enrolment database in components/face_db. Matching must use cosine similarity (embeddings from the model are not normalized), report unknown below the threshold, and enrolling an existing name must update that person (average of their L2-normalized samples) instead of adding a duplicate. `remove` frees the slot; a full database returns ESP_ERR_NO_MEM. `serialize`/`deserialize` use a versioned, little-endian format with a magic number and reject truncated or foreign data. Only embeddings are stored, never images. Then persist the database in NVS from main/app_main.c (blob, querying its size first). ESP-IDF 6.1. Run `sh test.sh`: host unit tests on the linux target (Unity), then the firmware build for the ESP32-C6 (`idf.py set-target esp32c6 build`). Both must pass.",
+ "check": "sh test.sh",
+ "command_timeout": 300
+}

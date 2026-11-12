@@ -1,0 +1,7 @@
+{
+ "id": "godot-inventory",
+ "domain": "godot",
+ "image": "oqt-agent-godot",
+ "prompt": "Fix the Inventory in scripts/inventory.gd. `add` must top up existing stacks of the same item before using empty slots, never exceed an item's max_stack, and return what did not fit. `remove` takes from the last matching slots first, empties slots that reach zero and returns how many were removed. `move` merges same-item stacks up to max_stack (the rest stays in the source slot) and swaps otherwise. Emit `slot_changed(index)` once for every slot an operation changed. GDScript only, Godot 4.7, static typing where it helps. Run the tests with `sh test.sh` (headless Godot).",
+ "check": "sh test.sh"
+}

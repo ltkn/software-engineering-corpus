@@ -1,0 +1,7 @@
+{
+ "id": "rust-ble-irk",
+ "domain": "embedded-rust",
+ "image": "oqt-agent-rust-embedded",
+ "prompt": "We detect when bonded phones are near by resolving the resolvable private addresses (RPAs) they advertise with their Identity Resolving Keys. Nothing ever resolves. Fix src/lib.rs so that `ah`, `resolves` and `identify` follow the Bluetooth Core spec (Vol 3, Part H, 2.2.2 and Vol 6, Part B, 1.3.2.2): only RPAs can resolve, and addresses and keys arriving in the little-endian byte order used by HCI and NimBLE are handled by the `from_le_bytes` constructors. The crate is `no_std` (tests run on the host) and must also build for the ESP32-C6 (`cargo build --target riscv32imac-unknown-none-elf`). No unsafe code, no new dependencies (the sandbox is offline). `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` must pass.",
+ "check": "cargo fmt --check && cargo clippy --offline -q --all-targets -- -D warnings && cargo test --offline -q && cargo build --offline -q --target riscv32imac-unknown-none-elf"
+}

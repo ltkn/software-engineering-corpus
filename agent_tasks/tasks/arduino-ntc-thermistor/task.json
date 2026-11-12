@@ -1,0 +1,8 @@
+{
+ "id": "arduino-ntc-thermistor",
+ "domain": "arduino",
+ "image": "oqt-agent-arduino",
+ "prompt": "Our 10k NTC thermistor (B = 3950) reads nonsense. Fix ntc_temp/thermistor.cpp: convert the divider voltage (millivolts from analogReadMilliVolts) to resistance for both wiring options (NTC on the low or the high side of the series resistor), then to temperature with the Beta equation (in kelvin); report Open or Short when the voltage is within 1% of a rail, depending on the wiring. `TempFilter` must reject single-sample spikes (median of the last five readings) and then smooth with an exponential moving average. The sketch must compile for the ESP32-C6 with the ESP32 Arduino core 3.x (`arduino-cli compile --fqbn esp32:esp32:esp32c6`). Run `sh test.sh`: host tests of the logic with g++, then the firmware build.",
+ "check": "sh test.sh",
+ "command_timeout": 240
+}

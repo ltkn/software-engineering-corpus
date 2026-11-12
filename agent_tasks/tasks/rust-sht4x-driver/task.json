@@ -1,0 +1,7 @@
+{
+ "id": "rust-sht4x-driver",
+ "domain": "embedded-rust",
+ "image": "oqt-agent-rust-embedded",
+ "prompt": "Finish the SHT4x temperature and humidity driver in src/lib.rs on top of embedded-hal 1.0. `measure` sends the high-precision command (0xFD), waits at least 8.3 ms, reads 6 bytes and checks each word's CRC-8 (polynomial 0x31, init 0xFF); `serial_number` uses command 0x89 the same way. Convert with integer math only (the ESP32-C6 has no FPU): temperature in milli-degrees Celsius, humidity in milli-percent clamped to 0..=100000. Bus errors and CRC mismatches are separate error variants. The crate is `no_std` (tests run on the host) and must also build for the ESP32-C6 (`cargo build --target riscv32imac-unknown-none-elf`). No unsafe code, no new dependencies (the sandbox is offline). `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` must pass.",
+ "check": "cargo fmt --check && cargo clippy --offline -q --all-targets -- -D warnings && cargo test --offline -q && cargo build --offline -q --target riscv32imac-unknown-none-elf"
+}

@@ -1,0 +1,7 @@
+{
+ "id": "godot-jump-feel",
+ "domain": "godot",
+ "image": "oqt-agent-godot",
+ "prompt": "Players say jumping feels unresponsive. Add coyote time and jump buffering to scripts/jump_logic.gd (pure logic, called once per physics frame by player.gd): a jump pressed up to `buffer_time` seconds before landing still happens on landing, and a jump pressed up to `coyote_time` seconds after walking off a ledge still happens. One press gives at most one jump, and coyote time does not allow a second jump in the air. Releasing jump early while rising cuts the upward velocity (`cut_velocity`) for variable jump height. GDScript only, Godot 4.7, static typing where it helps. Run the tests with `sh test.sh` (headless Godot).",
+ "check": "sh test.sh"
+}

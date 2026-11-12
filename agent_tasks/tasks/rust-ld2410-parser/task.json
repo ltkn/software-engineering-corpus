@@ -1,0 +1,7 @@
+{
+ "id": "rust-ld2410-parser",
+ "domain": "embedded-rust",
+ "image": "oqt-agent-rust-embedded",
+ "prompt": "The HLK-LD2410 mmWave presence radar streams report frames over UART: header F4 F3 F2 F1, a little-endian u16 length, the data (type 0x02 basic or 0x01 engineering, head 0xAA, target state, moving distance u16 cm, moving energy, stationary distance u16 cm, stationary energy, detection distance u16 cm, then any engineering-mode extras, tail 0x55 and check 0x00), and footer F8 F7 F6 F5. Our parser only works when every UART read starts exactly at a frame. Rewrite `Parser::push` in src/lib.rs as a byte-at-a-time state machine with no heap: frames may be split across reads, preceded by noise or command acknowledgements, have a bad footer or marker (drop them and resync), or be engineering frames (report their basic part). Data longer than 64 bytes is rejected. The crate is `no_std` (tests run on the host) and must also build for the ESP32-C6 (`cargo build --target riscv32imac-unknown-none-elf`). No unsafe code, no new dependencies (the sandbox is offline). `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` must pass.",
+ "check": "cargo fmt --check && cargo clippy --offline -q --all-targets -- -D warnings && cargo test --offline -q && cargo build --offline -q --target riscv32imac-unknown-none-elf"
+}

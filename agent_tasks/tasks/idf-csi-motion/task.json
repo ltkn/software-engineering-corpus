@@ -1,0 +1,8 @@
+{
+ "id": "idf-csi-motion",
+ "domain": "esp-idf",
+ "image": "oqt-agent-esp-idf",
+ "prompt": "Wi-Fi CSI motion detection on the ESP32-C6. Fix components/csi_motion: `csi_motion_amplitude` is the mean amplitude over subcarriers whose I/Q are not both zero (the buffer holds int8 pairs, imaginary first) and must not overflow; the score is the variance of that amplitude over the last `window` frames only; detection uses hysteresis (active above `enter_threshold`, inactive after `exit_frames` consecutive frames below `exit_threshold`); invalid configs return ESP_ERR_INVALID_ARG. Then fix main/app_main.c: it uses the classic ESP32 CSI config, which does not exist on the C6. Enable CSI the C6 way, and keep the receive callback minimal (it runs in the Wi-Fi task): copy the frame into a FreeRTOS queue and do the detection in your own task. ESP-IDF 6.1. Run `sh test.sh`: host unit tests on the linux target (Unity), then the firmware build for the ESP32-C6 (`idf.py set-target esp32c6 build`). Both must pass.",
+ "check": "sh test.sh",
+ "command_timeout": 300
+}

@@ -1,0 +1,8 @@
+{
+ "id": "arduino-doppler-speed",
+ "domain": "arduino",
+ "image": "oqt-agent-arduino",
+ "prompt": "A 24 GHz CW Doppler radar module (CDM324 type, 24.125 GHz) feeds an amplified IF signal into the ADC. Implement `analyze` in doppler_speed/doppler.cpp: remove the DC offset, apply a Hann window, find the strongest spectral peak with an FFT (n is a power of two up to 1024) and refine it with parabolic interpolation, ignore bins below `minHz` (DC leakage and slow drift), and report no target when the peak is not at least `snr` times the median magnitude. Convert to km/h with v = fd * c / (2 * f0). The sketch still uses the ESP32 core 2.x timer API, which no longer exists: sample at a fixed rate with the 3.x API (or the continuous ADC driver) and keep the ISR minimal. The sketch must compile for the ESP32-C6 with the ESP32 Arduino core 3.x (`arduino-cli compile --fqbn esp32:esp32:esp32c6`). Run `sh test.sh`: host tests of the logic with g++, then the firmware build.",
+ "check": "sh test.sh",
+ "command_timeout": 240
+}

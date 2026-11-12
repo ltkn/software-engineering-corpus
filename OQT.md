@@ -22,7 +22,7 @@ scripts/testing/test_oqt_pipeline.sh                                  # expect "
 You need three things already on the Mac:
 - the original **Qwen3.8-Flash-Next** weights in the Hugging Face cache (as for the oQe scripts);
 - a **quant of it that you can serve** (the one in `~/.omlx/models`, or any oQ4/oQ5/oQ6 build in `~/models-out`). It writes the answers.
-- **Docker** (colima or OrbStack running) for the agent sessions. The first run builds seven sandbox images (needs internet once; the Spring one pre-fetches its Maven dependencies and is the largest); check them any time with `agent_tasks/verify_tasks.sh` (expect 17 `ok` lines, a few minutes). Toolchains are pinned to the latest stable releases (JDK 27, Spring Boot 4.1, PostgreSQL 18, Node 26 with TypeScript 7, Python 3.15, Go 1.27, Rust 1.99, Debian 13); bump them on purpose, not by floating tags, so runs stay comparable.
+- **Docker** (colima or OrbStack running) for the agent sessions. The first run builds eleven sandbox images (needs internet once, about an hour, and about 25 GB of disk: ESP-IDF is ~13 GB, Arduino ~4.5 GB; give colima a disk of 100 GB or more); check them any time with `agent_tasks/verify_tasks.sh` (expect 28 `ok` lines, about 15 minutes). Toolchains are pinned to the latest stable releases (JDK 27, Spring Boot 4.1, PostgreSQL 18, Node 26 with TypeScript 7, Python 3.15, Go 1.27, Rust 1.99, Godot 4.7, ESP-IDF 6.1, Arduino ESP32 core 3.3, Debian 13); bump them on purpose, not by floating tags, so runs stay comparable. No boards are needed: embedded tasks run host tests and build real firmware for the ESP32-C6.
 
 ## Build a quant
 
