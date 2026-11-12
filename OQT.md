@@ -61,6 +61,18 @@ nohup scripts/oqt_pipeline.sh 4 v1 > ~/oqup/oqt-v1.out 2>&1 &
 - It takes many hours: generating the answers, then building. After about 20 answers the log prints an estimate of the generation time.
 - Changing `GENERATOR` later means new answers: each cached answer belongs to the model that wrote it.
 
+## Quantize a fine-tune instead (abliterated, uncensored, ...)
+
+Any fine-tune with the same architecture works. Name its repo, give it its own run name, and let a quant **of that fine-tune** write the answers (the pipeline stops if `GENERATOR` is missing, so the answers never come from the official model by accident):
+
+```bash
+SOURCE_REPO=orcarouter/Qwen3.8-Flash-Next-Uncensored \
+GENERATOR=~/models-out/<a quant of Qwen3.8-Flash-Next-Uncensored> \
+nohup scripts/oqt_pipeline.sh 4 uncensored-v1 > ~/oqup/oqt-uncensored-v1.out 2>&1 &
+```
+
+The result is `~/models-out/Qwen3.8-Flash-Next-Uncensored-oQ4t-uncensored-v1`. Its oQ-T cache and M3 reference are kept apart from the official model's. If you have no quant of the fine-tune yet, build a plain oQ5e or oQ6e of it first, the same way you built your current quants. `scripts/omlx_oqt.sh` (the lower-level oQ-T build) accepts `SOURCE_REPO` too. Without `SOURCE_REPO`, only the official `Qwen/Qwen3.8-Flash-Next` is ever picked.
+
 ## Watch it
 
 ```bash

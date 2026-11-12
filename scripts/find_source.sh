@@ -1,15 +1,17 @@
 # find_source.sh: pick the original BF16 Qwen3.8-Flash-Next checkpoint from the
 # Hugging Face cache. Sourced by oqt_pipeline.sh and omlx_oqt.sh.
 #
-#   find_bf16_source <hub dir>   prints the snapshot dir, or explains on stderr and returns 1
+#   find_bf16_source <hub dir> [org/name]   prints the snapshot dir, or explains on stderr
+#                                           and returns 1
 #
-# Only the official repo (models--Qwen--Qwen3.8-Flash-Next) is considered: fine-tunes
+# By default only the official repo (Qwen/Qwen3.8-Flash-Next) is considered: fine-tunes
 # from other organizations (an "Uncensored" variant, for example) are a different model
-# and must never be the reference the quant is matched to. Pass SRC=<dir> to use one
-# on purpose. Within the repo, the newest snapshot that is complete and unquantized
-# wins: no quantization_config, and every shard named in the index is present.
+# and must never be the reference by accident. To quantize one on purpose, name its repo
+# (SOURCE_REPO=orcarouter/Qwen3.8-Flash-Next-Uncensored) or pass SRC=<dir>.
+# Within the repo, the newest snapshot that is complete and unquantized wins:
+# no quantization_config, and every shard named in the index is present.
 
-OFFICIAL_SOURCE_REPO="models--Qwen--Qwen3.8-Flash-Next"
+OFFICIAL_SOURCE_REPO="Qwen/Qwen3.8-Flash-Next"
 
 # <snapshot dir>: exit 0 when it is a complete, unquantized qwen4_exp checkpoint.
 _source_is_complete_bf16() {
@@ -36,7 +38,9 @@ PY
 }
 
 find_bf16_source() {
-    local hub="$1" repo="$1/$OFFICIAL_SOURCE_REPO" snap best="" other
+    local hub="$1" repo_id="${2:-$OFFICIAL_SOURCE_REPO}" snap best="" other
+    local repo_dir="models--${repo_id//\//--}"
+    local repo="$hub/$repo_dir"
     if [ -d "$repo/snapshots" ]; then
         for snap in "$repo"/snapshots/*/; do
             snap="${snap%/}"
@@ -50,15 +54,15 @@ find_bf16_source() {
     fi
     {
         if [ -d "$repo/snapshots" ]; then
-            echo "$OFFICIAL_SOURCE_REPO is in $hub but no snapshot is complete and unquantized"
-            echo "(a download may have stopped: run huggingface-cli download Qwen/Qwen3.8-Flash-Next)."
+            echo "$repo_dir is in $hub but no snapshot is complete and unquantized"
+            echo "(a download may have stopped: run huggingface-cli download $repo_id)."
         else
-            echo "no $OFFICIAL_SOURCE_REPO in $hub."
+            echo "no $repo_dir in $hub (download it: huggingface-cli download $repo_id)."
         fi
         for other in "$hub"/models--*; do
             [ "$other" = "$repo" ] && continue
             grep -qs 'qwen4_exp' "$other"/snapshots/*/config.json \
-                && echo "not used automatically (not the official model): ${other##*/}"
+                && echo "not used automatically: ${other##*/} (choose it with SOURCE_REPO=<org>/<name>)"
         done
         echo "Pass SRC=<snapshot dir> to choose a checkpoint yourself."
     } >&2

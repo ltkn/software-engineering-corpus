@@ -24,6 +24,8 @@
 #
 # Options (environment variables):
 #   SRC=<dir>          source checkpoint (BF16 safetensors dir) instead of auto-discovery
+#   SOURCE_REPO=<org/name>  auto-discover another repo's BF16 snapshot (a fine-tune
+#                      of the same architecture) instead of Qwen/Qwen3.8-Flash-Next
 #   CORPUS_FILE=<file> calibration text instead of calibration/*.txt
 #   OQT_OVERWRITE=1    replace an existing output with the same name
 #   OQT_COMPARE=1      also build plain oQe from the same bundle, and score both
@@ -88,7 +90,7 @@ say "preflight"
 case " 2 3 4 5 6 8 " in *" $NGRAM_BITS "*) ;; *) die "NGRAM_BITS must be one of 2 3 4 5 6 8" ;; esac
 
 if [ -z "${SRC:-}" ]; then
-    SRC="$(find_bf16_source "$HUB")" || die "no BF16 source found (see above)"
+    SRC="$(find_bf16_source "$HUB" "${SOURCE_REPO:-}")" || die "no BF16 source found (see above)"
 fi
 [ -f "$SRC/config.json" ] || die "no config.json in SRC=$SRC"
 if grep -q 'deepseek_v41' "$SRC/config.json"; then

@@ -29,6 +29,9 @@
 #   SRC=<dir>              BF16 source checkpoint (default: the newest complete,
 #                          unquantized snapshot of Qwen/Qwen3.8-Flash-Next in the
 #                          HF cache; fine-tunes from other repos are never picked)
+#   SOURCE_REPO=<org/name> quantize a fine-tune of the same architecture instead,
+#                          e.g. orcarouter/Qwen3.8-Flash-Next-Uncensored (then
+#                          GENERATOR must be a quant of that fine-tune)
 #   BUDGET_TOKENS=1000000  how much text to generate (thinking included)
 #   EFFORT_MIX=max=70,medium=15,low=15
 #   CONCURRENCY=1          parallel requests to the server (1: one request at a
@@ -272,7 +275,7 @@ command -v perl >/dev/null || die "perl is needed for log timestamps"
 
 if [ -z "${SRC:-}" ]; then
     why="$(mktemp)"
-    SRC="$(find_bf16_source "$HUB" 2>"$why")" || { while IFS= read -r l; do log "$l"; done < "$why"; rm -f "$why"; die "no BF16 source found"; }
+    SRC="$(find_bf16_source "$HUB" "${SOURCE_REPO:-}" 2>"$why")" || { while IFS= read -r l; do log "$l"; done < "$why"; rm -f "$why"; die "no BF16 source found"; }
     rm -f "$why"
 fi
 [ -f "$SRC/config.json" ] || die "no config.json in SRC=$SRC"
@@ -282,6 +285,12 @@ export SRC
 is_quant_of_family() { # <dir>: a quantized qwen4_exp model dir
     [ -f "$1/config.json" ] && grep -q 'qwen4_exp' "$1/config.json" && grep -q '"quantization' "$1/config.json"
 }
+# The answers must come from the model being quantized: for anything but the official
+# source, the generator cannot be guessed from the folders.
+case "$SRC" in
+    */models--Qwen--Qwen3.8-Flash-Next/snapshots/*) ;;
+    *) [ -n "${GENERATOR:-}" ] || die "source is not the official Qwen/Qwen3.8-Flash-Next ($SRC): pass GENERATOR=<a quant of this same model>, so the answers come from it" ;;
+esac
 if [ -z "${GENERATOR:-}" ]; then
     CANDS=""
     for d in "$HOME/.omlx/models"/*; do
