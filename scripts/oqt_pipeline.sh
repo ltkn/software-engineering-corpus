@@ -24,8 +24,8 @@
 #
 # Options (environment variables, put them in front of the command):
 #   GENERATOR=<quant dir>  model that writes the answers (default: the Qwen
-#                          quant in ~/.omlx/models, else the newest oQ4/5/6
-#                          quant in ~/models-out)
+#                          quant in ~/.omlx/models, else the newest oQ5, oQ6,
+#                          oQ4 or oQ8 quant in ~/models-out, in that order)
 #   SRC=<dir>              BF16 source checkpoint (default: found in the HF cache)
 #   BUDGET_TOKENS=1000000  how much text to generate (thinking included)
 #   EFFORT_MIX=max=70,medium=15,low=15
@@ -126,6 +126,29 @@ touch "$STATE"
 
 log() { printf '%s  %s\n' "$(ts)" "$*" | tee -a "$PLOG"; }
 die() { log "FAILED: $*"; exit 1; }
+
+# Docker's own CPUs, memory and disk (with colima these are the VM's, not the Mac's).
+# Fails when the agent sandboxes cannot work; warns when they will be slow or tight.
+docker_check() {
+    local cpus mem_mb mem_gb missing=0 need_gb disk_gb fix
+    cpus="$(docker info --format '{{.NCPU}}' 2>/dev/null || echo 0)"
+    mem_mb=$(( $(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0) / 1048576 ))
+    mem_gb="$(awk -v m="$mem_mb" 'BEGIN{printf "%.1f", m / 1024}')"
+    for img in "$CORPUS_REPO"/agent_tasks/images/*/; do
+        docker image inspect "oqt-agent-$(basename "$img")" >/dev/null 2>&1 || missing=$((missing + 1))
+    done
+    # Building every image needs about 25 GB plus build cache; running only needs scratch space.
+    need_gb=10; [ "$missing" -gt 0 ] && need_gb=40
+    disk_gb="$(docker run --rm --network none debian:trixie-slim df -Pk / 2>/dev/null | awk 'NR==2 {print int($4 / 1048576)}')"
+    fix="with colima: colima stop && colima start --cpu 4 --memory 8 --disk 120 (the disk can only grow); with OrbStack: Settings > System"
+    log "docker    : ${cpus} CPUs, ${mem_gb} GB memory, ${disk_gb:-?} GB free disk, ${missing} sandbox images to build"
+    # Each sandbox is capped at 2 GB; the VM needs room for itself too.
+    [ "$mem_mb" -ge 3000 ] || die "Docker has ${mem_gb} GB memory; the agent sandboxes need at least 3 (8 recommended). Fix $fix"
+    [ -z "$disk_gb" ] || [ "$disk_gb" -ge "$need_gb" ] \
+        || die "Docker has ${disk_gb} GB free disk; need ${need_gb} GB. Free space with docker system prune, or fix $fix"
+    [ "$mem_mb" -ge 7000 ] || log "WARNING: Docker has ${mem_gb} GB memory; 8 is recommended. $fix"
+    [ "$cpus" -ge 4 ] || log "WARNING: Docker has ${cpus} CPUs; firmware builds will be slow. 4 recommended. $fix"
+}
 
 if [ -f "$RUN/pid" ] && kill -0 "$(cat "$RUN/pid")" 2>/dev/null; then
     echo "run '$NAME' is already running (pid $(cat "$RUN/pid")); see: $0 status $NAME" >&2
@@ -298,6 +321,7 @@ log "agent     : $([ "$OQT_AGENT" = 1 ] && echo "$AGENT_SAMPLES sessions per tas
 log "long ctx  : $(awk -v s="$OQT_LONG_SHARE" 'BEGIN{exit !(s>0)}' && echo "${OQT_LONG_SHARE} of tokens in ${OQT_LONG_LEN}-token windows" || echo off)"
 if [ "$OQT_AGENT" = 1 ] && [ "$AGENT_SANDBOX" = docker ]; then
     docker info >/dev/null 2>&1 || die "agent sessions need Docker (start colima or OrbStack), or set OQT_AGENT=0"
+    docker_check
 fi
 log "machine   : ${ram_gb} GB RAM, ${free_gb:-?} GB free under $OQUP"
 [ "$ram_gb" -ge 96 ] || log "WARNING: ${ram_gb} GB RAM; this pipeline is planned for the 128 GB Mac"

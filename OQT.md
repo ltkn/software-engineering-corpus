@@ -12,7 +12,7 @@ Supported today: **Qwen3.8-Flash-Next**. DeepSeek V4.1 is not supported yet (the
 cd ~/dev/omlx
 git fetch && git checkout feat/oqt
 source .venv-3.12/bin/activate
-python -m pytest tests/test_oqt.py tests/test_oqt_streaming.py -q     # expect "35 passed"
+python -m pytest tests/test_oqt.py tests/test_oqt_streaming.py -q     # expect "43 passed"
 
 cd ~/dev/software-engineering-corpus
 git pull
@@ -22,21 +22,44 @@ scripts/testing/test_oqt_pipeline.sh                                  # expect "
 You need three things already on the Mac:
 - the original **Qwen3.8-Flash-Next** weights in the Hugging Face cache (as for the oQe scripts);
 - a **quant of it that you can serve** (the one in `~/.omlx/models`, or any oQ4/oQ5/oQ6 build in `~/models-out`). It writes the answers.
-- **Docker** (colima or OrbStack running) for the agent sessions. The first run builds eleven sandbox images (needs internet once, about an hour, and about 25 GB of disk: ESP-IDF is ~13 GB, Arduino ~4.5 GB; give colima a disk of 100 GB or more); check them any time with `agent_tasks/verify_tasks.sh` (expect 28 `ok` lines, about 15 minutes). Toolchains are pinned to the latest stable releases (JDK 27, Spring Boot 4.1, PostgreSQL 18, Node 26 with TypeScript 7, Python 3.15, Go 1.27, Rust 1.99, Godot 4.7, ESP-IDF 6.1, Arduino ESP32 core 3.3, Debian 13); bump them on purpose, not by floating tags, so runs stay comparable. No boards are needed: embedded tasks run host tests and build real firmware for the ESP32-C6.
+- **Docker** for the agent sessions: colima or OrbStack (not Docker Desktop). Set it up once:
+
+  ```bash
+  brew install colima docker
+  colima start --cpu 4 --memory 8 --disk 120   # the disk can only grow later, so size it now
+  # or instead: brew install --cask orbstack && open -a OrbStack
+  agent_tasks/build_images.sh                  # eleven images: about an hour, needs internet once
+  agent_tasks/verify_tasks.sh                  # expect 28 "ok" lines, about 15 minutes
+  ```
+
+  The images take about 25 GB (ESP-IDF ~13 GB, Arduino ~4.5 GB). The pipeline checks Docker before it starts: it stops if Docker has under 3 GB of memory or too little disk (40 GB while images are still to build, 10 GB after), and warns under 8 GB of memory or 4 CPUs, printing the command that fixes it. After a reboot, run `colima start` again (or `brew services start colima` once). Toolchains are pinned to the latest stable releases (JDK 27, Spring Boot 4.1, PostgreSQL 18, Node 26 with TypeScript 7, Python 3.15, Go 1.27, Rust 1.99, Godot 4.7, ESP-IDF 6.1, Arduino ESP32 core 3.3, Debian 13); bump them on purpose, not by floating tags, so runs stay comparable. No boards are needed: embedded tasks run host tests and build real firmware for the ESP32-C6.
 
 ## Build a quant
 
 1. **Stop your oMLX server** (the pipeline starts its own, then needs all the memory for the build).
-2. Run:
+2. **Start with a pilot**, a small run that checks everything works and measures how long the real run will take:
 
 ```bash
 cd ~/dev/software-engineering-corpus
+mkdir -p ~/oqup
+GENERATOR=~/models-out/Qwen3.8-Flash-Next-oQ6e-coder-q8-ngram-mtp \
+BUDGET_TOKENS=100000 \
+nohup scripts/oqt_pipeline.sh 4 pilot > ~/oqup/oqt-pilot.out 2>&1 &
+```
+
+- `4` is the level of the quant to build (`3`, `5`, `6`, `8` also work).
+- `pilot` is just the name of this run. You can choose any name. It names the run folder (`~/oqup/runs/pilot/`) and the result (`~/models-out/Qwen3.8-Flash-Next-oQ4t-pilot`). What makes it a pilot is `BUDGET_TOKENS=100000`: a tenth of the default 1,000,000 generated tokens. It runs every stage (answers, agent sessions, long windows, build, score), so problems show up in hours, not after a day, and the log estimates the full run's time. The pilot quant works, but it is calibrated on little text, so judge the method by the full run.
+- `GENERATOR` is the local quant that writes the answers. It is a folder, not an API: the pipeline serves it on its own oMLX server (port 8765). Use the best quant that fits; on 128 GB an oQ6e or oQ5e. Without `GENERATOR` the pipeline picks the only Qwen3.8-Flash-Next quant in `~/.omlx/models`, else the newest oQ5, then oQ6, oQ4, oQ8 in `~/models-out` (so it would pick the oQ5e above, not the oQ6e). DeepSeek quants are never picked. The first lines of `~/oqup/runs/pilot/pipeline.log` show `answers by: ...`. If the Mac starts swapping while generating, add `CONCURRENCY=2`.
+3. **Then the real run**, with the same generator. Answers are cached by content, so the pilot's answers are reused and only the rest is generated:
+
+```bash
+GENERATOR=~/models-out/Qwen3.8-Flash-Next-oQ6e-coder-q8-ngram-mtp \
 nohup scripts/oqt_pipeline.sh 4 v1 > ~/oqup/oqt-v1.out 2>&1 &
 ```
 
-- `4` is the level (`3`, `5`, `6`, `8` also work). `v1` is any name you choose.
 - The result is `~/models-out/Qwen3.8-Flash-Next-oQ4t-v1`.
 - It takes many hours: generating the answers, then building. After about 20 answers the log prints an estimate of the generation time.
+- Changing `GENERATOR` later means new answers: each cached answer belongs to the model that wrote it.
 
 ## Watch it
 
@@ -122,7 +145,7 @@ Put them in front of the command, for example `BUDGET_TOKENS=500000 scripts/oqt_
 
 | Option | Default | Effect |
 |---|---|---|
-| `GENERATOR=<quant dir>` | the Qwen quant in `~/.omlx/models` | Which model writes the answers |
+| `GENERATOR=<quant dir>` | the only Qwen quant in `~/.omlx/models`, else the newest oQ5/6/4/8 in `~/models-out` | Which local quant writes the answers (see Build a quant) |
 | `BUDGET_TOKENS` | `1000000` | How much text to generate (thinking included). More = longer run, more calibration data |
 | `EFFORT_MIX` | `max=70,medium=15,low=15` | Thinking levels. `max` is the model's top level, whatever it's called |
 | `CONCURRENCY` | `4` | Parallel requests while generating |
