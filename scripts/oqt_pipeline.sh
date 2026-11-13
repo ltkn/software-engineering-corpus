@@ -324,10 +324,6 @@ log "prompts   : profile $OQT_PROFILE, mix $OQT_MIX, $PROMPTS_PER_SEED prompts p
 [ "$OQT_PROFILE" = generic ] && OQT_AGENT=0
 log "agent     : $([ "$OQT_AGENT" = 1 ] && echo "$AGENT_SAMPLES sessions per task, $AGENT_CONCURRENCY at a time, $AGENT_SANDBOX sandbox" || echo off)"
 log "long ctx  : $(awk -v s="$OQT_LONG_SHARE" 'BEGIN{exit !(s>0)}' && echo "${OQT_LONG_SHARE} of tokens in ${OQT_LONG_LEN}-token windows" || echo off)"
-if [ "$OQT_AGENT" = 1 ] && [ "$AGENT_SANDBOX" = docker ]; then
-    docker info >/dev/null 2>&1 || die "agent sessions need Docker (start colima or OrbStack), or set OQT_AGENT=0"
-    docker_check
-fi
 log "machine   : ${ram_gb} GB RAM, ${free_gb:-?} GB free under $OQUP"
 [ "$ram_gb" -ge 96 ] || log "WARNING: ${ram_gb} GB RAM; this pipeline is planned for the 128 GB Mac"
 [ -n "$free_gb" ] && [ "$free_gb" -lt 150 ] && log "WARNING: only ${free_gb} GB free"
@@ -349,6 +345,16 @@ D_AGENT="$(printf '%s|%s|%s|%s|%s' "$( { find "${AGENT_TASKS:-$CORPUS_REPO/agent
 D_GENERATE="$(printf '%s|%s|%s|%s|%s|%s|%s|%s' "$D_DERIVE" "$D_SEED" "$BUDGET_TOKENS" "$EFFORT_MIX" \
     "${MAX_TOKENS:-16384}" "$OQT_PROFILE" "$OQT_MIX" "$([ "$OQT_AGENT" = 1 ] && echo "$D_AGENT" || echo none)" | hash_of)"
 D_RENDER="$(printf '%s|%s|%s' "$D_GENERATE" "$( cat "$SRC"/tokenizer*.json "$SRC"/*.jinja 2>/dev/null | hash_of)" "$OQT_LONG_LEN" | hash_of)"
+
+# Docker is needed only while agent sessions still have to run: once the agent
+# stage is done (or cached), the run can resume with Docker stopped, which frees
+# its VM's memory for the build.
+if [ "$OQT_AGENT" = 1 ] && [ "$AGENT_SANDBOX" = docker ] && ! is_done agent "$D_AGENT"; then
+    docker info >/dev/null 2>&1 || die "agent sessions need Docker (start colima or OrbStack), or set OQT_AGENT=0"
+    docker_check
+elif [ "$OQT_AGENT" = 1 ] && [ "$AGENT_SANDBOX" = docker ]; then
+    log "docker    : not needed (agent stage done); you can stop colima to free memory for the build"
+fi
 
 # ------------------------------------------------------------------ server
 start_server() {
