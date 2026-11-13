@@ -7,9 +7,9 @@
 #   scripts/omlx_oqt.sh 3 v1        # oQ3t
 #
 # What it does, in order:
-#   1. finds the source model (newest complete BF16 snapshot of the official
-#      Qwen/Qwen3.8-Flash-Next repo in the
-#      Hugging Face cache, or SRC=<dir>)
+#   1. finds the source model (newest complete BF16 snapshot of the model
+#      profile's official repo in the Hugging Face cache, a variant's folder,
+#      or SRC=<dir>)
 #   2. builds the calibration bundle from this repo's calibration/*.txt
 #      (or CORPUS_FILE=<file>)
 #   3. runs oMLX quantize_oq_streaming with streaming + oQ-T on:
@@ -23,9 +23,12 @@
 # the sweep resumes from its per-layer cache.
 #
 # Options (environment variables):
+#   OQT_MODEL=<id>     model profile, models/<id>.json (default: the only one)
+#   OQT_VARIANT=<suffix>  a fine-tune named <name>-<suffix> (a folder of that name in
+#                      MODELS_OUT, or an HF repo <org>/<name>-<suffix>)
 #   SRC=<dir>          source checkpoint (BF16 safetensors dir) instead of auto-discovery
 #   SOURCE_REPO=<org/name>  auto-discover another repo's BF16 snapshot (a fine-tune
-#                      of the same architecture) instead of Qwen/Qwen3.8-Flash-Next
+#                      of the same architecture) instead of the official repo
 #   CORPUS_FILE=<file> calibration text instead of calibration/*.txt
 #   OQT_OVERWRITE=1    replace an existing output with the same name
 #   OQT_COMPARE=1      also build plain oQe from the same bundle, and score both
@@ -76,7 +79,7 @@ OQ_SEQLEN="${OQ_SEQLEN:-2048}"
 NGRAM_BITS="${NGRAM_BITS:-8}"
 PRESERVE_MTP="${PRESERVE_MTP:-1}"
 HUB="${HF_HUB_CACHE:-$HOME/.cache/huggingface/hub}"
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/find_source.sh"
+MP="$CORPUS_REPO/scripts/model_profile.py"
 mkdir -p "$OQUP" "$MODELS_OUT"
 
 say() { printf '\n== %s ==\n' "$*"; }
@@ -89,12 +92,14 @@ say "preflight"
     || die "this oMLX checkout has no oQ-T. In $OMLX_REPO run: git fetch && git checkout feat/oqt"
 case " 2 3 4 5 6 8 " in *" $NGRAM_BITS "*) ;; *) die "NGRAM_BITS must be one of 2 3 4 5 6 8" ;; esac
 
+INFO="$(python3 "$MP" info ${OQT_MODEL:+--model "$OQT_MODEL"} ${OQT_VARIANT:+--variant "$OQT_VARIANT"})" || die "no model profile"
+eval "$INFO"
 if [ -z "${SRC:-}" ]; then
-    SRC="$(find_bf16_source "$HUB" "${SOURCE_REPO:-}")" || die "no BF16 source found (see above)"
+    SRC="$(python3 "$MP" source --model "$MODEL_PROFILE" ${OQT_VARIANT:+--variant "$OQT_VARIANT"} \
+        ${SOURCE_REPO:+--repo "$SOURCE_REPO"} --hub "$HUB" --search "$MODELS_OUT")" || die "no BF16 source found (see above)"
 fi
-[ -f "$SRC/config.json" ] || die "no config.json in SRC=$SRC"
-grep -q 'qwen4_exp' "$SRC/config.json" \
-    || die "SRC=$SRC is not a Qwen3.8-Flash-Next (qwen4_exp) checkpoint, the only architecture oQ-T supports"
+python3 "$MP" check-source --model "$MODEL_PROFILE" "$SRC" \
+    || die "SRC=$SRC is not a complete BF16 $MODEL_NAME ($MODEL_ARCH) checkpoint"
 
 case "$SRC" in
     *models--*) _t="${SRC%%/snapshots/*}"; _t="${_t##*models--}"; MODEL_TAG="${_t#*--}" ;;

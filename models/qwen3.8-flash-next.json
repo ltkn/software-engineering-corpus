@@ -1,0 +1,22 @@
+{
+  "id": "qwen3.8-flash-next",
+  "name": "Qwen3.8-Flash-Next",
+  "architecture": "qwen4_exp",
+  "official_repo": "Qwen/Qwen3.8-Flash-Next",
+  "requests": {
+    "thinking_off": {"enable_thinking": false},
+    "thinking_on": {"enable_thinking": true},
+    "effort": {"low": "low", "medium": "medium", "max": "xhigh"},
+    "sampling": {"temperature": 1.0, "top_p": 0.95, "top_k": 20}
+  },
+  "render": {
+    "template_kwargs": {"enable_thinking": true, "preserve_thinking": true},
+    "tool_arguments": "mapping"
+  },
+  "notes": [
+    "effort: the pipeline's generic levels (low, medium, max) mapped to the model card's reasoning_effort names; xhigh is this model's single top level.",
+    "sampling: the model card's recommended thinking-mode settings.",
+    "tool_arguments 'mapping': the chat template iterates tool-call arguments with |items, so the JSON string the API returns is parsed into an object before rendering.",
+    "Variants: OQT_VARIANT=<suffix> selects a fine-tune named <name>-<suffix> (for example Qwen3.8-Flash-Next-uncensored); see OQT.md, Models and variants."
+  ]
+}

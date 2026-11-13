@@ -4,24 +4,98 @@ oQ-T ("teacher-matched") is a better way to choose a quant's weights. Instead of
 
 **One command does everything:** your local model answers the corpus prompts, those answers become the calibration text, and the oQ-T quant is built from them.
 
-Supported: **Qwen3.8-Flash-Next** and fine-tunes of the same architecture (the scripts stop on any other checkpoint).
+Supported: **Qwen3.8-Flash-Next** and fine-tunes of it (see Models and variants). The scripts stop on any other checkpoint.
+
+## Step by step on the 128 GB Mac
+
+The paths below are the ones on that Mac: oMLX in `~/dev/omlx`, this repo in `~/dev/software-engineering-corpus`, work files in `~/oqup`, quants in `~/models-out`, and the quant that writes the answers is `~/models-out/Qwen3.8-Flash-Next-oQ6e-coder-q8-ngram-mtp`. Do the one-time setup below first if it's a new machine.
+
+**1. Update both repos** (only when no run is going: a run uses the scripts while it works).
+
+```bash
+cd ~/dev/omlx && git pull && make install          # make install picks up new dependencies
+cd ~/dev/software-engineering-corpus && git pull
+```
+
+**2. Prepare the Mac.**
+
+```bash
+mkdir -p ~/oqup
+# stop your own oMLX server (menu bar app or the terminal it runs in): the pipeline runs its own
+colima start                                       # Docker for the agent sessions
+```
+
+**3. Start the run.** Choose the level (`4` here) and a run name (`v2` here; a new name for each new quant).
+
+```bash
+cd ~/dev/software-engineering-corpus
+GENERATOR=~/models-out/Qwen3.8-Flash-Next-oQ6e-coder-q8-ngram-mtp \
+caffeinate -dimsu nohup scripts/oqt_pipeline.sh 4 v2 > ~/oqup/oqt-v2.out 2>&1 &
+```
+
+The default budget (1,000,000 generated tokens) takes about half a day: agent sessions (1–2 h), answers (~5–6 h; the log prints an estimate after ~20 answers), then the build (~6 h) and the score. For a quick check of a change first, add `BUDGET_TOKENS=100000` and use a pilot name; its answers are reused by the full run.
+
+**4. Watch it.**
+
+```bash
+scripts/oqt_pipeline.sh status v2                  # stage, time so far, last lines, saved settings
+tail -f ~/oqup/runs/v2/pipeline.log
+```
+
+The first lines of `pipeline.log` show `model:`, `source:`, `answers by:` and `template:`: check them once.
+
+**5. When `status` shows `build running`, stop Docker** (the build needs its memory; the agent sessions are done):
+
+```bash
+colima stop
+```
+
+**6. If it stops** (an error, a kill, a reboot): fix the cause if the log names one, then run `scripts/oqt_pipeline.sh 4 v2` again (no settings needed: they are saved with the run). It continues where it was; finished stages, answers and built layers are kept. Run `colima start` first if the agent stage isn't done yet.
+
+**7. When it's done**, the end of `pipeline.log` shows the M3 score and the comparison with the previous run of the same level. Then:
+
+```bash
+scripts/oqt_pipeline.sh results                    # every quant side by side
+
+colima start                                       # optional, ~1 h: does the quant still solve the agent tasks?
+OQT_AGENT_EVAL=1 scripts/oqt_pipeline.sh 4 v2
+colima stop
+
+ln -s ~/models-out/Qwen3.8-Flash-Next-oQ4t-v2 ~/.omlx/models/      # serve it
+rm -rf ~/oqup/oqt-cache-Qwen3.8-Flash-Next-oQ4-v2                  # once you keep it: frees the layer cache
+```
+
+**Another level from the same answers** (for example a 5-bit): same generator, new run name. Agent sessions and answers come from the cache (the server still loads the generator once, a few minutes), then render, build and score run (~6 h):
+
+```bash
+GENERATOR=~/models-out/Qwen3.8-Flash-Next-oQ6e-coder-q8-ngram-mtp \
+caffeinate -dimsu nohup scripts/oqt_pipeline.sh 5 v2-q5 > ~/oqup/oqt-v2-q5.out 2>&1 &
+```
+
+**A run started with older scripts** (v1 was): let it finish on the scripts it started with, then update (step 1). If you want to run something more on that finished run, add `OQT_KEEP_BUILD=1` so the updated scripts keep its quant instead of rebuilding it (it checks the quant was built from the same calibration text):
+
+```bash
+colima start
+OQT_KEEP_BUILD=1 OQT_AGENT_EVAL=1 scripts/oqt_pipeline.sh 4 v1
+```
 
 ## One-time setup on the 128 GB Mac
 
 ```bash
 cd ~/dev/omlx
-git fetch && git checkout feat/oqt
+git fetch && git checkout feat/oqt && make install
 source .venv-3.12/bin/activate
 python -m pytest tests/test_oqt.py tests/test_oqt_streaming.py -q     # expect "43 passed"
 
 cd ~/dev/software-engineering-corpus
 git pull
-scripts/testing/test_oqt_pipeline.sh                                  # expect "all pipeline checks passed" (~1 min)
+scripts/testing/test_oqt_pipeline.sh                                  # expect "all pipeline checks passed" (a few minutes)
+python3 scripts/testing/test_model_profile.py                         # expect "all model profile checks passed"
 ```
 
 You need three things already on the Mac:
-- the original **Qwen3.8-Flash-Next** weights in the Hugging Face cache (as for the oQe scripts);
-- a **quant of it that you can serve** (the one in `~/.omlx/models`, or any oQ4/oQ5/oQ6 build in `~/models-out`). It writes the answers.
+- the original **Qwen3.8-Flash-Next** weights in the Hugging Face cache (`huggingface-cli download Qwen/Qwen3.8-Flash-Next`);
+- a **quant of it that you can serve** (yours: `~/models-out/Qwen3.8-Flash-Next-oQ6e-coder-q8-ngram-mtp`). It writes the answers.
 - **Docker** for the agent sessions: colima or OrbStack (not Docker Desktop). Set it up once:
 
   ```bash
@@ -36,9 +110,11 @@ You need three things already on the Mac:
 
 ## Build a quant
 
+The step by step above is the usual path. This section explains the choices behind it.
+
 Before you start: **stop your oMLX server** (the pipeline starts its own, then needs all the memory for the build), and `mkdir -p ~/oqup` once (the log files go there).
 
-The source model (the original BF16 weights the quant is matched to) is found by itself: the newest complete, unquantized snapshot of the official `Qwen/Qwen3.8-Flash-Next` in the Hugging Face cache. Fine-tunes in the cache are ignored unless you name them (example 2).
+The source model (the original BF16 weights the quant is matched to) is found by itself: the newest complete, unquantized snapshot of the model profile's official repo (`Qwen/Qwen3.8-Flash-Next`) in the Hugging Face cache. Fine-tunes are ignored unless you name them (example 2). The preflight also renders one thinking, tool-calling conversation through the source's chat template, so a template that doesn't fit stops the run in seconds instead of after the generation.
 
 ### Example 1: the official Qwen3.8-Flash-Next
 
@@ -60,24 +136,25 @@ nohup scripts/oqt_pipeline.sh 4 v1 > ~/oqup/oqt-v1.out 2>&1 &
 
 Results: `~/models-out/Qwen3.8-Flash-Next-oQ4t-pilot`, then `~/models-out/Qwen3.8-Flash-Next-oQ4t-v1`.
 
-### Example 2: an abliterated fine-tune (orcarouter Qwen3.8-Flash-Next-Uncensored)
+### Example 2: a fine-tune of the same model (a variant, e.g. your own uncensored build)
 
-Any fine-tune with the same architecture works. Name its repo with `SOURCE_REPO`, give the run its own name, and let a quant **of that fine-tune** write the answers. The pipeline stops if `GENERATOR` is missing, so the answers never come from the official model by accident. If you have no quant of the fine-tune yet, build a plain oQ5e or oQ6e of it first, the same way you built your current quants.
+A fine-tune is quantized as a **variant**: a suffix added to the model's name. With `OQT_VARIANT=uncensored`, the pipeline works on `Qwen3.8-Flash-Next-uncensored`:
+
+- **its source** is the BF16 folder `~/models-out/Qwen3.8-Flash-Next-uncensored` (a model you made locally), or a Hugging Face repo `<org>/Qwen3.8-Flash-Next-uncensored` in the cache. The name matches without regard to case. If both exist, it stops and asks you to pick one with `SRC=`.
+- **its answers** come from a quant of that fine-tune, `~/models-out/Qwen3.8-Flash-Next-uncensored-oQ<5|6|4|8>...`, never from a quant of the official model. If you have none yet, build a plain oQ5e or oQ6e of it first, the same way you built your current quants.
+- **the result** is `~/models-out/Qwen3.8-Flash-Next-uncensored-oQ4t-<name>`. Its oQ-T cache and M3 reference are kept apart from the official model's.
 
 ```bash
 cd ~/dev/software-engineering-corpus
-SOURCE_REPO=orcarouter/Qwen3.8-Flash-Next-Uncensored \
-GENERATOR=~/models-out/Qwen3.8-Flash-Next-Uncensored-oQ6e \
-BUDGET_TOKENS=100000 \
+OQT_VARIANT=uncensored BUDGET_TOKENS=100000 \
 nohup scripts/oqt_pipeline.sh 4 uncensored-pilot > ~/oqup/oqt-uncensored-pilot.out 2>&1 &
 
 # then the real run
-SOURCE_REPO=orcarouter/Qwen3.8-Flash-Next-Uncensored \
-GENERATOR=~/models-out/Qwen3.8-Flash-Next-Uncensored-oQ6e \
+OQT_VARIANT=uncensored \
 nohup scripts/oqt_pipeline.sh 4 uncensored-v1 > ~/oqup/oqt-uncensored-v1.out 2>&1 &
 ```
 
-Results: `~/models-out/Qwen3.8-Flash-Next-Uncensored-oQ4t-uncensored-pilot`, then `...-oQ4t-uncensored-v1`. Its oQ-T cache and M3 reference are kept apart from the official model's. (`GENERATOR` above is the name your oQ6e build of the fine-tune would get; use the real folder.)
+The variant is saved with the run like any setting. A fine-tune named differently works too: `SOURCE_REPO=orcarouter/Qwen3.8-Flash-Next-Uncensored` (an HF repo) or `SRC=<folder>`, then with an explicit `GENERATOR=<a quant of that fine-tune>`, because nothing else tells which quant belongs to it.
 
 ### What the parts mean
 
@@ -89,6 +166,25 @@ Results: `~/models-out/Qwen3.8-Flash-Next-Uncensored-oQ4t-uncensored-pilot`, the
 - It takes many hours: generating the answers, then building. After about 20 answers the log prints an estimate of the generation time.
 - `SRC=<snapshot dir>` instead of `SOURCE_REPO` points at a source folder directly.
 
+## Models and variants
+
+What the pipeline knows about a model lives in one file, `models/<id>.json`; `scripts/model_profile.py list` shows them. With one profile there, it is used without asking; with several, pick one with `OQT_MODEL=<id>`. A profile holds:
+
+| Field | What it is |
+|---|---|
+| `name`, `architecture`, `official_repo` | how the model's folders are named, the `model_type` its checkpoints must have, and the HF repo of the official source |
+| `requests.thinking_off` / `thinking_on` | the chat-template switches for requests without and with thinking |
+| `requests.effort` | the pipeline's `low`, `medium`, `max` mapped to the model's own `reasoning_effort` names |
+| `requests.sampling` | the model card's recommended sampling |
+| `render.template_kwargs` | what the calibration text is rendered with (thinking kept) |
+| `render.tool_arguments` | `mapping` if the template iterates tool-call arguments as an object (Qwen), `string` if it prints the JSON string |
+
+Editing a profile's request settings reruns the request stages; answers whose requests didn't change come from the cache.
+
+**Adding a model** = a new profile plus oMLX support for its architecture (oQ-T's block walk, routing hooks and loaders live in oMLX). Then a pilot shows the rest: the preflight checks the template, the pilot run every stage.
+
+**Variants** need no file: `OQT_VARIANT=<suffix>` works for any profile (see example 2). The official model and each variant keep separate sources, generators, answers, caches and results.
+
 ## Watch it
 
 ```bash
@@ -96,7 +192,7 @@ scripts/oqt_pipeline.sh status v1          # which stage, how long, last lines
 tail -f ~/oqup/runs/v1/pipeline.log        # one line per stage start/end
 ```
 
-The stages are: `extract` → `derive` → `seed` → `agent` → `generate` → `render` → `build` → `score`.
+The stages are: `preflight` → `extract` → `derive` → `seed` → `agent` → `generate` → `render` → `build` → `score`, then `agent-eval` when asked (`OQT_AGENT_EVAL=1`).
 
 ## Agent sessions and long context
 
@@ -135,7 +231,34 @@ Compare all your quants side by side:
 ~/dev/omlx/.venv-3.12/bin/python scripts/score_vs_bf16.py compare ~/oqup/m3-*.json
 ```
 
-Turn it off with `OQT_M3=0`. Low KL means close to the original; it does not prove the quant solves tasks, so keep looking at the heldout and agent results too.
+Turn it off with `OQT_M3=0`. Low KL means close to the original; it does not prove the quant solves tasks: the agent eval below checks that.
+
+## Does the quant still solve tasks? (agent eval)
+
+The generator already worked every agent task twice for the calibration, and each session's check says whether it solved it. The agent eval has the **quant** do the same: same tasks, same number of sessions, same effort levels, served by the pipeline's own oMLX server in the same Docker sandboxes. Then the two are compared task by task. It runs after the score, only when asked, because it needs Docker again (stopped during the build):
+
+```bash
+colima start
+OQT_AGENT_EVAL=1 scripts/oqt_pipeline.sh 4 v1     # on a finished run: everything else is skipped
+```
+
+The pipeline log then shows:
+
+```
+agent eval: quant solved 49/56 (88%), generator 51/56 (91%) (28 tasks; ...)
+agent eval: held-out tasks (...): quant 4/4, generator 4/4
+agent eval: worse on: rust-ble-irk 2/2->1/2, ...
+```
+
+With 56 sessions, differences under about 10 points are noise; a task lost in both sessions is worth a look. The held-out tasks are the ones whose sessions were not calibrated on. Sessions are cached per build, so the rerun is instant and a rebuilt quant is evaluated afresh. Takes about as long as the agent stage did (40–90 min).
+
+## All runs side by side
+
+```bash
+scripts/oqt_pipeline.sh results
+```
+
+prints one line per quant: size, KL and top-1 on `heldout-written-se` (the same text in every run, so comparable across runs), KL and top-1 on the run's own held-out conversations (different per run: compare those only between quants of one run), routing drift, and the agent eval if it ran. Quants you scored by hand (`~/oqup/m3-*.json`, like your oQ6e) are listed too. Each finished run writes `~/oqup/runs/<name>/result.json`, and the end of its log compares it with the previous run of the same model, variant and level, with a warning if it is worse (KL up more than 10%, top-1 down more than a point, or agent solve rate down more than 10 points).
 
 ## Does the corpus help? Build the comparison arm
 
@@ -156,6 +279,7 @@ Prompts and answers are cached in `~/oqup/prep-cache`, so this run reuses the ge
 - **Stop it any time:** `kill <pid>` (the pid is in `status`) or Ctrl-C. Everything stops cleanly, including the server.
 - **Resume:** `scripts/oqt_pipeline.sh 4 v1` is enough, even after a reboot. A run saves its settings (`GENERATOR`, `BUDGET_TOKENS`, `EFFORT_MIX`, ...) in `~/oqup/runs/v1/settings.env` on its first start and reuses them, so a resume can't silently switch to another generator or budget. `status` shows them. Finished stages are skipped, answers already generated are reused, and the build continues from the last finished layer.
 - **Changed the corpus?** Run it again: only the stages affected by the change are redone.
+- **Updated this repo's scripts after a build?** A change to what shapes the quant (the build settings in `omlx_oqt.sh`, the bundle) rebuilds. If the bundle came out the same, `OQT_KEEP_BUILD=1` keeps the existing quant instead; it checks the quant was built from this exact bundle and refuses otherwise.
 - **Changing a setting of an existing run** has to be on purpose: a different value stops the run with the old and new values, unless you add `OQT_CHANGE_SETTINGS=1` (for example `OQT_CHANGE_SETTINGS=1 BUDGET_TOKENS=2000000 scripts/oqt_pipeline.sh 4 v1` generates only the extra answers, then rebuilds). Or start a new run name. `CONCURRENCY` and `PORT` only change speed and can be changed freely.
 - **During the build** Docker isn't needed (the agent sessions are done and cached): `colima stop` gives its memory to the build. The pipeline warns before the build if Docker is still running, or if `iogpu.wired_limit_mb` leaves macOS less than 12 GB. A build that starves macOS freezes the Mac until the kernel watchdog reboots it; the build then resumes from its last finished layer. Run long builds under `caffeinate -dimsu`.
 
@@ -187,9 +311,11 @@ Put them in front of the command, for example `BUDGET_TOKENS=500000 scripts/oqt_
 
 | Option | Default | Effect |
 |---|---|---|
-| `SOURCE_REPO=<org/name>` | `Qwen/Qwen3.8-Flash-Next` | Quantize a fine-tune of the same architecture (needs `GENERATOR`) |
+| `OQT_MODEL=<id>` | the only profile in `models/` | Which model profile (see Models and variants) |
+| `OQT_VARIANT=<suffix>` | none | A fine-tune named `<name>-<suffix>`, with its own source and generator (example 2) |
+| `SOURCE_REPO=<org/name>` | the profile's official repo | Quantize a fine-tune from this HF repo (needs `GENERATOR`) |
 | `SRC=<dir>` | found in the HF cache | The source snapshot folder, given directly |
-| `GENERATOR=<quant dir>` | the only Qwen quant in `~/.omlx/models`, else the newest oQ5/6/4/8 in `~/models-out` | Which local quant writes the answers (see Build a quant) |
+| `GENERATOR=<quant dir>` | the only quant of the model (or variant) in `~/.omlx/models`, else the newest `<name>[-<variant>]-oQ5/6/4/8...` in `~/models-out` | Which local quant writes the answers (see Build a quant) |
 | `BUDGET_TOKENS` | `1000000` | How much text to generate (thinking included). More = longer run, more calibration data |
 | `EFFORT_MIX` | `max=70,medium=15,low=15` | Thinking levels. `max` is the model's top level, whatever it's called |
 | `CONCURRENCY` | `1` | Parallel requests while generating. 1 uses the least memory; batching can raise total speed, so try 2 if memory allows and compare the pilot's estimate. Changing it never regenerates answers. |
@@ -204,6 +330,8 @@ Put them in front of the command, for example `BUDGET_TOKENS=500000 scripts/oqt_
 | `OQT_HOLDOUT_SHARE` | `0.05` | Share of prompts and agent tasks kept out of the calibration as the M3 eval (`0` = none: then only `heldout-written-se` is scored) |
 | `OQT_M3=0` | on | Skip scoring against the original model |
 | `M3_SEQ`, `M3_MAX_WINDOWS` | `2048`, `64` | M3 window length and windows per heldout file |
+| `OQT_AGENT_EVAL=1` | off | After the score, run the agent tasks with the quant and compare with the generator (needs Docker; not saved with the run) |
+| `OQT_KEEP_BUILD=1` | off | Keep the existing quant when it was built from this exact bundle, instead of rebuilding after a script update (not saved) |
 | `OQT_COMPARE=1` | off | Also build a plain oQe quant from the same text and score both |
 | `OQT_REFINE_EXPERTS=1` | off | Also polish the routed experts' rounding (always on for the other tensors). Better, but about 8 extra hours on Qwen3.8-Flash-Next |
 | `OQT_ROUTING=0` | on | Turn off routing protection |
@@ -222,9 +350,12 @@ The pipeline log says which stage failed and shows the last lines of that stage'
 |---|---|
 | "an oMLX server is running; stop it before the build" | Stop your oMLX server, rerun. |
 | "something already answers on port 8765" | Something else uses that port: stop it, or add `PORT=8790`. |
-| "no quant found to write the answers" | Add `GENERATOR=<path to a Qwen3.8-Flash-Next quant>`. |
-| "no BF16 source found" | The lines above it say why: the official repo is missing or its download is incomplete (run the `huggingface-cli download` it prints), or you meant a fine-tune (add `SOURCE_REPO=<org>/<name>`). `SRC=<snapshot dir>` always works. |
-| "source is not the official Qwen/Qwen3.8-Flash-Next" | Add `GENERATOR=<a quant of that same fine-tune>`. |
+| "no quant found to write the answers" | No folder named `<name>[-<variant>]-oQ<5/6/4/8>...` in `~/models-out`: add `GENERATOR=<path to a quant of the model>`. |
+| "no BF16 source found" | The lines above it say why: the official repo is missing or its download is incomplete (run the `huggingface-cli download` it prints), no folder or repo is named like the variant, or you meant a fine-tune from another repo (add `SOURCE_REPO=<org>/<name>`). `SRC=<snapshot dir>` always works. |
+| "source is not the official ..." | Add `GENERATOR=<a quant of that same fine-tune>`, or name the fine-tune as a variant (`OQT_VARIANT`). |
+| "the source's chat template does not fit profile ..." | The lines above it say what failed to render. Fix the profile's `render` settings (see Models and variants). |
+| "N model profiles in models/" | Several profiles: choose one with `OQT_MODEL=<id>`. |
+| "the agent eval needs Docker" | `colima start`, then rerun the same command. |
 | "this oMLX checkout has no oQ-T" | Redo setup step 1 (`git checkout feat/oqt`). |
 | "run 'v1' was started with other settings" | A resume gave a setting with another value than the run was started with (it lists both). Leave it out to resume as it was, add `OQT_CHANGE_SETTINGS=1` to change it, or use a new run name. |
 | The Mac rebooted during the build (a `watchdog timeout` panic in `/Library/Logs/DiagnosticReports`) | Memory ran out. Stop colima and other apps, check `sysctl iogpu.wired_limit_mb` (0 or at least 16 GB below RAM), then resume: finished layers are reused. If it happens again, `OQT_CHANGE_SETTINGS=1 OQ_SAMPLES=128` halves the build's working memory (the sweep restarts). |
@@ -239,6 +370,8 @@ The pipeline log says which stage failed and shows the last lines of that stage'
 | Pipeline log, state, per-stage logs | `~/oqup/runs/<name>/` |
 | Prompts, answers (cached per request) | `~/oqup/runs/<name>/prep/` |
 | Calibration text used for the build | `~/oqup/runs/<name>/bundle.txt` |
+| Scores of the run (M3, PPL, agent eval, settings) | `~/oqup/runs/<name>/result.json` |
+| The quant's agent sessions | `~/oqup/runs/<name>/agent-eval/` |
 | oQ-T layer cache (delete once the quant is good) | `~/oqup/oqt-cache-<Model>-oQ<level>-<name>/` |
 
 ## Limits of this version
@@ -246,7 +379,7 @@ The pipeline log says which stage failed and shows the last lines of that stage'
 - Resume is per request (answers), per layer (oQ-T sweep) and per output shard (file writing). One step still restarts from its own beginning if interrupted: oMLX's imatrix pass. Its duration on your Mac decides whether it's worth making resumable.
 - Expert tiers (more bits for popular experts) need a change in oMLX's serving code; they will be built only if your builds show a strong tiering signal.
 - The variation pass from `PREP_PLAN.md` is not in yet. Agent tasks cover 7 languages so far (no Spring/Postgres/Kafka services, Godot or embedded builds yet).
-- Not yet: expert tiers (runtime), sealed agent tasks for behavioral scoring.
+- Not yet: expert tiers (runtime). The agent eval reuses the calibration's tasks; only the held-out ones were never calibrated on.
 
 ## Lower-level: build from a text file directly
 

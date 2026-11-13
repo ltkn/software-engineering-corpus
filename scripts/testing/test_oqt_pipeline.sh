@@ -114,6 +114,62 @@ pass "dead server: clear error"
 st="$("$P" status t)"; grep -q "build      done" <<< "$st" || fail "status does not show the finished build"
 pass "status command"
 
+# A build recorded under another digest (as after an edit of the pipeline's scripts):
+# OQT_KEEP_BUILD=1 adopts it when it was built from the same bundle, and refuses otherwise.
+ST="$T/oqup/runs/t/state.tsv"
+awk -F'\t' '$1 != "build" && $1 != "score"' "$ST" > "$ST.tmp" && mv "$ST.tmp" "$ST"
+printf 'build\tolddigest\t-\t0\n' >> "$ST"
+reset; OQT_KEEP_BUILD=1 "$P" 4 t >/dev/null 2>&1 || fail "OQT_KEEP_BUILD run failed"
+grep -q "build: kept" "$T/oqup/runs/t/pipeline.log" || fail "OQT_KEEP_BUILD did not keep the build"
+grep -q "^build	[0-9a-f]" "$ST" && ! grep -q "olddigest" "$ST" || fail "kept build not recorded under the new digest"
+awk -F'\t' '$1 != "build" && $1 != "score"' "$ST" > "$ST.tmp" && mv "$ST.tmp" "$ST"
+BJ="$T/models-out/Qwen3.8-Flash-Next-oQ4t-t/build.json"; cp "$BJ" "$T/build.json.bak"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["corpus_bundle_sha256"]="0"*64; json.dump(d,open(sys.argv[1],"w"))' "$BJ"
+reset; OQT_KEEP_BUILD=1 "$P" 4 t >"$T/keep.out" 2>&1 && fail "OQT_KEEP_BUILD adopted a build of another bundle"
+grep -q "was not built from this bundle" "$T/keep.out" || fail "no clear message when the build cannot be kept"
+cp "$T/build.json.bak" "$BJ"; reset; OQT_KEEP_BUILD=1 "$P" 4 t >/dev/null 2>&1 || fail "OQT_KEEP_BUILD rerun failed"
+pass "OQT_KEEP_BUILD: adopts a build of the same bundle after a script change, refuses another bundle"
+
+reset; OQT_AGENT_EVAL=1 "$P" 4 t >"$T/eval.out" 2>&1 || fail "agent eval run failed (see $T/oqup/runs/t/pipeline.log)"
+[ "$(count derive)" = 0 ] && [ "$(count agent)" -gt 0 ] || fail "agent eval reran other stages or ran no sessions"
+grep -q "agent eval: quant solved" "$T/oqup/runs/t/pipeline.log" || fail "no agent eval comparison in the log"
+python3 - "$T/oqup/runs/t/result.json" <<'PYCHECK' || fail "result.json incomplete"
+import json, sys
+r = json.load(open(sys.argv[1]))
+assert r["model"] == "qwen3.8-flash-next" and r["level"] == 4 and r["variant"] == "", r
+assert r["m3"]["written_kl"] >= 0 and "own_kl" in r["m3"], r["m3"]
+ae = r["agent_eval"]
+assert ae["quant"]["sessions"] == 2 and ae["generator"]["sessions"] == 2, ae
+PYCHECK
+"$P" results | grep -q "Qwen3.8-Flash-Next-oQ4t-t" || fail "results table does not list the run"
+reset; OQT_AGENT_EVAL=1 "$P" 4 t >/dev/null 2>&1 || fail "agent eval rerun failed"
+[ "$(count agent)" = 0 ] || fail "agent eval rerun sent requests"
+pass "agent eval: the quant works the agent tasks, compared with the generator; results table; rerun cached"
+
+# The template check: a profile that does not fit the source's template stops the run in preflight.
+python3 - "$REPO/models/qwen3.8-flash-next.json" "$T/string-args.json" <<'PYCHECK'
+import json, sys
+p = json.load(open(sys.argv[1])); p["render"]["tool_arguments"] = "string"
+json.dump(p, open(sys.argv[2], "w"))
+PYCHECK
+reset; OQT_MODEL="$T/string-args.json" BUDGET_TOKENS=3000 "$P" 4 badtpl >"$T/badtpl.out" 2>&1 && fail "a template mismatch did not stop the run"
+grep -q "does not fit profile" "$T/badtpl.out" || fail "no clear message for a template mismatch"
+[ "$(count generate)" = 0 ] && [ "$(count derive)" = 0 ] || fail "a template mismatch sent requests"
+pass "template check: a profile that does not fit the chat template fails in preflight"
+
+# A variant: a local fine-tune named <name>-uncensored and its own quant write the
+# answers; the official generator is never picked for it.
+cp -R "$SRC" "$T/models-out/Qwen3.8-Flash-Next-uncensored"
+UG="$T/models-out/Qwen3.8-Flash-Next-uncensored-oQ5e-gen"; mkdir -p "$UG"
+echo '{"model_type":"qwen4_exp","quantization":{"bits":5}}' > "$UG/config.json"
+reset; env -u GENERATOR OQT_VARIANT=uncensored BUDGET_TOKENS=3000 "$P" 4 u >/dev/null 2>&1 || fail "variant run failed (see $T/oqup/runs/u)"
+grep -qx "GENERATOR=.*/models-out/Qwen3.8-Flash-Next-uncensored-oQ5e-gen" "$T/oqup/runs/u/settings.env" || fail "variant run did not pick the variant's quant: $(grep GENERATOR= "$T/oqup/runs/u/settings.env")"
+grep -qx "SRC=.*/models-out/Qwen3.8-Flash-Next-uncensored" "$T/oqup/runs/u/settings.env" || fail "variant run did not use the variant's source"
+grep -qx "OQT_VARIANT=uncensored" "$T/oqup/runs/u/settings.env" || fail "variant not saved with the run"
+[ -f "$T/models-out/Qwen3.8-Flash-Next-uncensored-oQ4t-u/oqt_report.json" ] || fail "variant quant not named after the variant"
+reset; env -u GENERATOR "$P" 4 u >/dev/null 2>&1 && [ "$(count generate)" = 0 ] || fail "variant resume did not reuse its settings"
+pass "variant: own source, own generator, own output name; resumes with its settings"
+
 GJ="$T/oqup/runs/t/prep/answers/Qwen3.8-Flash-Next-oQ5e-gen/generate-profile.json"
 python3 - "$GJ" "$T/oqup/runs/t/prep/seed_prompts.jsonl" <<'PYCHECK' || fail "profile mix or tool calls missing"
 import json, sys

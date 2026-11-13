@@ -53,11 +53,11 @@ Format: plain blocks separated by blank-line `---` blank-line. No frontmatter or
 
 Security is cross-cutting: `11` (@PreAuthorize, ownership, JWT, CSRF/CORS), `12` (roles/GRANT/RLS, SECURITY DEFINER, search_path, params), `13` (TLS/SASL/ACLs), `16` (XSS, token storage, CSP), `14` (BOLA/BFLA, auth, SSRF, resource limits). `21` spans Linux, Docker, Nginx, CI/CD, K8s (full-stack ops). `31` is the attacker's side of the same estate — technique, payload, chain, exfil channel, and the residue each move leaves; `06` keeps the mechanism, `08` keeps the probe. The global Realism rule in SPEC.md replaced the old "defensive only" bans: payloads appear raw and valid, tools are named, the register is a real debrief, not a hedge.
 
-Weights (default): ~65–70% stack, ~20% thinking (01–05), ~10% finance+anchor. The security band (06–09 plus 31) holds 18%, with `31` funded inside the band: 06 3.5, 07 5.0, 08 3.5, 09 3.0, 31 3.0. Bundle target ~200–250k tokens. Counts in root `manifest.json`.
+Weights (default): ~65–70% stack, ~20% thinking (01–05), ~10% finance+anchor. The security band (06–09 plus 31) holds 18%, with `31` funded inside the band: 06 3.5, 07 5.0, 08 3.5, 09 3.0, 31 3.0. Under oQ-T a weight scales how many answers a file's prompts get; the generation budget sets the volume. Block counts and weights in root `manifest.json`.
 
 ## oQ-T quants — one command
 
-`scripts/oqt_pipeline.sh 4 v1` runs everything on the 128 GB Mac: your local model answers the corpus prompts, the answers become the calibration text, and an oQ-T quant of Qwen3.8-Flash-Next is built from them (streamed, idempotent, resumable). Setup, watching, options and troubleshooting: **[OQT.md](OQT.md)**.
+`scripts/oqt_pipeline.sh 4 v1` runs everything on the 128 GB Mac: your local model answers the corpus prompts, the answers become the calibration text, and an oQ-T quant of Qwen3.8-Flash-Next (or a fine-tune of it) is built from them (streamed, idempotent, resumable). Step-by-step instructions for the 128 GB Mac, setup, options and troubleshooting: **[OQT.md](OQT.md)**. Models are described by profiles in `models/`; a fine-tune is a variant (`OQT_VARIANT=uncensored`). `scripts/oqt_pipeline.sh results` compares every quant.
 
 ## Layout
 
@@ -68,14 +68,15 @@ Weights (default): ~65–70% stack, ~20% thinking (01–05), ~10% finance+anchor
 ├── agent_tasks/   # coding-agent tasks and their Docker sandbox images (oQ-T)
 ├── eval/          # heldout-written-se.txt: independent written SE text for M3 and PPL (the other
 │                  # heldouts are the model's own held-out answers, made per run)
-├── manifest.json  # tokens, weights per file
+├── models/        # one profile per model: architecture, official repo, request and template settings
+├── manifest.json  # blocks and sampling shares per corpus file
 ├── OQT.md         # oQ-T pipeline: setup, run, options, troubleshooting
 ├── PREP_PLAN.md   # design of the oQ-T calibration data
 ├── SPEC.md        # agreed scope per file
 ├── TODO.md        # next high-level steps
-├── AUDIT.md       # per-file code-forward audit
 ├── scripts/       # oqt_pipeline.sh, omlx_oqt.sh, prep_calibration.py, agent_harness.py,
-│                  # score_vs_bf16.py, ppl_heldout.py; corpus tools (lints, audits)
+│                  # model_profile.py, score_vs_bf16.py, ppl_heldout.py, results.py;
+│                  # corpus lints (lint_format, lint_duplicates, recompute_gate); testing/
 ├── README.md
 └── .gitignore
 ```

@@ -3,6 +3,9 @@
 
 Implements step 1 of PREP_PLAN.md (§2, §4 stages 1-3):
 
+  check     Render one tool-calling, thinking conversation through the source
+            model's chat template with the model profile's settings, so a
+            mismatch fails in seconds (oMLX venv python).
   extract   Split calibration/*.txt into blocks, classify every block with the
             per-file rule table below, and write the rule-made prompts.
             Exits non-zero if any block is unaccounted for.
@@ -30,7 +33,10 @@ Outputs go to <out>/ (default ~/oqup/prep/<run>/):
                   rerun only asks for what changed
   report-step1.md per-file accounting and derive results
 
-Standard library only; Python 3.11+.
+Request and template settings come from the model's profile, models/<id>.json
+(--model-profile, or the profile whose name starts the served model's name).
+
+Standard library only (render and check need transformers); Python 3.11+.
 
 Examples:
   python3 scripts/prep_calibration.py extract --run pilot
@@ -461,32 +467,22 @@ DERIVE_SYSTEM = (
     "or situation the way a real developer would. No preamble, no quotes, no headings."
 )
 
-# Per-family request settings. 'thinking_off' is merged into chat_template_kwargs.
-# Unknown families fail loudly instead of guessing (PREP_PLAN.md §4a).
-FAMILIES = {
-    "qwen": {
-        "thinking_off": {"enable_thinking": False},
-        "thinking_on": {"enable_thinking": True},
-        # Generic level -> the model's own name (Qwen3.8-Flash-Next card:
-        # low / medium / xhigh; xhigh is its single top level).
-        "effort": {"low": "low", "medium": "medium", "max": "xhigh"},
-        "sampling": {"temperature": 1.0, "top_p": 0.95, "top_k": 20},
-        "render_kwargs": {"enable_thinking": True, "preserve_thinking": True},
-    },
-}
-
-
-def family_of(model: str, override: str | None) -> str:
+def model_profile(model: str, override: str | None) -> dict:
+    """Request settings for the served model, from models/<id>.json (see
+    scripts/model_profile.py). Without --model-profile, the profile whose name
+    starts the served model's name; unknown models fail loudly instead of guessing."""
+    import model_profile as mp
     if override:
-        fam = override
+        prof = mp.load(override)
     else:
-        low = model.lower()
-        fam = "qwen" if "qwen" in low else ""
-    if fam not in FAMILIES:
-        raise SystemExit(
-            f"unknown model family for {model!r}; pass --family one of {sorted(FAMILIES)} "
-            "or add the family's thinking-off settings to FAMILIES")
-    return fam
+        hits = [prof for prof in map(mp.load, map(str, mp.profile_paths()))
+                if model.lower().startswith(prof["name"].lower())]
+        if len(hits) != 1:
+            raise SystemExit(f"no model profile matches {model!r}; pass --model-profile <id> "
+                             f"(models/: {', '.join(p.stem for p in mp.profile_paths())})")
+        prof = hits[0]
+    return {**prof["requests"], "id": prof["id"], "render_kwargs": prof["render"].get("template_kwargs", {}),
+            "tool_arguments": prof["render"].get("tool_arguments", "mapping")}
 
 
 def words(text: str) -> list[str]:
@@ -549,7 +545,7 @@ def chat(server: str, api_key: str | None, payload: dict, timeout: float) -> str
     return strip_think(body["choices"][0]["message"].get("content") or "")
 
 
-def derive_one(row: dict, spec: Spec, args, fam: str, cache_dir: Path) -> dict:
+def derive_one(row: dict, spec: Spec, args, prof: dict, cache_dir: Path) -> dict:
     hint = f"Topic: {spec.ctx}." if spec.ctx else ""
     if spec.hint:
         hint += f" {spec.hint}"
@@ -564,7 +560,7 @@ def derive_one(row: dict, spec: Spec, args, fam: str, cache_dir: Path) -> dict:
             ],
             "temperature": temp,
             "max_tokens": 400,
-            "chat_template_kwargs": FAMILIES[fam]["thinking_off"],
+            "chat_template_kwargs": prof["thinking_off"],
         }
         key = sha(json.dumps([DERIVE_VERSION, row["sha"], payload], sort_keys=True))
         cpath = cache_dir / f"{key}.json"
@@ -602,21 +598,21 @@ def do_derive(out: Path, args, only: set[str] | None) -> int:
     if not rows:
         print("nothing to derive (run extract first?)")
         return 0
-    fam = family_of(args.model, args.family)
+    prof = model_profile(args.model, args.model_profile)
     cache_dir = cache_root(out, args) / "cache" / "derive"
     cache_dir.mkdir(parents=True, exist_ok=True)
     shares = load_shares()
 
     if args.dry_run:
-        r = derive_one(rows[0], SPECS[rows[0]["file"]], args, fam, cache_dir)
-        print(f"dry run: {len(rows)} derive requests to {args.server} as {args.model} ({fam})")
+        r = derive_one(rows[0], SPECS[rows[0]["file"]], args, prof, cache_dir)
+        print(f"dry run: {len(rows)} derive requests to {args.server} as {args.model} ({prof['id']})")
         print(json.dumps(r.get("payload", r), ensure_ascii=False, indent=1)[:2500])
         return 0
 
     results = []
     t0 = time.time()
     with cf.ThreadPoolExecutor(max_workers=args.concurrency) as ex:
-        futs = {ex.submit(derive_one, r, SPECS[r["file"]], args, fam, cache_dir): r for r in rows}
+        futs = {ex.submit(derive_one, r, SPECS[r["file"]], args, prof, cache_dir): r for r in rows}
         for i, fut in enumerate(cf.as_completed(futs), 1):
             res = fut.result()
             res["row"] = futs[fut]
@@ -720,7 +716,7 @@ def _normalize_tools(tools) -> list[dict] | None:
     return out
 
 
-def seed_one(seed: dict, args, fam: str, cache_dir: Path) -> dict:
+def seed_one(seed: dict, args, prof: dict, cache_dir: Path) -> dict:
     n = args.prompts_per_seed
     system = SEED_SYSTEM.format(n=n) + (SEED_TOOLS.format() if seed["tools"] else "")
     user_msg = f"Topic: {seed['desc']}."
@@ -730,7 +726,7 @@ def seed_one(seed: dict, args, fam: str, cache_dir: Path) -> dict:
                "messages": [{"role": "system", "content": system},
                             {"role": "user", "content": user_msg}],
                "temperature": 0.9, "max_tokens": 6000,
-               "chat_template_kwargs": FAMILIES[fam]["thinking_off"]}
+               "chat_template_kwargs": prof["thinking_off"]}
     key = sha(json.dumps([SEED_VERSION, seed, n, payload], sort_keys=True))
     cpath = cache_dir / f"{key}.json"
     if cpath.exists():
@@ -771,14 +767,14 @@ def seed_one(seed: dict, args, fam: str, cache_dir: Path) -> dict:
 
 
 def do_seed(out: Path, args) -> int:
-    fam = family_of(args.model, args.family)
+    prof = model_profile(args.model, args.model_profile)
     cache_dir = cache_root(out, args) / "cache" / "seed"
     cache_dir.mkdir(parents=True, exist_ok=True)
     seeds = [s for g in SEED_GROUPS for s in load_seeds(g)]
     rows, failed = [], []
     t0 = time.time()
     with cf.ThreadPoolExecutor(max_workers=args.concurrency) as ex:
-        for i, rec in enumerate(ex.map(lambda sd: seed_one(sd, args, fam, cache_dir), seeds), 1):
+        for i, rec in enumerate(ex.map(lambda sd: seed_one(sd, args, prof, cache_dir), seeds), 1):
             sd = rec["seed"]
             if not rec["prompts"]:
                 failed.append(f"{sd['group']}:{sd['id']} ({rec.get('error')})")
@@ -918,9 +914,9 @@ def verdict(content: str, reasoning: str, finish: str | None, tool_calls=None) -
     return True, "ok"
 
 
-def generate_one(item: dict, args, fam: str, cache_dir: Path) -> dict:
+def generate_one(item: dict, args, prof: dict, cache_dir: Path) -> dict:
     p = item["prompt"]
-    f = FAMILIES[fam]
+    f = prof
     payload = {
         "model": args.model,
         "messages": p["messages"],
@@ -984,7 +980,7 @@ def answers_dir(out: Path, args) -> Path:
     return out / "answers" / model_tag(args.model)
 
 
-def _run_group(group: str, items: list[dict], budget: int, args, fam: str, cache_dir: Path,
+def _run_group(group: str, items: list[dict], budget: int, args, prof: dict, cache_dir: Path,
                clock: dict) -> tuple[list[dict], int]:
     """Generate one prompt group up to its token budget (shared progress clock)."""
     results: list[dict] = []
@@ -1001,7 +997,7 @@ def _run_group(group: str, items: list[dict], budget: int, args, fam: str, cache
                 return False
             if clock["fresh_start"] is None:
                 clock["fresh_start"] = time.time()
-            pending[ex.submit(generate_one, nxt, args, fam, cache_dir)] = nxt
+            pending[ex.submit(generate_one, nxt, args, prof, cache_dir)] = nxt
             return True
 
         for _ in range(args.concurrency):
@@ -1051,7 +1047,7 @@ def do_generate(out: Path, args) -> int:
     if not prompts:
         print("no prompts (run extract, derive and seed first)", file=sys.stderr)
         return 1
-    fam = family_of(args.model, args.family)
+    prof = model_profile(args.model, args.model_profile)
     adir = answers_dir(out, args)
     adir.mkdir(parents=True, exist_ok=True)
     cache_dir = cache_root(out, args) / "answers" / model_tag(args.model) / "cache"
@@ -1072,7 +1068,7 @@ def do_generate(out: Path, args) -> int:
     group_tokens = {}
     for g, frac in mix.items():
         items = plan_requests(groups[g], args)
-        res, tok = _run_group(g, items, int(round(budget * frac)), args, fam, cache_dir, clock)
+        res, tok = _run_group(g, items, int(round(budget * frac)), args, prof, cache_dir, clock)
         results += res
         group_tokens[g] = tok
 
@@ -1114,8 +1110,8 @@ def do_agent(out: Path, args) -> int:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import agent_harness as ah
 
-    fam = family_of(args.model, args.family)
-    f = FAMILIES[fam]
+    prof = model_profile(args.model, args.model_profile)
+    f = prof
     tasks_dir = Path(args.agent_tasks).expanduser() if args.agent_tasks else AGENT_TASKS_DIR
     tasks = [ah.load_task(d) for d in sorted(tasks_dir.iterdir()) if (d / "task.json").exists()]
     tasks = [t for t in tasks if not t.get("holdout")]
@@ -1260,9 +1256,75 @@ def split_holdout(rows: list[dict], unit_of, group_of, share: float, seed) -> tu
     return keep, held
 
 
+def make_renderer(source: str, prof: dict):
+    """(tokenizer, render) where render(messages, tools) -> text in the source
+    model's own chat template with the profile's settings; (None, None) when the
+    source has no chat template."""
+    from transformers import AutoTokenizer
+    tok = AutoTokenizer.from_pretrained(source)
+    if not getattr(tok, "chat_template", None):
+        print(f"{source} has no chat template", file=sys.stderr)
+        return None, None
+    kwargs = prof["render_kwargs"]
+    fix = template_messages if prof["tool_arguments"] == "mapping" else (lambda m: m)
+
+    def render(messages, tools):
+        extra = {"tools": tools} if tools else {}
+        return tok.apply_chat_template(fix(messages), tokenize=False,
+                                       add_generation_prompt=False, **extra, **kwargs)
+    return tok, render
+
+
+def do_check(args) -> int:
+    """Render one conversation shaped like the pipeline's (thinking, a tool call
+    with JSON-string arguments as the API returns them, a tool result) through
+    the source's chat template: a template the profile does not fit fails here,
+    in seconds, instead of after hours of generation."""
+    try:
+        import transformers  # noqa: F401
+    except ImportError:
+        print("check needs `transformers`: run it with the oMLX venv python", file=sys.stderr)
+        return 1
+    if not args.source:
+        print("check needs --source <source model dir>", file=sys.stderr)
+        return 1
+    prof = model_profile(args.model or "", args.model_profile)
+    tools = [{"type": "function", "function": {
+        "name": "read_file", "description": "read a file",
+        "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}}]
+    messages = [
+        {"role": "system", "content": "you are a coding assistant."},
+        {"role": "user", "content": "what does setup.py do?"},
+        {"role": "assistant", "content": "", "reasoning_content": "i should read checkmarkthinking first.",
+         "tool_calls": [{"id": "c1", "type": "function",
+                         "function": {"name": "read_file", "arguments": json.dumps({"path": "checkmarkpath"})}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "checkmarkresult"},
+        {"role": "assistant", "content": "checkmarkanswer", "reasoning_content": "checkmarklast"},
+    ]
+    try:
+        _, render = make_renderer(args.source, prof)
+        text = render(messages, tools) if render else None
+    except Exception as e:  # the template rejected the conversation
+        print(f"check: the chat template of {args.source} fails on a tool-call conversation "
+              f"with profile {prof['id']}: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+    if text is None:
+        return 1
+    missing = [m for m in ("checkmarkthinking", "checkmarkpath", "checkmarkresult", "checkmarkanswer")
+               if m not in text]
+    if missing:
+        print(f"check: the rendered conversation lost {missing} (profile {prof['id']}: "
+              "render.template_kwargs must keep thinking, render.tool_arguments must fit the template)",
+              file=sys.stderr)
+        return 1
+    print(f"check: chat template renders thinking, tool calls and tool results "
+          f"({len(text):,} chars, profile {prof['id']})")
+    return 0
+
+
 def do_render(out: Path, args) -> int:
     try:
-        from transformers import AutoTokenizer
+        import transformers  # noqa: F401
     except ImportError:
         print("render needs `transformers`: run it with the oMLX venv python", file=sys.stderr)
         return 1
@@ -1285,17 +1347,9 @@ def do_render(out: Path, args) -> int:
     sessions, held_agent = split_holdout(sessions, lambda r: r["task"], lambda r: "agent",
                                          args.holdout_share, args.seed)
     held.update(held_agent)
-    tok = AutoTokenizer.from_pretrained(args.source)
-    if not getattr(tok, "chat_template", None):
-        print(f"{args.source} has no chat template", file=sys.stderr)
+    tok, render = make_renderer(args.source, model_profile(args.model, args.model_profile))
+    if render is None:
         return 1
-    fam = family_of(args.model, args.family)
-    kwargs = FAMILIES[fam]["render_kwargs"]
-
-    def render(messages, tools):
-        extra = {"tools": tools} if tools else {}
-        return tok.apply_chat_template(template_messages(messages), tokenize=False,
-                                       add_generation_prompt=False, **extra, **kwargs)
 
     mode = "template"
     texts = []
@@ -1390,7 +1444,8 @@ def do_render(out: Path, args) -> int:
         hpath = hdir / f"heldout-oqt-{g}.txt"
         hpath.write_text(text, encoding="utf-8")
         heldout[g] = {"file": str(hpath), "items": len(rows),
-                      "tokens": len(tok(text, add_special_tokens=False)["input_ids"])}
+                      "tokens": len(tok(text, add_special_tokens=False)["input_ids"]),
+                      "units": sorted({r["task"] if g == "agent" else r["id"] for r in rows})}
 
     specials = set(getattr(tok, "all_special_tokens", []) or [])
     for t in (getattr(tok, "added_tokens_decoder", {}) or {}).values():
@@ -1481,12 +1536,12 @@ def write_report(out: Path, table, problems, derive_results) -> None:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("stage", choices=["extract", "derive", "seed", "agent", "generate", "render", "all"])
+    ap.add_argument("stage", choices=["check", "extract", "derive", "seed", "agent", "generate", "render", "all"])
     ap.add_argument("--run", default="default", help="run name (output folder)")
     ap.add_argument("--out", help="output folder (default ~/oqup/prep/<run>)")
     ap.add_argument("--only", help="comma-separated file stems to process")
     ap.add_argument("--model", help="served model name (derive)")
-    ap.add_argument("--family", help=f"model family override: {sorted(FAMILIES)}")
+    ap.add_argument("--model-profile", help="models/<id>.json profile id or path (default: matched by --model)")
     ap.add_argument("--server", default=os.environ.get("OMLX_SERVER", "http://127.0.0.1:8000"))
     ap.add_argument("--api-key", default=os.environ.get("OMLX_API_KEY"))
     ap.add_argument("--concurrency", type=int, default=4)
@@ -1534,6 +1589,8 @@ def main(argv=None) -> int:
     only = {x.strip() for x in args.only.split(",")} if args.only else None
 
     rc = 0
+    if args.stage == "check":
+        return do_check(args)
     if args.stage in ("extract", "all"):
         rc = do_extract(out, only)
         if rc:

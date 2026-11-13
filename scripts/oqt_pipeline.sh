@@ -3,6 +3,7 @@
 #
 #   scripts/oqt_pipeline.sh <level> <name>     run it (rerun the same command to resume)
 #   scripts/oqt_pipeline.sh status <name>      where a run is
+#   scripts/oqt_pipeline.sh results            every run's scores side by side
 #
 #   scripts/oqt_pipeline.sh 4 v1               -> ~/models-out/<Model>-oQ4t-v1
 #
@@ -16,6 +17,8 @@
 #   render     answers -> one calibration file in the chat template
 #   build      oQ-T quant from that file                      (streamed, hours)
 #   score      heldout scores
+#   agent-eval the quant works the agent tasks; solve rate vs the generator's
+#              (only with OQT_AGENT_EVAL=1; needs Docker again)
 #
 # Idempotent: a stage reruns only when its inputs changed (corpus, settings,
 # models), and then everything after it reruns too. Resumable: an interrupted
@@ -23,15 +26,28 @@
 # sweep per layer).
 #
 # Options (environment variables, put them in front of the command):
-#   GENERATOR=<quant dir>  model that writes the answers (default: the Qwen
-#                          quant in ~/.omlx/models, else the newest oQ5, oQ6,
-#                          oQ4 or oQ8 quant in ~/models-out, in that order)
+#   OQT_MODEL=<id>         model profile in models/<id>.json (default: the only one;
+#                          scripts/model_profile.py list shows them)
+#   OQT_VARIANT=<suffix>   a fine-tune named <name>-<suffix>, e.g. uncensored ->
+#                          Qwen3.8-Flash-Next-uncensored: its BF16 source is the
+#                          folder of that name in ~/models-out (or an HF repo
+#                          <org>/<that name>), its answers come from a quant named
+#                          <that name>-oQ<level>...
+#   GENERATOR=<quant dir>  model that writes the answers (default: the one quant
+#                          of the model in ~/.omlx/models, else the newest oQ5,
+#                          oQ6, oQ4 or oQ8 quant named <name>[-<variant>]-oQ... in
+#                          ~/models-out, in that order)
 #   SRC=<dir>              BF16 source checkpoint (default: the newest complete,
-#                          unquantized snapshot of Qwen/Qwen3.8-Flash-Next in the
-#                          HF cache; fine-tunes from other repos are never picked)
-#   SOURCE_REPO=<org/name> quantize a fine-tune of the same architecture instead,
-#                          e.g. orcarouter/Qwen3.8-Flash-Next-Uncensored (then
-#                          GENERATOR must be a quant of that fine-tune)
+#                          unquantized snapshot of the profile's official repo in
+#                          the HF cache; fine-tunes are never picked by accident)
+#   SOURCE_REPO=<org/name> quantize a fine-tune from this HF repo instead, e.g.
+#                          orcarouter/Qwen3.8-Flash-Next-Uncensored (then GENERATOR
+#                          must be a quant of that fine-tune)
+#   OQT_KEEP_BUILD=1       keep the existing quant if it was built from this exact
+#                          bundle (after an update of these scripts; not saved)
+#   OQT_AGENT_EVAL=1       after the score, run the agent tasks with the quant
+#                          (Docker needed; not saved with the run, add it to a
+#                          finished run's command to evaluate it)
 #   BUDGET_TOKENS=1000000  how much text to generate (thinking included)
 #   EFFORT_MIX=max=70,medium=15,low=15
 #   CONCURRENCY=1          parallel requests to the server (1: one request at a
@@ -59,7 +75,7 @@ VENV_PY="${VENV_PY:-$OMLX_REPO/.venv-3.12/bin/python}"
 OQUP="${OQUP:-$HOME/oqup}"
 MODELS_OUT="${MODELS_OUT:-$HOME/models-out}"
 HUB="${HF_HUB_CACHE:-$HOME/.cache/huggingface/hub}"
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/find_source.sh"
+MP="$CORPUS_REPO/scripts/model_profile.py"
 
 # A run's settings are saved on its first start (runs/<name>/settings.env) and
 # reused on every resume, so "scripts/oqt_pipeline.sh 4 v1" alone continues the
@@ -67,7 +83,7 @@ HUB="${HF_HUB_CACHE:-$HOME/.cache/huggingface/hub}"
 # different value stops the run, unless OQT_CHANGE_SETTINGS=1 (the new value is
 # saved, and the stages it affects rerun). Speed-only knobs (CONCURRENCY, PORT,
 # the sandbox kind) are not saved and can change freely.
-SETTINGS=(GENERATOR SRC SOURCE_REPO BUDGET_TOKENS EFFORT_MIX MAX_TOKENS OQT_PROFILE OQT_MIX
+SETTINGS=(OQT_MODEL OQT_VARIANT GENERATOR SRC SOURCE_REPO BUDGET_TOKENS EFFORT_MIX MAX_TOKENS OQT_PROFILE OQT_MIX
           PROMPTS_PER_SEED OQT_AGENT AGENT_SAMPLES OQT_AGENT_TASKS OQT_LONG_SHARE OQT_LONG_LEN OQT_HOLDOUT_SHARE
           OQ_SAMPLES OQ_SEQLEN NGRAM_BITS PRESERVE_MTP OQT_REFINE_EXPERTS OQT_ROUTING
           OQT_ROUTING_THRESHOLD OQT_ROUTING_MAX_LAYERS)
@@ -116,7 +132,7 @@ EFFORT_MIX="${EFFORT_MIX:-max=70,medium=15,low=15}"
 CONCURRENCY="${CONCURRENCY:-1}"
 AGENT_CONCURRENCY="${AGENT_CONCURRENCY:-$CONCURRENCY}"
 PREP="$CORPUS_REPO/scripts/prep_calibration.py"
-STAGES=(preflight extract derive seed agent generate render build score)
+STAGES=(preflight extract derive seed agent generate render build score agent-eval)
 OQT_AGENT="${OQT_AGENT:-1}"
 AGENT_SAMPLES="${AGENT_SAMPLES:-2}"
 OQT_LONG_SHARE="${OQT_LONG_SHARE:-0.25}"
@@ -138,12 +154,15 @@ print(1 if any(w.get(g, 0) > 0 for g in ("generic", "broad") if g in groups) els
 ' "$OQT_MIX" "$OQT_PROFILE")"
 export OMLX_REPO VENV_PY OQUP MODELS_OUT
 
-usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 hash_of() { shasum -a 256 | awk '{print substr($1, 1, 16)}'; }
 
 # ----------------------------------------------------------------- status
 CACHE_ROOT="$OQUP/prep-cache"
+if [ "${1:-}" = "results" ]; then
+    exec python3 "$CORPUS_REPO/scripts/results.py" table --oqup "$OQUP"
+fi
 if [ "${1:-}" = "status" ]; then
     NAME="${2:-}"; [ -n "$NAME" ] || usage
     RUN="$OQUP/runs/$NAME"
@@ -173,7 +192,7 @@ if [ "${1:-}" = "status" ]; then
     fi
     if [ -f "$RUN/settings.env" ]; then
         echo; echo "settings (reused on resume):"
-        grep -E '^(GENERATOR|SRC|SOURCE_REPO|BUDGET_TOKENS|EFFORT_MIX|OQT_PROFILE|OQT_MIX)=.' "$RUN/settings.env" | sed 's/^/  /'
+        grep -E '^(OQT_MODEL|OQT_VARIANT|GENERATOR|SRC|SOURCE_REPO|BUDGET_TOKENS|EFFORT_MIX|OQT_PROFILE|OQT_MIX)=.' "$RUN/settings.env" | sed 's/^/  /'
     fi
     echo; echo "pipeline log: $RUN/pipeline.log"
     exit 0
@@ -340,51 +359,58 @@ log "=== oQ-T pipeline: oQ${LEVEL}t '$NAME' ==="
     || die "this oMLX checkout has no oQ-T. In $OMLX_REPO run: git fetch && git checkout feat/oqt"
 command -v perl >/dev/null || die "perl is needed for log timestamps"
 
-if [ -z "${SRC:-}" ]; then
+# The model profile (models/<id>.json) and, for a fine-tune, its variant suffix.
+# mp <command> ...: model_profile.py with its explanations in the pipeline log.
+mp() {
+    local why rc=0 outp
     why="$(mktemp)"
-    SRC="$(find_bf16_source "$HUB" "${SOURCE_REPO:-}" 2>"$why")" || { while IFS= read -r l; do log "$l"; done < "$why"; rm -f "$why"; die "no BF16 source found"; }
+    outp="$(python3 "$MP" "$@" 2>"$why")" || rc=$?
+    while IFS= read -r l; do log "$l" >&2; done < "$why"
     rm -f "$why"
+    [ "$rc" = 0 ] && printf '%s\n' "$outp"
+    return "$rc"
+}
+INFO="$(mp info ${OQT_MODEL:+--model "$OQT_MODEL"} ${OQT_VARIANT:+--variant "$OQT_VARIANT"})" || die "no model profile"
+eval "$INFO"
+OQT_MODEL="${OQT_MODEL:-$MODEL_ID}"; OQT_VARIANT="${OQT_VARIANT:-}"
+export OQT_MODEL OQT_VARIANT
+
+if [ -z "${SRC:-}" ]; then
+    SRC="$(mp source --model "$MODEL_PROFILE" ${OQT_VARIANT:+--variant "$OQT_VARIANT"} \
+        ${SOURCE_REPO:+--repo "$SOURCE_REPO"} --hub "$HUB" --search "$MODELS_OUT")" || die "no BF16 source found"
 fi
-[ -f "$SRC/config.json" ] || die "no config.json in SRC=$SRC"
-grep -q 'qwen4_exp' "$SRC/config.json" \
-    || die "SRC=$SRC is not a Qwen3.8-Flash-Next (qwen4_exp) checkpoint, the only architecture oQ-T supports"
+mp check-source --model "$MODEL_PROFILE" "$SRC" >/dev/null \
+    || die "SRC=$SRC is not a complete BF16 $MODEL_NAME ($MODEL_ARCH) checkpoint"
 export SRC
 
-is_quant_of_family() { # <dir>: a quantized qwen4_exp model dir
-    [ -f "$1/config.json" ] && grep -q 'qwen4_exp' "$1/config.json" && grep -q '"quantization' "$1/config.json"
-}
-# The answers must come from the model being quantized: for anything but the official
-# source, the generator cannot be guessed from the folders.
+# The answers must come from the model being quantized. The official source and a
+# named variant have a naming rule for their quants (<name>[-<variant>]-oQ...); any
+# other source (SRC=, SOURCE_REPO=) needs the generator named explicitly.
 case "$SRC" in
-    */models--Qwen--Qwen3.8-Flash-Next/snapshots/*) ;;
-    *) [ -n "${GENERATOR:-}" ] || die "source is not the official Qwen/Qwen3.8-Flash-Next ($SRC): pass GENERATOR=<a quant of this same model>, so the answers come from it" ;;
+    */models--"${MODEL_REPO//\//--}"/snapshots/*) ;;
+    *) [ -n "${GENERATOR:-}" ] || [ -n "$OQT_VARIANT" ] \
+        || die "source is not the official $MODEL_REPO ($SRC): pass GENERATOR=<a quant of this same model> so the answers come from it, or name the fine-tune with OQT_VARIANT=<suffix>" ;;
 esac
 if [ -z "${GENERATOR:-}" ]; then
-    CANDS=""
-    for d in "$HOME/.omlx/models"/*; do
-        [ -e "$d" ] || continue
-        r="$(cd "$d" 2>/dev/null && pwd -P)" || continue
-        is_quant_of_family "$r" && CANDS="$CANDS${CANDS:+$'\n'}$r"
-    done
-    n=0; [ -n "$CANDS" ] && n=$(printf '%s\n' "$CANDS" | sort -u | wc -l | tr -d ' ')
-    if [ "$n" = "1" ]; then
-        GENERATOR="$(printf '%s\n' "$CANDS" | head -1)"
-    else
-        for lvl in 5 6 4 8; do
-            for d in $(ls -td "$MODELS_OUT"/*-oQ${lvl}e-* "$MODELS_OUT"/*-oQ${lvl}-* 2>/dev/null); do
-                case "$d" in *-cmp|*oQ*t-*) continue ;; esac
-                is_quant_of_family "$d" && { GENERATOR="$d"; break 2; }
-            done
-        done
-    fi
-    [ -n "${GENERATOR:-}" ] || die "no quant found to write the answers; pass GENERATOR=<quant dir>"
+    GENERATOR="$(mp generator --model "$MODEL_PROFILE" ${OQT_VARIANT:+--variant "$OQT_VARIANT"} \
+        --search "$MODELS_OUT" --candidates "$HOME/.omlx/models"/*)" || die "no quant found to write the answers"
 fi
-is_quant_of_family "$GENERATOR" || die "GENERATOR=$GENERATOR is not a quantized Qwen3.8-Flash-Next dir"
+mp check-quant --model "$MODEL_PROFILE" "$GENERATOR" >/dev/null \
+    || die "GENERATOR=$GENERATOR is not a quantized $MODEL_NAME"
+case "$SRC" in
+    *models--*) _t="${SRC%%/snapshots/*}"; SRC_TAG="${_t##*--}" ;;
+    *) SRC_TAG="$(basename "$SRC")" ;;
+esac
+case "$(basename "$GENERATOR" | tr '[:upper:]' '[:lower:]')" in
+    "$(printf '%s' "$SRC_TAG" | tr '[:upper:]' '[:lower:]')"-oq*) ;;
+    *) log "WARNING: GENERATOR $(basename "$GENERATOR") is not named like a quant of $SRC_TAG ($SRC_TAG-oQ...); make sure its answers come from the model being quantized" ;;
+esac
 GEN_ID="$(basename "$GENERATOR")"
 save_settings
 
 ram_gb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1073741824 ))
 free_gb=$(df -g "$OQUP" 2>/dev/null | awk 'NR==2 {print $4}')
+log "model     : $MODEL_NAME${OQT_VARIANT:+, variant $OQT_VARIANT} (profile $MODEL_PROFILE)"
 log "source    : $SRC"
 log "answers by: $GENERATOR"
 log "level     : oQ${LEVEL}t -> $MODELS_OUT/*-oQ${LEVEL}t-$NAME"
@@ -398,12 +424,19 @@ log "machine   : ${ram_gb} GB RAM, ${free_gb:-?} GB free under $OQUP"
 [ -n "$free_gb" ] && [ "$free_gb" -lt 150 ] && log "WARNING: only ${free_gb} GB free"
 awk -F'\t' '$1 != "preflight"' "$STATE" > "$STATE.tmp" || true
 mv "$STATE.tmp" "$STATE"
+# The chat template must take the conversations the pipeline renders (thinking,
+# tool calls): checked now, in seconds, rather than after hours of generation.
+"$VENV_PY" "$CORPUS_REPO/scripts/prep_calibration.py" check --source "$SRC" --model-profile "$MODEL_PROFILE" \
+    > "$RUN/logs/check.log" 2>&1 || { sed 's/^/    /' "$RUN/logs/check.log" | tee -a "$PLOG"; die "the source's chat template does not fit profile $MODEL_ID"; }
+log "template  : $(tail -1 "$RUN/logs/check.log")"
 printf '%s\t%s\t%s\t%s\n' preflight "-" "$(ts)" 0 >> "$STATE"
 
 PREP_OUT="$RUN/prep"
 SERVER="http://127.0.0.1:$PORT"
 BUNDLE="$RUN/bundle.txt"
-PREP_SHA="$(hash_of < "$PREP")"
+# Request settings live in the model profile: editing it reruns the request stages.
+PREP_SHA="$(cat "$PREP" "$MP" "$MODEL_PROFILE" | hash_of)"
+PM=(--model-profile "$MODEL_PROFILE")
 
 # ----------------------------------------------------------------- digests
 D_EXTRACT="$( { cat "$CORPUS_REPO"/calibration/*.txt "$CORPUS_REPO/manifest.json"; echo "$PREP_SHA"; } | hash_of)"
@@ -413,7 +446,7 @@ D_AGENT="$(printf '%s|%s|%s|%s|%s' "$( { find "${AGENT_TASKS:-$CORPUS_REPO/agent
     "$PREP_SHA" "$GEN_ID" "$EFFORT_MIX" "$AGENT_SAMPLES" | hash_of)"
 D_GENERATE="$(printf '%s|%s|%s|%s|%s|%s|%s|%s' "$D_DERIVE" "$D_SEED" "$BUDGET_TOKENS" "$EFFORT_MIX" \
     "${MAX_TOKENS:-16384}" "$OQT_PROFILE" "$OQT_MIX" "$([ "$OQT_AGENT" = 1 ] && echo "$D_AGENT" || echo none)" | hash_of)"
-D_RENDER="$(printf '%s|%s|%s' "$D_GENERATE" "$( cat "$SRC"/tokenizer*.json "$SRC"/*.jinja 2>/dev/null | hash_of)" "$OQT_LONG_LEN" "$OQT_HOLDOUT_SHARE" | hash_of)"
+D_RENDER="$(printf '%s|%s|%s|%s' "$D_GENERATE" "$( cat "$SRC"/tokenizer*.json "$SRC"/*.jinja 2>/dev/null | hash_of)" "$OQT_LONG_LEN" "$OQT_HOLDOUT_SHARE" | hash_of)"
 
 # Docker is needed only while agent sessions still have to run: once the agent
 # stage is done (or cached), the run can resume with Docker stopped, which frees
@@ -426,15 +459,17 @@ elif [ "$OQT_AGENT" = 1 ] && [ "$AGENT_SANDBOX" = docker ]; then
 fi
 
 # ------------------------------------------------------------------ server
-start_server() {
+start_server() { # [model dir]: serves GENERATOR unless another model is given
+    local model="${1:-$GENERATOR}" id
+    id="$(basename "$model")"
     [ -z "$SERVER_PID" ] || return 0
     if curl -fsS -m 3 "$SERVER/health" >/dev/null 2>&1; then
         die "something already answers on port $PORT; stop it or set PORT=<free port>"
     fi
     local serve_dir="$RUN/serve-models"
-    mkdir -p "$serve_dir"
-    ln -sfn "$GENERATOR" "$serve_dir/$GEN_ID"
-    log "starting oMLX on port $PORT with $GEN_ID (log: $RUN/logs/server.log)"
+    rm -rf "$serve_dir"; mkdir -p "$serve_dir"
+    ln -sfn "$model" "$serve_dir/$id"
+    log "starting oMLX on port $PORT with $id (log: $RUN/logs/server.log)"
     if [ -n "${OQT_SERVE_CMD:-}" ]; then          # tests: a stand-in server
         PORT="$PORT" SERVE_DIR="$serve_dir" bash -c "$OQT_SERVE_CMD" >> "$RUN/logs/server.log" 2>&1 &
     else
@@ -459,24 +494,25 @@ if ! is_done derive "$D_DERIVE" || { [ "$NEED_SEEDS" = 1 ] && ! is_done seed "$D
     start_server
 fi
 run_stage derive "$D_DERIVE" python3 "$PREP" derive --out "$PREP_OUT" --cache-root "$CACHE_ROOT" \
-    --model "$GEN_ID" --server "$SERVER" --concurrency "$CONCURRENCY"
+    --model "$GEN_ID" "${PM[@]}" --server "$SERVER" --concurrency "$CONCURRENCY"
 if [ "$NEED_SEEDS" = 1 ]; then
     run_stage seed "$D_SEED" python3 "$PREP" seed --out "$PREP_OUT" --cache-root "$CACHE_ROOT" \
-        --model "$GEN_ID" --server "$SERVER" --concurrency "$CONCURRENCY" --prompts-per-seed "$PROMPTS_PER_SEED"
+        --model "$GEN_ID" "${PM[@]}" --server "$SERVER" --concurrency "$CONCURRENCY" --prompts-per-seed "$PROMPTS_PER_SEED"
 else
     log "seed: skipped (OQT_MIX gives no weight to generic or broad prompts)"
 fi
+# agent_sessions <out dir> <cache root> <served model>: every agent task, AGENT_SAMPLES times.
+agent_sessions() {
+    if [ "$AGENT_SANDBOX" = docker ] && [ -z "$AGENT_TASKS" ]; then
+        "$CORPUS_REPO/agent_tasks/build_images.sh"
+    fi
+    python3 "$PREP" agent --out "$1" --cache-root "$2" \
+        --model "$3" "${PM[@]}" --server "$SERVER" --sandbox "$AGENT_SANDBOX" \
+        --agent-samples "$AGENT_SAMPLES" --effort-mix "$EFFORT_MIX" --agent-concurrency "$AGENT_CONCURRENCY" \
+        ${AGENT_TASKS:+--agent-tasks "$AGENT_TASKS"}
+}
 if [ "$OQT_AGENT" = 1 ]; then
-    agent_stage() {
-        if [ "$AGENT_SANDBOX" = docker ] && [ -z "$AGENT_TASKS" ]; then
-            "$CORPUS_REPO/agent_tasks/build_images.sh"
-        fi
-        python3 "$PREP" agent --out "$PREP_OUT" --cache-root "$CACHE_ROOT" \
-            --model "$GEN_ID" --server "$SERVER" --sandbox "$AGENT_SANDBOX" \
-            --agent-samples "$AGENT_SAMPLES" --effort-mix "$EFFORT_MIX" --agent-concurrency "$AGENT_CONCURRENCY" \
-            ${AGENT_TASKS:+--agent-tasks "$AGENT_TASKS"}
-    }
-    run_stage agent "$D_AGENT" agent_stage
+    run_stage agent "$D_AGENT" agent_sessions "$PREP_OUT" "$CACHE_ROOT" "$GEN_ID"
     [ -f "$PREP_OUT/answers/$GEN_ID/agent.json" ] && \
         log "agent: $(summary agent "$PREP_OUT/answers/$GEN_ID/agent.json")"
 else
@@ -484,17 +520,20 @@ else
 fi
 run_stage generate "$D_GENERATE" python3 "$PREP" generate --out "$PREP_OUT" --cache-root "$CACHE_ROOT" \
     --profile "$OQT_PROFILE" --mix "$OQT_MIX" \
-    --model "$GEN_ID" --server "$SERVER" --concurrency "$CONCURRENCY" \
+    --model "$GEN_ID" "${PM[@]}" --server "$SERVER" --concurrency "$CONCURRENCY" \
     --budget-tokens "$BUDGET_TOKENS" --effort-mix "$EFFORT_MIX" --max-tokens "${MAX_TOKENS:-16384}"
 [ -f "$PREP_OUT/answers/$GEN_ID/generate-$OQT_PROFILE.json" ] && \
     log "generate: $(summary generate "$PREP_OUT/answers/$GEN_ID/generate-$OQT_PROFILE.json")"
 stop_server
 
 run_stage render "$D_RENDER" "$VENV_PY" "$PREP" render --out "$PREP_OUT" --profile "$OQT_PROFILE" \
-    --model "$GEN_ID" --source "$SRC" --bundle "$BUNDLE" \
+    --model "$GEN_ID" "${PM[@]}" --source "$SRC" --bundle "$BUNDLE" \
     --long-len "$OQT_LONG_LEN" --long-bundle "$RUN/bundle-long.jsonl" \
     --holdout-share "$OQT_HOLDOUT_SHARE" --heldout-dir "$RUN/heldout" \
     $([ "$OQT_AGENT" = 1 ] || echo --no-agent)
+
+OUT="$MODELS_OUT/$SRC_TAG-oQ${LEVEL}t-$NAME"   # omlx_oqt.sh names it the same way
+QUANT_ID="$(basename "$OUT")"
 
 # The build needs the memory: no other oMLX server may be running.
 if pgrep -f "omlx.*serve" >/dev/null 2>&1 && [ "${OQT_IGNORE_SERVER:-0}" != "1" ]; then
@@ -503,7 +542,7 @@ fi
 OMLX_COMMIT="$(git -C "$OMLX_REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
 D_BUILD="$(printf '%s|%s|%s|%s|%s|%s|%s|%s|%s' "$(hash_of < "$BUNDLE")" "$LEVEL" "${OQ_SAMPLES:-256}" \
     "${OQ_SEQLEN:-2048}" "${NGRAM_BITS:-8}" "${PRESERVE_MTP:-1}" "$OMLX_COMMIT" \
-    "$(hash_of < "$CORPUS_REPO/scripts/omlx_oqt.sh")" \
+    "$(awk '/^write_runner\(\) \{/,/^}$/' "$CORPUS_REPO/scripts/omlx_oqt.sh" | hash_of)" \
     "${OQT_REFINE_EXPERTS:-0}/${OQT_ROUTING:-1}/${OQT_ROUTING_THRESHOLD:-0.02}/${OQT_ROUTING_MAX_LAYERS:-0.25}" \
     "$OQT_LONG_SHARE/$OQT_LONG_LEN/$( hash_of < "$RUN/bundle-long.jsonl" 2>/dev/null || echo none)" | hash_of)"
 # Memory headroom for the build. A sweep that starves macOS of memory freezes the
@@ -517,6 +556,19 @@ if ! is_done build "$D_BUILD"; then
     wired_mb="$(sysctl -n iogpu.wired_limit_mb 2>/dev/null || echo 0)"
     if [ "${wired_mb:-0}" -gt 0 ] && [ "$wired_mb" -gt $(( mem_mb - 12288 )) ]; then
         log "WARNING: iogpu.wired_limit_mb=$wired_mb lets the GPU take all but $(( (mem_mb - wired_mb) / 1024 )) GB of RAM; macOS can freeze under the build. Leave it 16 GB below RAM: sudo sysctl iogpu.wired_limit_mb=$(( mem_mb - 16384 ))"
+    fi
+fi
+# OQT_KEEP_BUILD=1 adopts the existing quant when only the pipeline's own scripts
+# changed since it was built: allowed when it was built from this exact bundle.
+if [ "${OQT_KEEP_BUILD:-0}" = 1 ] && ! is_done build "$D_BUILD"; then
+    built_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["corpus_bundle_sha256"])' "$OUT/build.json" 2>/dev/null || true)"
+    if [ -f "$OUT/oqt_report.json" ] && [ -n "$built_sha" ] && [ "$built_sha" = "$(shasum -a 256 "$BUNDLE" | awk '{print $1}')" ]; then
+        awk -F'\t' '$1 != "build"' "$STATE" > "$STATE.tmp" || true
+        mv "$STATE.tmp" "$STATE"
+        printf '%s\t%s\t%s\t%s\n' build "$D_BUILD" "$(ts)" 0 >> "$STATE"
+        log "build: kept $OUT (OQT_KEEP_BUILD=1; it was built from this same bundle)"
+    else
+        die "OQT_KEEP_BUILD=1 but $OUT was not built from this bundle (or is incomplete): leave it out to rebuild"
     fi
 fi
 run_stage build "$D_BUILD" env CORPUS_FILE="$BUNDLE" OQT_OVERWRITE=1 OQ_SKIP_PPL=1 OQT_M3=0 \
@@ -535,8 +587,34 @@ else
         PPL_FILES="${PPL_FILES:-$EVAL_FILES}" "$CORPUS_REPO/scripts/omlx_oqt.sh" "$LEVEL" "$NAME"
 fi
 
+
+# ------------------------------------------------------------- agent eval
+# The quant works the same agent tasks, same samples and efforts, as the generator
+# did for the calibration; solved checks are compared task by task. Sessions are
+# cached per build (a rebuilt quant is evaluated afresh).
+if [ "${OQT_AGENT_EVAL:-0}" = 1 ]; then
+    [ "$OQT_AGENT" = 1 ] || die "OQT_AGENT_EVAL=1 compares with the generator's agent sessions, so it needs OQT_AGENT=1"
+    D_AGENT_EVAL="$(printf '%s|%s' "$D_BUILD" "$D_AGENT" | hash_of)"
+    EVAL_DIR="$RUN/agent-eval/$D_BUILD"
+    if ! is_done agent-eval "$D_AGENT_EVAL"; then
+        if [ "$AGENT_SANDBOX" = docker ]; then
+            docker info >/dev/null 2>&1 || die "the agent eval needs Docker: start colima or OrbStack, then rerun the same command"
+            docker_check
+        fi
+        start_server "$OUT"
+    fi
+    run_stage agent-eval "$D_AGENT_EVAL" agent_sessions "$EVAL_DIR" "$EVAL_DIR" "$QUANT_ID"
+    stop_server
+    python3 "$CORPUS_REPO/scripts/results.py" agent-eval --generator "$PREP_OUT/answers/$GEN_ID" \
+        --quant "$EVAL_DIR/answers/$QUANT_ID" --render "$PREP_OUT/answers/$GEN_ID/render-$OQT_PROFILE.json" \
+        --json "$RUN/agent-eval.json" | while IFS= read -r l; do log "agent eval: $l"; done \
+        || log "WARNING: could not compare the agent sessions (see $EVAL_DIR)"
+fi
+
 # ----------------------------------------------------------------- summary
-OUT="$(ls -d "$MODELS_OUT"/*-oQ${LEVEL}t-"$NAME" 2>/dev/null | head -1)"
+python3 "$CORPUS_REPO/scripts/results.py" collect --run "$RUN" --quant "$OUT" --level "$LEVEL" \
+    --model "$MODEL_ID" --variant "$OQT_VARIANT" --oqup "$OQUP" >/dev/null \
+    || log "WARNING: could not write $RUN/result.json"
 log "=== done ==="
 log "quant     : $OUT"
 if [ -n "$OUT" ] && [ -f "$OUT/oqt_report.json" ]; then
@@ -544,4 +622,7 @@ if [ -n "$OUT" ] && [ -f "$OUT/oqt_report.json" ]; then
 fi
 [ -f "$PREP_OUT/answers/$GEN_ID/render-$OQT_PROFILE.json" ] && \
     log "calibration: $(summary render "$PREP_OUT/answers/$GEN_ID/render-$OQT_PROFILE.json")"
+python3 "$CORPUS_REPO/scripts/results.py" vs-previous --oqup "$OQUP" --run "$RUN" 2>/dev/null \
+    | while IFS= read -r l; do log "$l"; done || true
+log "all runs  : $0 results"
 log "serve it  : ln -s \"$OUT\" ~/.omlx/models/"

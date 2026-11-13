@@ -44,7 +44,7 @@ def run(sandbox: str, image: str, tmp: Path):
         time.sleep(0.8)
         tasks = make_task(tmp / sandbox, image)
         out = tmp / f"out-{sandbox}"
-        cmd = [sys.executable, str(PREP), "agent", "--out", str(out), "--model", "Qwen-test",
+        cmd = [sys.executable, str(PREP), "agent", "--out", str(out), "--model", "Qwen-test", "--model-profile", "qwen3.8-flash-next",
                "--server", f"http://127.0.0.1:{port}", "--agent-tasks", str(tasks),
                "--agent-samples", "2", "--sandbox", sandbox, "--cache-root", str(tmp / "cache")]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
