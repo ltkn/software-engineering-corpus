@@ -69,6 +69,8 @@ out/
 # Rust
 target/
 Cargo.lock
+# ...except the agent tasks' lockfiles: they pin what the offline sandbox builds against
+!agent_tasks/tasks/*/repo/Cargo.lock
 
 # Go
 bin/

@@ -35,6 +35,7 @@ P="$REPO/scripts/oqt_pipeline.sh"
 reset() { echo '{}' > "$T/counter.json"; }
 
 reset; BUDGET_TOKENS=3000 "$P" 4 t >/dev/null 2>&1 || fail "fresh run failed (see $T/oqup/runs/t)"
+first="$(count generate)"
 OUT="$T/models-out/Qwen3.8-Flash-Next-oQ4t-t"
 [ -f "$OUT/oqt_report.json" ] && [ -f "$OUT/build.json" ] || fail "no quant/report written"
 grep -q '<|im_start|>' "$T/oqup/runs/t/bundle.txt" || fail "bundle is not in the chat template"
@@ -59,22 +60,35 @@ r = json.load(open(sys.argv[1]))
 o = r["overall"]
 assert o["kl"] >= 0 and 0 <= o["top1"] <= 1 and o["tokens"] > 0, o
 assert r["routing_by_layer"], "no routing stats"
-assert {"heldout-se", "heldout-general"} <= set(r["slices"]), r["slices"].keys()
+assert "heldout-written-se" in r["slices"] and any(k.startswith("heldout-oqt-") for k in r["slices"]), r["slices"].keys()
+PYCHECK
+python3 - "$T/oqup/runs/t/prep/answers/Qwen3.8-Flash-Next-oQ5e-gen/render-profile.json" "$T/oqup/runs/t/bundle.txt" "$T/oqup/runs/t/bundle-long.jsonl" <<'PYCHECK' || fail "held-out conversations leak into the calibration"
+import json, sys
+held = json.load(open(sys.argv[1]))["heldout"]
+assert held and set(held) <= {"corpus", "generic", "broad", "agent"}, held   # tiny budget: only groups with 5+ prompts hold out
+calib = open(sys.argv[2]).read() + open(sys.argv[3]).read()
+for g, h in held.items():
+    text = open(h["file"]).read()
+    # every held-out conversation's own text (the part after its user turn) is absent from the calibration
+    for doc in text.split("<|im_start|>user")[1:]:
+        assert doc[:200] not in calib, (g, doc[:80])
 PYCHECK
 ls "$T"/oqup/anchors/m3-*.npz >/dev/null 2>&1 || fail "M3 reference not cached"
-pass "M3: quant scored against the streamed original (KL, top-1, routing per slice)"
+pass "M3: quant scored against the streamed original on held-out own conversations + heldout-written-se (none calibrated on)"
 
 reset; BUDGET_TOKENS=3000 "$P" 4 t >/dev/null 2>&1 || fail "identical rerun failed"
 [ "$(count generate)" = 0 ] && [ "$(count derive)" = 0 ] || fail "identical rerun sent requests"
 [ "$(grep -c 'up to date, skipped' "$T/oqup/runs/t/pipeline.log")" -ge 5 ] || fail "stages not skipped"
 pass "identical rerun: nothing redone, no requests"
 
-reset; BUDGET_TOKENS=6000 "$P" 4 t >/dev/null 2>&1 || fail "budget change run failed"
+reset; OQT_CHANGE_SETTINGS=1 BUDGET_TOKENS=6000 "$P" 4 t >/dev/null 2>&1 || fail "budget change run failed"
 [ "$(count derive)" = 0 ] || fail "budget change re-derived"
-n="$(count generate)"; [ "$n" -gt 0 ] && [ "$n" -lt 20 ] || fail "budget change sent $n generate requests (expected only the new ones)"
+# Doubling the budget asks only for the new answers: fewer than a run from scratch,
+# which would need about twice the first run's requests.
+n="$(count generate)"; [ "$n" -gt 0 ] && [ "$n" -lt "$first" ] || fail "budget change sent $n generate requests (first run: $first; expected only the new ones)"
 pass "budget change: only generate/render/build rerun, only new answers requested ($n)"
 
-reset; STUB_DELAY=1.0 BUDGET_TOKENS=60000 "$P" 4 t >"$T/kill.out" 2>&1 & pid=$!
+reset; OQT_CHANGE_SETTINGS=1 STUB_DELAY=1.0 BUDGET_TOKENS=60000 "$P" 4 t >"$T/kill.out" 2>&1 & pid=$!
 sleep 8; kill -TERM "$pid"; rc=0; wait "$pid" || rc=$?
 [ "$rc" = 130 ] || fail "kill: exit code $rc, expected 130"
 before="$(count generate)"; sleep 2
@@ -84,6 +98,14 @@ reset; BUDGET_TOKENS=60000 "$P" 4 t >/dev/null 2>&1 || fail "resume run failed"
 total="$(python3 -c "import json,glob,sys;print(json.load(open(glob.glob(sys.argv[1])[0]))['requests'])" "$T/oqup/runs/t/prep/answers/*/generate-profile.json")"
 [ "$(count generate)" -lt "$total" ] || fail "resume re-requested cached answers"
 pass "kill mid-generate: stopped at once, server stopped; resume reused $((total - $(count generate)))/$total answers"
+
+reset; "$P" 4 t >"$T/plain.out" 2>&1 || fail "resume without settings failed"
+[ "$(count generate)" = 0 ] || fail "resume without settings did not reuse the saved budget"
+grep -qx "BUDGET_TOKENS=60000" "$T/oqup/runs/t/settings.env" || fail "budget not saved in settings.env"
+reset; BUDGET_TOKENS=1234 "$P" 4 t >"$T/mismatch.out" 2>&1 && fail "a different setting did not stop the run"
+grep -q "BUDGET_TOKENS: saved '60000', given '1234'" "$T/mismatch.out" || fail "no clear message for a changed setting"
+[ "$(count generate)" = 0 ] || fail "a refused run sent requests"
+pass "settings kept per run: a bare resume reuses them, a different value is refused"
 
 reset; OQT_SERVE_CMD="exit 3" BUDGET_TOKENS=3000 "$P" 4 broken >"$T/broken.out" 2>&1 && fail "broken server did not fail"
 grep -q "the oMLX server exited" "$T/broken.out" || fail "no clear message for a dead server"

@@ -55,6 +55,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from agent_harness import ServerError
+
 REPO = Path(__file__).resolve().parent.parent
 CALIB_DIR = REPO / "calibration"
 MANIFEST = REPO / "manifest.json"
@@ -523,6 +525,8 @@ def strip_think(text: str) -> str:
 
 
 def chat_raw(server: str, api_key: str | None, payload: dict, timeout: float) -> dict:
+    """One chat completion. Error replies (an HTTP error status, or a 200 body
+    without choices) raise ServerError with the server's own message."""
     req = urllib.request.Request(
         server.rstrip("/") + "/v1/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
@@ -530,20 +534,18 @@ def chat_raw(server: str, api_key: str | None, payload: dict, timeout: float) ->
                  **({"Authorization": f"Bearer {api_key}"} if api_key else {})},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raise ServerError.from_response(e.read(), e.code) from None
+    if not (isinstance(body, dict) and body.get("choices")):
+        raise ServerError.from_response(body)
+    return body
 
 
 def chat(server: str, api_key: str | None, payload: dict, timeout: float) -> str:
-    req = urllib.request.Request(
-        server.rstrip("/") + "/v1/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json",
-                 **({"Authorization": f"Bearer {api_key}"} if api_key else {})},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        body = json.loads(resp.read().decode("utf-8"))
+    body = chat_raw(server, api_key, payload, timeout)
     return strip_think(body["choices"][0]["message"].get("content") or "")
 
 
@@ -774,11 +776,16 @@ def do_seed(out: Path, args) -> int:
     cache_dir.mkdir(parents=True, exist_ok=True)
     seeds = [s for g in SEED_GROUPS for s in load_seeds(g)]
     rows, failed = [], []
+    t0 = time.time()
     with cf.ThreadPoolExecutor(max_workers=args.concurrency) as ex:
-        for rec in ex.map(lambda sd: seed_one(sd, args, fam, cache_dir), seeds):
+        for i, rec in enumerate(ex.map(lambda sd: seed_one(sd, args, fam, cache_dir), seeds), 1):
             sd = rec["seed"]
             if not rec["prompts"]:
                 failed.append(f"{sd['group']}:{sd['id']} ({rec.get('error')})")
+            if i % 10 == 0 or i == len(seeds):
+                el = time.time() - t0
+                print(f"  {i}/{len(seeds)} seeds, {len(rows) + len(rec['prompts'])} prompts, "
+                      f"{el / 60:.0f} min elapsed, ~{el / i * (len(seeds) - i) / 60:.0f} min left", flush=True)
             seen = set()
             for k, pr in enumerate(rec["prompts"]):
                 if pr["prompt"] in seen:
@@ -1025,11 +1032,15 @@ def _run_group(group: str, items: list[dict], budget: int, args, fam: str, cache
                           f"about {remaining / max(rate, 1e-6) / 3600:.1f} h for the remaining "
                           f"{remaining:,} tokens", flush=True)
                     clock["pilot_reported"] = True
-                if n % args.log_every == 0:
+                # A line per new answer (each can take minutes); cached ones in batches.
+                if not rec.get("cached") or n % args.log_every == 0:
                     el = time.time() - clock["t0"]
                     eta = (max(clock["budget"] - clock["tokens"], 0) / max(rate, 1e-6)
                            if clock["fresh_tokens"] else 0)
-                    print(f"generate: [{group}] {n} answers, {clock['tokens']:,}/{clock['budget']:,} "
+                    this = ("" if rec.get("cached") else
+                            f" (+{int(rec.get('tokens') or 0):,} {rec.get('effort') or ''}"
+                            f"{'' if rec.get('keep') else ', dropped: ' + str(rec.get('why'))})")
+                    print(f"generate: [{group}] {n} answers{this}, {clock['tokens']:,}/{clock['budget']:,} "
                           f"tokens, {el / 60:.0f} min elapsed, ~{eta / 60:.0f} min left", flush=True)
                 submit_next()
     return results, tokens_done
@@ -1215,6 +1226,40 @@ def template_messages(messages: list[dict]) -> list[dict]:
     return fixed
 
 
+def answer_group(r: dict) -> str:
+    """corpus, generic or broad: the prompt group an answer belongs to."""
+    f = r.get("file", "")
+    return f.split("-", 1)[1] if f.startswith("seed-") else "corpus"
+
+
+def split_holdout(rows: list[dict], unit_of, group_of, share: float, seed) -> tuple[list[dict], dict]:
+    """Keep a deterministic share of whole units (a prompt, a task) out of the
+    calibration, per group. Returns (calibration rows, {group: held-out rows}).
+
+    Whole units, never single samples: two answers to one prompt are near-twins,
+    and an eval text whose twin was calibrated on measures memory, not quality.
+    A group with at least 5 units always holds out at least one."""
+    if share <= 0:
+        return rows, {}
+    units: dict[str, set] = {}
+    for r in rows:
+        units.setdefault(group_of(r), set()).add(unit_of(r))
+    held_units = set()
+    for g, us in units.items():
+        pick = {u for u in us if _unit(seed, "holdout", u) < share}
+        if not pick and len(us) >= 5:
+            pick = {min(us, key=lambda u: _unit(seed, "holdout", u))}
+        held_units |= {(g, u) for u in pick}
+    keep, held = [], {}
+    for r in rows:
+        g = group_of(r)
+        if (g, unit_of(r)) in held_units:
+            held.setdefault(g, []).append(r)
+        else:
+            keep.append(r)
+    return keep, held
+
+
 def do_render(out: Path, args) -> int:
     try:
         from transformers import AutoTokenizer
@@ -1233,6 +1278,13 @@ def do_render(out: Path, args) -> int:
         print(f"no kept answers for profile {args.profile} in {adir} (run generate first)",
               file=sys.stderr)
         return 1
+    # The oQ-T eval: a share of the model's own conversations, kept out of the
+    # calibration (short and long windows alike) and written as heldout files
+    # that M3 scores the quant on. Agent sessions are held out per task.
+    answers, held = split_holdout(answers, lambda r: r["id"], answer_group, args.holdout_share, args.seed)
+    sessions, held_agent = split_holdout(sessions, lambda r: r["task"], lambda r: "agent",
+                                         args.holdout_share, args.seed)
+    held.update(held_agent)
     tok = AutoTokenizer.from_pretrained(args.source)
     if not getattr(tok, "chat_template", None):
         print(f"{args.source} has no chat template", file=sys.stderr)
@@ -1248,7 +1300,9 @@ def do_render(out: Path, args) -> int:
     mode = "template"
     texts = []
     tools_dropped = 0
-    for r in answers:
+
+    def answer_text(r):
+        nonlocal mode, tools_dropped
         assistant = {"role": "assistant", "content": r["content"]}
         if r.get("reasoning"):
             assistant["reasoning_content"] = r["reasoning"]
@@ -1271,7 +1325,10 @@ def do_render(out: Path, args) -> int:
             names = [((c.get("function") or {}).get("name") or "") for c in r["tool_calls"]]
             if not all(n and n in text for n in names):
                 tools_dropped += 1
-        texts.append((sha(f"{args.seed}|{r['key']}"), text))
+        return text
+
+    for r in answers:
+        texts.append((sha(f"{args.seed}|{r['key']}"), answer_text(r)))
 
     for r in sessions:
         # A whole agent session: system, task, assistant turns with thinking
@@ -1318,6 +1375,23 @@ def do_render(out: Path, args) -> int:
                  else adir / f"bundle-long-{args.profile}.jsonl")
     write_jsonl(long_path, [{"text": t} for t in long_docs])
 
+    hdir = Path(args.heldout_dir).expanduser() if args.heldout_dir else adir / f"heldout-{args.profile}"
+    hdir.mkdir(parents=True, exist_ok=True)
+    for old in hdir.glob("heldout-oqt-*.txt"):
+        old.unlink()
+    heldout = {}
+    for g in ("corpus", "generic", "broad", "agent"):
+        rows = sorted(held.get(g, []), key=lambda r: r["key"])
+        if not rows:
+            continue
+        docs = ([render(r["messages"], r.get("tools")) for r in rows] if g == "agent"
+                else [answer_text(r) for r in rows])
+        text = "\n".join(docs) + "\n"
+        hpath = hdir / f"heldout-oqt-{g}.txt"
+        hpath.write_text(text, encoding="utf-8")
+        heldout[g] = {"file": str(hpath), "items": len(rows),
+                      "tokens": len(tok(text, add_special_tokens=False)["input_ids"])}
+
     specials = set(getattr(tok, "all_special_tokens", []) or [])
     for t in (getattr(tok, "added_tokens_decoder", {}) or {}).values():
         specials.add(getattr(t, "content", str(t)))
@@ -1343,7 +1417,8 @@ def do_render(out: Path, args) -> int:
                "tokens": n_tokens, "mode": mode,
                "long_documents": len(long_docs), "long_bundle": str(long_path),
                "long_tokens_est": int(sum(len(t) for t in long_docs) / 3.5),
-               "special_tokens_checked": sorted(sp for sp in specials if sp and sp in bundle)}
+               "special_tokens_checked": sorted(sp for sp in specials if sp and sp in bundle),
+               "holdout_share": args.holdout_share, "heldout": heldout}
     (adir / f"render-{args.profile}.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
     if tools_dropped:
         print(f"render: WARNING {tools_dropped} answers had tool calls that the chat template did "
@@ -1351,6 +1426,9 @@ def do_render(out: Path, args) -> int:
     print(f"render: [{args.profile}] {len(answers)} conversations ({summary['with_tools']} with tools), "
           f"{len(sessions)} agent sessions, {len(long_docs)} long documents "
           f"+ {len(passages)} passages, {n_tokens:,} tokens, mode {mode} -> {path}", flush=True)
+    if heldout:
+        print("render: held out for M3 (not calibrated on): " + ", ".join(
+            f"{g} {h['items']} ({h['tokens']:,} tokens)" for g, h in heldout.items()) + f" -> {hdir}", flush=True)
     return 0
 
 
@@ -1445,6 +1523,9 @@ def main(argv=None) -> int:
     g.add_argument("--no-agent", action="store_true", help="render: leave agent sessions out")
     g.add_argument("--long-len", type=int, default=32768, help="render: target length of long documents")
     g.add_argument("--long-bundle", help="render: long documents output (JSONL with a text field)")
+    g.add_argument("--holdout-share", type=float, default=0.05,
+                   help="render: share of prompts and agent tasks kept out of the calibration as the M3 eval")
+    g.add_argument("--heldout-dir", help="render: where the heldout-oqt-<group>.txt files go")
     g.add_argument("--source", help="render: source model dir (tokenizer + chat template)")
     g.add_argument("--bundle", help="render: output path (default <out>/answers/<model>/bundle.txt)")
     args = ap.parse_args(argv)

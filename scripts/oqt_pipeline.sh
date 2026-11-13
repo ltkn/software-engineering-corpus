@@ -47,6 +47,8 @@
 #   AGENT_SAMPLES=2        sessions per agent task
 #   OQT_LONG_SHARE=0.25    share of calibration tokens in long windows (0 = off)
 #   OQT_LONG_LEN=32768     long window length in tokens
+#   OQT_HOLDOUT_SHARE=0.05 share of prompts and agent tasks kept out of the calibration:
+#                          the model's answers to them are what M3 scores the quant on
 #   PORT=8765              port for the pipeline's own oMLX server
 #   plus any omlx_oqt.sh option (OQ_SAMPLES, OQ_SEQLEN, NGRAM_BITS, PRESERVE_MTP, ...)
 set -euo pipefail
@@ -58,6 +60,56 @@ OQUP="${OQUP:-$HOME/oqup}"
 MODELS_OUT="${MODELS_OUT:-$HOME/models-out}"
 HUB="${HF_HUB_CACHE:-$HOME/.cache/huggingface/hub}"
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/find_source.sh"
+
+# A run's settings are saved on its first start (runs/<name>/settings.env) and
+# reused on every resume, so "scripts/oqt_pipeline.sh 4 v1" alone continues the
+# same run with the same generator and budget. A setting given again with a
+# different value stops the run, unless OQT_CHANGE_SETTINGS=1 (the new value is
+# saved, and the stages it affects rerun). Speed-only knobs (CONCURRENCY, PORT,
+# the sandbox kind) are not saved and can change freely.
+SETTINGS=(GENERATOR SRC SOURCE_REPO BUDGET_TOKENS EFFORT_MIX MAX_TOKENS OQT_PROFILE OQT_MIX
+          PROMPTS_PER_SEED OQT_AGENT AGENT_SAMPLES OQT_AGENT_TASKS OQT_LONG_SHARE OQT_LONG_LEN OQT_HOLDOUT_SHARE
+          OQ_SAMPLES OQ_SEQLEN NGRAM_BITS PRESERVE_MTP OQT_REFINE_EXPERTS OQT_ROUTING
+          OQT_ROUTING_THRESHOLD OQT_ROUTING_MAX_LAYERS)
+setting_norm() { # <name> <value>: paths compare by their real location
+    case "$1" in
+        GENERATOR|SRC|OQT_AGENT_TASKS) [ -n "$2" ] && (cd "$2" 2>/dev/null && pwd -P) || printf '%s\n' "$2" ;;
+        *) printf '%s\n' "$2" ;;
+    esac
+}
+SETTINGS_FILE=""; SETTINGS_CHANGED=""
+if [ "${1:-}" != status ] && [ -n "${2:-}" ]; then
+    SETTINGS_FILE="$OQUP/runs/$2/settings.env"
+    if [ -f "$SETTINGS_FILE" ]; then
+        while IFS='=' read -r k v; do
+            case " ${SETTINGS[*]} " in *" $k "*) ;; *) continue ;; esac
+            if [ -n "${!k:-}" ]; then
+                [ "$(setting_norm "$k" "${!k}")" = "$(setting_norm "$k" "$v")" ] \
+                    || SETTINGS_CHANGED="$SETTINGS_CHANGED"$'\n'"  $k: saved '$v', given '${!k}'"
+            elif [ -n "$v" ]; then
+                printf -v "$k" '%s' "$v"
+                export "${k?}"
+            fi
+        done < "$SETTINGS_FILE"
+    fi
+fi
+save_settings() {
+    local k tmp="$SETTINGS_FILE.tmp"
+    for k in "${SETTINGS[@]}"; do
+        case "$k" in   # the defaults the stages use, so a resume compares like with like
+            MAX_TOKENS) printf '%s=%s\n' "$k" "${MAX_TOKENS:-16384}" ;;
+            OQ_SAMPLES) printf '%s=%s\n' "$k" "${OQ_SAMPLES:-256}" ;;
+            OQ_SEQLEN) printf '%s=%s\n' "$k" "${OQ_SEQLEN:-2048}" ;;
+            NGRAM_BITS) printf '%s=%s\n' "$k" "${NGRAM_BITS:-8}" ;;
+            PRESERVE_MTP) printf '%s=%s\n' "$k" "${PRESERVE_MTP:-1}" ;;
+            OQT_REFINE_EXPERTS) printf '%s=%s\n' "$k" "${OQT_REFINE_EXPERTS:-0}" ;;
+            OQT_ROUTING) printf '%s=%s\n' "$k" "${OQT_ROUTING:-1}" ;;
+            OQT_ROUTING_THRESHOLD) printf '%s=%s\n' "$k" "${OQT_ROUTING_THRESHOLD:-0.02}" ;;
+            OQT_ROUTING_MAX_LAYERS) printf '%s=%s\n' "$k" "${OQT_ROUTING_MAX_LAYERS:-0.25}" ;;
+            *) printf '%s=%s\n' "$k" "${!k:-}" ;;
+        esac
+    done > "$tmp" && mv "$tmp" "$SETTINGS_FILE"
+}
 PORT="${PORT:-8765}"
 BUDGET_TOKENS="${BUDGET_TOKENS:-1000000}"
 EFFORT_MIX="${EFFORT_MIX:-max=70,medium=15,low=15}"
@@ -69,6 +121,7 @@ OQT_AGENT="${OQT_AGENT:-1}"
 AGENT_SAMPLES="${AGENT_SAMPLES:-2}"
 OQT_LONG_SHARE="${OQT_LONG_SHARE:-0.25}"
 OQT_LONG_LEN="${OQT_LONG_LEN:-32768}"
+OQT_HOLDOUT_SHARE="${OQT_HOLDOUT_SHARE:-0.05}"
 AGENT_TASKS="${OQT_AGENT_TASKS:-}"
 AGENT_SANDBOX="${OQT_AGENT_SANDBOX:-docker}"
 OQT_PROFILE="${OQT_PROFILE:-profile}"
@@ -118,6 +171,10 @@ if [ "${1:-}" = "status" ]; then
         cur="$(cut -f1 "$RUN/current")"
         echo; echo "last lines of $cur:"; tail -n 5 "$RUN/logs/$cur.log" 2>/dev/null || true
     fi
+    if [ -f "$RUN/settings.env" ]; then
+        echo; echo "settings (reused on resume):"
+        grep -E '^(GENERATOR|SRC|SOURCE_REPO|BUDGET_TOKENS|EFFORT_MIX|OQT_PROFILE|OQT_MIX)=.' "$RUN/settings.env" | sed 's/^/  /'
+    fi
     echo; echo "pipeline log: $RUN/pipeline.log"
     exit 0
 fi
@@ -135,6 +192,16 @@ touch "$STATE"
 
 log() { printf '%s  %s\n' "$(ts)" "$*" | tee -a "$PLOG"; }
 die() { log "FAILED: $*"; exit 1; }
+
+if [ -n "$SETTINGS_CHANGED" ]; then
+    if [ "${OQT_CHANGE_SETTINGS:-0}" = 1 ]; then
+        log "settings changed on purpose (OQT_CHANGE_SETTINGS=1):$SETTINGS_CHANGED"
+    else
+        die "run '$NAME' was started with other settings:$SETTINGS_CHANGED
+To resume it as it was, leave these out: $0 $LEVEL $NAME
+To change them on purpose, add OQT_CHANGE_SETTINGS=1 (the affected stages rerun), or use a new run name."
+    fi
+fi
 
 # Docker's own CPUs, memory and disk (with colima these are the VM's, not the Mac's).
 # Fails when the agent sandboxes cannot work; warns when they will be slow or tight.
@@ -191,7 +258,7 @@ on_exit() {
     stop_server
     rm -f "$RUN/pid" "$RUN/current"
     if [ "$rc" -ne 0 ]; then
-        log "stopped with exit code $rc. Rerun the same command to resume: $0 $LEVEL $NAME"
+        log "stopped with exit code $rc. To resume: $0 $LEVEL $NAME (its settings are kept in $SETTINGS_FILE)"
     fi
 }
 trap on_exit EXIT
@@ -279,7 +346,8 @@ if [ -z "${SRC:-}" ]; then
     rm -f "$why"
 fi
 [ -f "$SRC/config.json" ] || die "no config.json in SRC=$SRC"
-grep -q 'deepseek_v41' "$SRC/config.json" && die "oQ-T does not support DeepSeek V4.1 yet"
+grep -q 'qwen4_exp' "$SRC/config.json" \
+    || die "SRC=$SRC is not a Qwen3.8-Flash-Next (qwen4_exp) checkpoint, the only architecture oQ-T supports"
 export SRC
 
 is_quant_of_family() { # <dir>: a quantized qwen4_exp model dir
@@ -313,6 +381,7 @@ if [ -z "${GENERATOR:-}" ]; then
 fi
 is_quant_of_family "$GENERATOR" || die "GENERATOR=$GENERATOR is not a quantized Qwen3.8-Flash-Next dir"
 GEN_ID="$(basename "$GENERATOR")"
+save_settings
 
 ram_gb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1073741824 ))
 free_gb=$(df -g "$OQUP" 2>/dev/null | awk 'NR==2 {print $4}')
@@ -344,7 +413,7 @@ D_AGENT="$(printf '%s|%s|%s|%s|%s' "$( { find "${AGENT_TASKS:-$CORPUS_REPO/agent
     "$PREP_SHA" "$GEN_ID" "$EFFORT_MIX" "$AGENT_SAMPLES" | hash_of)"
 D_GENERATE="$(printf '%s|%s|%s|%s|%s|%s|%s|%s' "$D_DERIVE" "$D_SEED" "$BUDGET_TOKENS" "$EFFORT_MIX" \
     "${MAX_TOKENS:-16384}" "$OQT_PROFILE" "$OQT_MIX" "$([ "$OQT_AGENT" = 1 ] && echo "$D_AGENT" || echo none)" | hash_of)"
-D_RENDER="$(printf '%s|%s|%s' "$D_GENERATE" "$( cat "$SRC"/tokenizer*.json "$SRC"/*.jinja 2>/dev/null | hash_of)" "$OQT_LONG_LEN" | hash_of)"
+D_RENDER="$(printf '%s|%s|%s' "$D_GENERATE" "$( cat "$SRC"/tokenizer*.json "$SRC"/*.jinja 2>/dev/null | hash_of)" "$OQT_LONG_LEN" "$OQT_HOLDOUT_SHARE" | hash_of)"
 
 # Docker is needed only while agent sessions still have to run: once the agent
 # stage is done (or cached), the run can resume with Docker stopped, which frees
@@ -424,6 +493,7 @@ stop_server
 run_stage render "$D_RENDER" "$VENV_PY" "$PREP" render --out "$PREP_OUT" --profile "$OQT_PROFILE" \
     --model "$GEN_ID" --source "$SRC" --bundle "$BUNDLE" \
     --long-len "$OQT_LONG_LEN" --long-bundle "$RUN/bundle-long.jsonl" \
+    --holdout-share "$OQT_HOLDOUT_SHARE" --heldout-dir "$RUN/heldout" \
     $([ "$OQT_AGENT" = 1 ] || echo --no-agent)
 
 # The build needs the memory: no other oMLX server may be running.
@@ -436,16 +506,33 @@ D_BUILD="$(printf '%s|%s|%s|%s|%s|%s|%s|%s|%s' "$(hash_of < "$BUNDLE")" "$LEVEL"
     "$(hash_of < "$CORPUS_REPO/scripts/omlx_oqt.sh")" \
     "${OQT_REFINE_EXPERTS:-0}/${OQT_ROUTING:-1}/${OQT_ROUTING_THRESHOLD:-0.02}/${OQT_ROUTING_MAX_LAYERS:-0.25}" \
     "$OQT_LONG_SHARE/$OQT_LONG_LEN/$( hash_of < "$RUN/bundle-long.jsonl" 2>/dev/null || echo none)" | hash_of)"
+# Memory headroom for the build. A sweep that starves macOS of memory freezes the
+# machine until the kernel watchdog reboots it (seen mid-sweep on the 128 GB Mac),
+# so say what to free before hours of work start. Warnings only: the build may fit.
+if ! is_done build "$D_BUILD"; then
+    if command -v docker >/dev/null && docker info >/dev/null 2>&1; then
+        log "WARNING: Docker is running but the build does not need it; its VM holds memory the build could use (colima stop)"
+    fi
+    mem_mb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1048576 ))
+    wired_mb="$(sysctl -n iogpu.wired_limit_mb 2>/dev/null || echo 0)"
+    if [ "${wired_mb:-0}" -gt 0 ] && [ "$wired_mb" -gt $(( mem_mb - 12288 )) ]; then
+        log "WARNING: iogpu.wired_limit_mb=$wired_mb lets the GPU take all but $(( (mem_mb - wired_mb) / 1024 )) GB of RAM; macOS can freeze under the build. Leave it 16 GB below RAM: sudo sysctl iogpu.wired_limit_mb=$(( mem_mb - 16384 ))"
+    fi
+fi
 run_stage build "$D_BUILD" env CORPUS_FILE="$BUNDLE" OQT_OVERWRITE=1 OQ_SKIP_PPL=1 OQT_M3=0 \
     OQT_LONG_FILE="$RUN/bundle-long.jsonl" OQT_LONG_SHARE="$OQT_LONG_SHARE" OQT_LONG_LEN="$OQT_LONG_LEN" \
     "$CORPUS_REPO/scripts/omlx_oqt.sh" "$LEVEL" "$NAME"
 
-D_SCORE="$(printf '%s|%s|%s|%s' "$D_BUILD" "$(cat "$CORPUS_REPO"/eval/heldout-*.txt | hash_of)" \
+# Scored on the model's own held-out conversations (one M3 slice per group) plus
+# heldout-written-se.txt, independent written text that no prompt was derived from.
+EVAL_FILES="heldout-written-se.txt $(ls "$RUN"/heldout/heldout-oqt-*.txt 2>/dev/null | tr '\n' ' ')"
+D_SCORE="$(printf '%s|%s|%s|%s' "$D_BUILD" "$(cat "$CORPUS_REPO"/eval/heldout-*.txt "$RUN"/heldout/heldout-oqt-*.txt 2>/dev/null | hash_of)" \
     "${OQ_SKIP_PPL:-0}/${OQT_M3:-1}/${M3_SEQ:-2048}/${M3_MAX_WINDOWS:-64}" "$(hash_of < "$CORPUS_REPO/scripts/score_vs_bf16.py")" | hash_of)"
 if [ "${OQ_SKIP_PPL:-0}" = "1" ] && [ "${OQT_M3:-1}" = "0" ]; then
     log "score: skipped (OQ_SKIP_PPL=1 and OQT_M3=0)"
 else
-    run_stage score "$D_SCORE" env OQT_SCORE_ONLY=1 "$CORPUS_REPO/scripts/omlx_oqt.sh" "$LEVEL" "$NAME"
+    run_stage score "$D_SCORE" env OQT_SCORE_ONLY=1 M3_FILES="${M3_FILES:-$EVAL_FILES}" \
+        PPL_FILES="${PPL_FILES:-$EVAL_FILES}" "$CORPUS_REPO/scripts/omlx_oqt.sh" "$LEVEL" "$NAME"
 fi
 
 # ----------------------------------------------------------------- summary

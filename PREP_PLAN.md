@@ -9,7 +9,7 @@ One command turns this repo into **on-policy, chat-formatted calibration and hel
 Must hold:
 - **One command, resumable.** Every result is content-addressed (hash of source block + settings + model build), so a rerun only redoes what changed.
 - **Model-agnostic storage.** Conversations are stored as plain message turns and rendered into each model's chat template only when oQ-T consumes them.
-- **Prompts shared, answers per model.** The prompt bank is built once. Answers and agent sessions are regenerated per target model (Qwen first, DeepSeek later).
+- **Prompts shared, answers per model.** The prompt bank is built once. Answers and agent sessions are regenerated per target model.
 - **Heldouts sealed.** No heldout prompt, task or repo ever reaches the calibration output, and that is checked mechanically.
 
 ## 2. Inputs (prompt sources)
@@ -21,8 +21,8 @@ Must hold:
 | **C. 04 passages** | 15 passage blocks | Used as plain text in the broad slice, or prompted as "summarize / answer questions about this". |
 | **D. Generic seed list** | ~50 task types outside the profile (debug a test, design review, proof, SQL, translation, other languages…) | The model writes prompts from each seed. This is the corpus-free arm. |
 | **E. Agent tasks** | Mined Multi-SWE-bench instances plus small tasks on repos from the stack and the new domains | Run as real agent sessions in a sandbox (§5). |
-| **F. Broad slice** | General chat, reasoning, multilingual, tool-calling | Seed-generated only: a second seed list (~30 broad task types) answered by the model. The vendored Jundot slices are **not** used for oQ-T (they stay in `vendor/` for the legacy oQe scripts only). |
-| **Heldouts** | `eval/heldout-*.txt`, `eval/mined-holdout-ids.txt`, plus held-out tasks for each new domain | Same pipeline, written to a separate output. |
+| **F. Broad slice** | General chat, reasoning, multilingual, tool-calling | Seed-generated only: a second seed list (~30 broad task types) answered by the model. |
+| **Heldouts** | `eval/heldout-written-se.txt` (independent written text), plus a share of the model's own conversations per group (`OQT_HOLDOUT_SHARE`, whole prompts and agent tasks) kept out of the calibration | M3 and PPL slices: `heldout-oqt-corpus`, `-generic`, `-broad`, `-agent`. |
 
 Files 29 and 30 stay unweighted (share 0) and are skipped unless enabled.
 
@@ -85,11 +85,11 @@ Each stage reads the previous stage's cached output and writes its own, keyed by
 
 The script uses three generic levels and maps them to each model's own names, so nothing model-specific leaks into the prompts or the mix:
 
-| Generic level | Meaning | Qwen3.8-Flash-Next | DeepSeek V4.1 |
-|---|---|---|---|
-| `low` | The model's lowest thinking level (thinking still on) | `low` | Lowest value of its numeric effort scale |
-| `medium` | The middle level | `medium` | Middle value |
-| `max` | **Exactly one** level: the model's highest, whatever it's called (`max`, `xhigh` or `high`) | `xhigh` | Highest value |
+| Generic level | Meaning | Qwen3.8-Flash-Next |
+|---|---|---|
+| `low` | The model's lowest thinking level (thinking still on) | `low` |
+| `medium` | The middle level | `medium` |
+| `max` | **Exactly one** level: the model's highest, whatever it's called (`max`, `xhigh` or `high`) | `xhigh` |
 
 - The mapping lives in a small per-model table, read from the model's chat template or encoding reference when possible. An unknown model fails with a clear message instead of guessing.
 - Default mix: **~70% `max`** (your normal setting), ~15% `medium`, ~15% `low`. The per-level split is in the report, so it can be tuned.
@@ -209,7 +209,7 @@ Settled 2026-11-11:
 - **Object storage:** Garage (Deuxfleurs) replaces MinIO as the reference S3 server.
 - **Godot:** GDScript only (plus GDShader, Godot's shader language); no C#.
 - **Embedded:** broad Espressif coverage (table in §3) across Arduino, ESP-IDF and Rust, newest chips first; probe-rs included as knowledge only. Non-Espressif targets: AVR, RP2040, Cortex-M through QEMU. LoRa, LilyGO and Heltec devices and Reticulum in file 47; sensors and embedded ML in file 48.
-- **Broad slice:** seed-generated; no Jundot for oQ-T.
+- **Broad slice:** seed-generated.
 - **Reasoning effort:** generic `low` / `medium` / `max` (§4a), ~70% `max`.
 - **Observability:** add Splunk alongside the OTel/Prometheus/Grafana stack.
 - **Further domains:** all ten in §14, with Jenkins in 39 and Mermaid in 45, plus 47 (LoRa/Reticulum) and 48 (sensors and embedded ML).

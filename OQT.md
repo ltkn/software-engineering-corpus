@@ -4,7 +4,7 @@ oQ-T ("teacher-matched") is a better way to choose a quant's weights. Instead of
 
 **One command does everything:** your local model answers the corpus prompts, those answers become the calibration text, and the oQ-T quant is built from them.
 
-Supported today: **Qwen3.8-Flash-Next**. DeepSeek V4.1 is not supported yet (the script stops with a clear message).
+Supported: **Qwen3.8-Flash-Next** and fine-tunes of the same architecture (the scripts stop on any other checkpoint).
 
 ## One-time setup on the 128 GB Mac
 
@@ -115,7 +115,19 @@ After each build, the score stage compares the quant with the **original BF16 mo
 - **top-1**: how often it picks the same most likely token
 - **route / flips**: how much router probability moved to other experts, and on what share of tokens the expert set changed
 
-The original model's outputs are recorded once by streaming the BF16 source block by block over the heldout files (it never has to fit in memory; expect one to two hours) and cached in `~/oqup/anchors/`. Every later quant is scored against the same reference in minutes, split by heldout file.
+**What it's measured on.** The render stage keeps 5% of the prompts and agent tasks (`OQT_HOLDOUT_SHARE`) out of the calibration: the model's answers to them are never calibrated on, and become the eval. One slice per group, so the score says where a quant loses:
+
+| Slice | What it is |
+|---|---|
+| `heldout-oqt-corpus` | the model's answers (thinking included) to held-out corpus prompts: your stack |
+| `heldout-oqt-generic` | answers to held-out generic software prompts |
+| `heldout-oqt-broad` | answers to held-out non-coding, multilingual and tool-calling prompts |
+| `heldout-oqt-agent` | whole held-out agent sessions: tool calls, tool output, long context |
+| `heldout-written-se` | `eval/heldout-written-se.txt`, written SE text no prompt was derived from (the independent check) |
+
+They are in `~/oqup/runs/<name>/heldout/`. Whole prompts and tasks are held out, never single answers, so no near-twin of an eval text is in the calibration. A slice needs at least one 2,048-token window: with a pilot-size budget some are too small to score, with the full budget each has several.
+
+The original model's outputs are recorded once by streaming the BF16 source block by block over these files (it never has to fit in memory) and cached in `~/oqup/anchors/`. Every later quant scored on the same files reuses that reference and takes minutes, split by slice. A new run name has its own held-out files, so it records its own reference once.
 
 Compare all your quants side by side:
 
@@ -137,13 +149,15 @@ To see what your corpus adds, build a second quant without it:
 OQT_PROFILE=generic nohup scripts/oqt_pipeline.sh 4 v1-generic > ~/oqup/oqt-v1-generic.out 2>&1 &
 ```
 
-Prompts and answers are cached in `~/oqup/prep-cache`, so this run reuses the generic and broad answers from your main run and only generates what is missing. Then compare the two quants' heldout scores: if `v1` beats `v1-generic` on your domain without losing on `heldout-general`, the corpus earns its place.
+Prompts and answers are cached in `~/oqup/prep-cache`, so this run reuses the generic and broad answers from your main run and only generates what is missing. Then compare the two quants' heldout scores: if `v1` beats `v1-generic` on the corpus slice without losing on the generic and broad slices, the corpus earns its place. Score both quants on the **same** held-out files: `score_vs_bf16.py score --reference <v1's M3 reference>` for the `v1-generic` quant (the generic arm holds out no corpus conversations of its own).
 
 ## Stop, resume, change something
 
 - **Stop it any time:** `kill <pid>` (the pid is in `status`) or Ctrl-C. Everything stops cleanly, including the server.
-- **Resume:** run the **same command** again. Finished stages are skipped, answers already generated are reused, and the build continues from the last finished layer.
-- **Changed the corpus or a setting?** Run the same command again. Only the stages affected by the change are redone (for example, a bigger `BUDGET_TOKENS` generates only the extra answers, then rebuilds).
+- **Resume:** `scripts/oqt_pipeline.sh 4 v1` is enough, even after a reboot. A run saves its settings (`GENERATOR`, `BUDGET_TOKENS`, `EFFORT_MIX`, ...) in `~/oqup/runs/v1/settings.env` on its first start and reuses them, so a resume can't silently switch to another generator or budget. `status` shows them. Finished stages are skipped, answers already generated are reused, and the build continues from the last finished layer.
+- **Changed the corpus?** Run it again: only the stages affected by the change are redone.
+- **Changing a setting of an existing run** has to be on purpose: a different value stops the run with the old and new values, unless you add `OQT_CHANGE_SETTINGS=1` (for example `OQT_CHANGE_SETTINGS=1 BUDGET_TOKENS=2000000 scripts/oqt_pipeline.sh 4 v1` generates only the extra answers, then rebuilds). Or start a new run name. `CONCURRENCY` and `PORT` only change speed and can be changed freely.
+- **During the build** Docker isn't needed (the agent sessions are done and cached): `colima stop` gives its memory to the build. The pipeline warns before the build if Docker is still running, or if `iogpu.wired_limit_mb` leaves macOS less than 12 GB. A build that starves macOS freezes the Mac until the kernel watchdog reboots it; the build then resumes from its last finished layer. Run long builds under `caffeinate -dimsu`.
 
 ## When it finishes
 
@@ -169,7 +183,7 @@ ln -s ~/models-out/Qwen3.8-Flash-Next-oQ4t-v1 ~/.omlx/models/
 
 ## Options
 
-Put them in front of the command, for example `BUDGET_TOKENS=500000 scripts/oqt_pipeline.sh 4 v1`.
+Put them in front of the command, for example `BUDGET_TOKENS=500000 scripts/oqt_pipeline.sh 4 v1`. They are saved with the run on its first start and reused on resume (see Stop, resume, change something); `OQT_CHANGE_SETTINGS=1` changes them for an existing run.
 
 | Option | Default | Effect |
 |---|---|---|
@@ -187,6 +201,7 @@ Put them in front of the command, for example `BUDGET_TOKENS=500000 scripts/oqt_
 | `AGENT_SAMPLES` | `2` | Agent sessions per task in `agent_tasks/tasks` |
 | `OQT_LONG_SHARE` | `0.25` | Share of calibration tokens in long windows (`0` = off) |
 | `OQT_LONG_LEN` | `32768` | Long window length in tokens |
+| `OQT_HOLDOUT_SHARE` | `0.05` | Share of prompts and agent tasks kept out of the calibration as the M3 eval (`0` = none: then only `heldout-written-se` is scored) |
 | `OQT_M3=0` | on | Skip scoring against the original model |
 | `M3_SEQ`, `M3_MAX_WINDOWS` | `2048`, `64` | M3 window length and windows per heldout file |
 | `OQT_COMPARE=1` | off | Also build a plain oQe quant from the same text and score both |
@@ -211,6 +226,9 @@ The pipeline log says which stage failed and shows the last lines of that stage'
 | "no BF16 source found" | The lines above it say why: the official repo is missing or its download is incomplete (run the `huggingface-cli download` it prints), or you meant a fine-tune (add `SOURCE_REPO=<org>/<name>`). `SRC=<snapshot dir>` always works. |
 | "source is not the official Qwen/Qwen3.8-Flash-Next" | Add `GENERATOR=<a quant of that same fine-tune>`. |
 | "this oMLX checkout has no oQ-T" | Redo setup step 1 (`git checkout feat/oqt`). |
+| "run 'v1' was started with other settings" | A resume gave a setting with another value than the run was started with (it lists both). Leave it out to resume as it was, add `OQT_CHANGE_SETTINGS=1` to change it, or use a new run name. |
+| The Mac rebooted during the build (a `watchdog timeout` panic in `/Library/Logs/DiagnosticReports`) | Memory ran out. Stop colima and other apps, check `sysctl iogpu.wired_limit_mb` (0 or at least 16 GB below RAM), then resume: finished layers are reused. If it happens again, `OQT_CHANGE_SETTINGS=1 OQ_SAMPLES=128` halves the build's working memory (the sweep restarts). |
+| An agent session ends with `invalid tool call` | The model wrote a tool call the server can't parse three times in a row at that step. The session keeps its earlier turns; nothing to do. |
 | "the oMLX server exited" | See `~/oqup/runs/v1/logs/server.log` (often: not enough memory, or a model that doesn't load). |
 
 ## Where things go
@@ -228,7 +246,7 @@ The pipeline log says which stage failed and shows the last lines of that stage'
 - Resume is per request (answers), per layer (oQ-T sweep) and per output shard (file writing). One step still restarts from its own beginning if interrupted: oMLX's imatrix pass. Its duration on your Mac decides whether it's worth making resumable.
 - Expert tiers (more bits for popular experts) need a change in oMLX's serving code; they will be built only if your builds show a strong tiering signal.
 - The variation pass from `PREP_PLAN.md` is not in yet. Agent tasks cover 7 languages so far (no Spring/Postgres/Kafka services, Godot or embedded builds yet).
-- Not yet: expert tiers (runtime), DeepSeek V4.1, sealed agent tasks for behavioral scoring.
+- Not yet: expert tiers (runtime), sealed agent tasks for behavioral scoring.
 
 ## Lower-level: build from a text file directly
 

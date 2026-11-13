@@ -1,24 +1,11 @@
 {
   "schema": 1,
-  "tokenizer": {
-    "name": "pin at implementation",
-    "version": "pin at implementation",
-    "command": "llama-tokenize -m <model.gguf> --ids",
-    "rule": "all token counts in this manifest come from the one pinned tokenizer"
-  },
-  "counting": {
-    "precheck": "bytes / 5.5 (corpus-wide chars-per-token from the 12 recorded files), marked est",
-    "actual": "llama-tokenize with the pinned tokenizer, replacing the est values"
-  },
   "bundle": {
     "target_tokens": "200k-250k weighted",
     "blocks_counted": 2157,
     "unweighted_estimate": "~280.9k est of 2157 counted blocks (bytes/5.5 pre-check; 2026-11-11 added the task-first files 32-48 and task-first blocks in 20-observability, refreshed the same day against 2025-2026 releases; these blocks are prompts for oQ-T generation rather than calibration text; ~1063.1k as sum(tokens x weight))",
     "eval": [
-      "eval/heldout-se.txt",
-      "eval/heldout-general.txt",
-      "eval/heldout-offensive.txt",
-      "eval/heldout-reasoning.txt"
+      "eval/heldout-written-se.txt"
     ],
     "target_note": "target_tokens is the unweighted corpus estimate measured against the budget when the corpus was 12 recorded files; sum(tokens x weight) is the effective training volume the imatrix pass reads. See SPEC Bundle arithmetic."
   },
@@ -381,10 +368,9 @@
     "excluded": [
       "elastic__logstash (Elastic License/SSPL)"
     ],
-    "split_rule": "sha1(instance_id) % 2: even=mined, odd=sealed holdout",
+    "split_rule": "sha1(instance_id) % 2: even=mined into 02, odd=never used. The odd-half id list (149 instances) and the miner were removed 2026-11-13; re-derive both from this rule if a SWE-bench-style eval is ever built.",
     "mined_count": 37,
     "holdout_count": 149,
-    "holdout_ids": "eval/mined-holdout-ids.txt (sealed: never add these instances to calibration)",
     "target_file": "02-repair-loops.txt",
     "mined_instance_ids": [
       "darkreader__darkreader-7241",
@@ -425,30 +411,5 @@
       "mui__material-ui-24205",
       "mui__material-ui-23884"
     ]
-  },
-  "vendor": {
-    "jundot-oqe": {
-      "source": "omlx/oqe_calibration_data.json, https://github.com/jundot/omlx (2026-10-10)",
-      "source_sha256": "04d98e2d7367f7a53e3efa759acded87717d8b70562df142e1e02963af571aa0",
-      "license": "Apache-2.0 (repo LICENSE; complies via vendor/jundot-oqe/ATTRIBUTION.md)",
-      "slices": [
-        "code",
-        "tool_calling",
-        "chat",
-        "reasoning"
-      ],
-      "omitted": [
-        "ko",
-        "zh",
-        "ja",
-        "en",
-        "mixed",
-        "bartowski"
-      ],
-      "texts": 1055,
-      "chars": 2289065,
-      "regenerate": "python3 scripts/vendor_oqe_slices.py <oqe json>",
-      "note": "Build input only: appended after calibration/*.txt by scripts/omlx_oq*.sh. Never hand-edit; never counted by format/budget lints."
-    }
   }
 }

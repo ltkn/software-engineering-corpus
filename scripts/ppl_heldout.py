@@ -5,22 +5,14 @@
 Loads the quant through oMLX's own runtime. For qwen4_exp checkpoints
 (DeltaNet + QSA + PLE n-gram) there is no mlx-lm model module, so the load
 goes through the vendored mlx-vlm registration exactly at the oMLX server
-stack (pre-load patches, forced sanitize, mmap PLE). For DeepSeek V4.1 it
-goes through the V4.1 loader with Engram SSD offload and optional routed-
-expert offload, so a 128 GB host can score without materializing the full
-Engram or expert set.
+stack (pre-load patches, forced sanitize, mmap PLE).
 
 Run it once per model — one process per quant, the large loads don't
 co-reside:
 
     ~/dev/omlx/.venv-3.12/bin/python scripts/ppl_heldout.py \
-        --model ~/models-out/Qwen3.8-Flash-Next-oQ5e-stock \
-        --files eval/heldout-se.txt eval/heldout-general.txt
-
-    OQ_PPL_EXPERT_FRACTION=0.25 \
-    ~/dev/omlx/.venv-3.12/bin/python scripts/ppl_heldout.py \
-        --model ~/models-out/DeepSeek-V4.1-Flash-1017-oQ3e-se-q3-ngram8 \
-        --files eval/heldout-se2.txt eval/heldout-se.txt eval/heldout-general.txt \
+        --model ~/models-out/Qwen3.8-Flash-Next-oQ4t-v1 \
+        --files eval/heldout-written-se.txt ~/oqup/runs/v1/heldout/heldout-oqt-*.txt \
         --chunk 2048
 
 Teacher anchors (source-model reference; run once, reuse for every quant):
@@ -28,46 +20,37 @@ Teacher anchors (source-model reference; run once, reuse for every quant):
     # one-time, against the source checkpoint on the quant host
     ~/dev/omlx/.venv-3.12/bin/python scripts/ppl_heldout.py \
         --model <source-checkpoint> \
-        --files eval/heldout-se2.txt eval/heldout-se.txt eval/heldout-general.txt \
-        --chunk 2048 --teacher-save ~/oqup/teacher-anchors-se2-2048.npz
+        --files eval/heldout-written-se.txt \
+        --chunk 2048 --teacher-save ~/oqup/teacher-anchors-written-se-2048.npz
 
     # every later quant run adds the absolute comparison
     ~/dev/omlx/.venv-3.12/bin/python scripts/ppl_heldout.py \
         --model ~/models-out/<quant> --files ... --chunk 2048 \
-        --teacher ~/oqup/teacher-anchors-se2-2048.npz
+        --teacher ~/oqup/teacher-anchors-written-se-2048.npz
 
 The anchor file stores the teacher's per-token argmax and NLL, so the two
 models never have to co-reside in RAM (they cannot on a 128 GB host). The
 student run reports teacher NLL/token, the NLL delta against it, and top-1
 agreement with the teacher's argmax — the absolute preservation measure.
 Anchors are keyed by file sha256 and chunk width; either changing means
-rebuild the anchors. The omlx_oq4e.sh build tail automates this: it
-content-addresses the anchor under $OQUP and builds it on first use, then
-reuses it for every later build.
+rebuild the anchors. (For oQ-T builds, scripts/score_vs_bf16.py's M3 score
+is the fuller comparison with the source: KL, top-1 and routing.)
 
-Add ``--json out.json`` to write machine-readable results;
-``scripts/ppl_verdict.py`` turns them into a ship/no-ship card (vs the source
-floor and vs the accepted baseline) and appends the run to
-``eval/history.jsonl``. Baseline promotion is manual (``--write-baseline``).
+Add ``--json out.json`` to write machine-readable results.
 
 The script needs the quant host's `~/dev/omlx` venv python (it imports
 `omlx` and `mlx_vlm`, both pinned there). Only PPL deltas between runs
 matter: same chunking for both models, and the first pair should use the
 same files. Per-chunk NLL lines let you spot WHICH heldout region diverges,
-not just the average. `heldout-se.txt` is the domain-relevant comparison;
-`heldout-general.txt` is where stock shouldn't be sacrificed.
-
-For DeepSeek V4.1, `--moe-resident-fraction` (or
-`OQ_PPL_EXPERT_FRACTION`) controls how much of the routed-expert set stays
-resident; the rest streams from the checkpoint. The default 0.25 matches the
-quant host's safe serving range. Set it to 1.0 on a host with enough RAM.
+not just the average. The oQ-T pipeline scores `eval/heldout-written-se.txt` (written
+software-engineering text) and the model's own held-out conversations
+(`<run>/heldout/heldout-oqt-<group>.txt`: corpus, generic, broad, agent).
 """
 
 import argparse
 import hashlib
 import json
 import math
-import os
 import sys
 import time
 from pathlib import Path
@@ -86,7 +69,7 @@ def file_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def load_omlx_quant(model_path: str, *, moe_resident_fraction: float | None = None):
+def load_omlx_quant(model_path: str):
     """Load an oQ quant the way the oMLX server does for its model family.
 
     qwen4_exp: the text arch (GatedDeltaNet + QSA + PLE n-gram) has no mlx-lm
@@ -96,27 +79,11 @@ def load_omlx_quant(model_path: str, *, moe_resident_fraction: float | None = No
     calibration loads use). Forced sanitize is mandatory for MLX-format
     files: mlx-vlm otherwise skips Model.sanitize and the
     `model.language_model.*` weight keys never bind.
-
-    deepseek_v41: the V4.1 loader reads converted or source checkpoints with
-    Engram on SSD and, when asked, keeps only a fraction of each layer's
-    routed experts resident. That is the same runtime used by the server, so
-    PPL remains comparable with serving without fitting 400+ GB in RAM.
     """
     path = Path(model_path).expanduser()
     if not path.is_dir():
         raise FileNotFoundError(model_path)
     config = json.loads((path / "config.json").read_text())
-    model_type = str(config.get("model_type", "")).lower().replace("-", "_")
-    if model_type == "deepseek_v41":
-        from omlx.patches.deepseek_v41.loading import load as v41_load
-
-        kwargs = {"engram_ssd_offload": True}
-        if moe_resident_fraction is not None:
-            kwargs["moe_expert_offload_resident_fraction"] = moe_resident_fraction
-        model, processor = v41_load(str(path), **kwargs)
-        tokenizer = getattr(processor, "tokenizer", processor)
-        return model, tokenizer
-
     from omlx.engine.vlm import _force_qwen4_exp_sanitize_on_load
     from omlx.oq import _calibration_model_settings
     from omlx.utils.model_loading import (
@@ -129,7 +96,7 @@ def load_omlx_quant(model_path: str, *, moe_resident_fraction: float | None = No
     )
     if settings is None:
         raise ValueError(
-            "only qwen4_exp and deepseek_v41 checkpoints are wired through "
+            "only qwen4_exp checkpoints are wired through "
             f"this loader; config says {config.get('model_type')!r}"
         )
     maybe_apply_pre_load_patches(str(path), model_settings=settings, for_vlm=True)
@@ -277,13 +244,6 @@ def main() -> int:
     ap.add_argument("--model", required=True, help="quant dir (config.json + safetensors) or HF id")
     ap.add_argument("--files", required=True, nargs="+", help="heldout text files to score, one by one")
     ap.add_argument("--chunk", type=int, default=DEFAULT_CHUNK, help="tokens per scoring window (default 512)")
-    ap.add_argument(
-        "--moe-resident-fraction",
-        type=float,
-        default=float(os.environ.get("OQ_PPL_EXPERT_FRACTION", "0.25")),
-        help="DeepSeek V4.1 routed-expert resident fraction (default 0.25; "
-        "OQ_PPL_EXPERT_FRACTION overrides)",
-    )
     anchors_group = ap.add_mutually_exclusive_group()
     anchors_group.add_argument(
         "--teacher",
@@ -299,7 +259,7 @@ def main() -> int:
     ap.add_argument(
         "--json",
         metavar="PATH",
-        help="write machine-readable results (consumed by scripts/ppl_verdict.py)",
+        help="write machine-readable results",
     )
     args = ap.parse_args()
 
@@ -331,9 +291,7 @@ def main() -> int:
         )
 
     print(f"loading {args.model} ...", file=sys.stderr, flush=True)
-    model, tokenizer = load_omlx_quant(
-        args.model, moe_resident_fraction=args.moe_resident_fraction
-    )
+    model, tokenizer = load_omlx_quant(args.model)
     if model is None or tokenizer is None:
         print("load returned no model/tokenizer", file=sys.stderr)
         return 1

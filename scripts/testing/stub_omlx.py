@@ -48,7 +48,13 @@ class H(BaseHTTPRequestHandler):
         tool_names = [t["function"]["name"] for t in body.get("tools") or []]
         if "finish" in tool_names and "run" in tool_names:
             # Scripted coding agent: explore, fix, verify, finish.
-            bump("agent")
+            k = bump("agent")
+            if os.environ.get("STUB_BAD_TOOL_CALLS") and k in (2, 3):
+                # A tool call the server cannot parse: oMLX reports it in a 200 body
+                # once the response has started, or as an HTTP 500 before.
+                err = {"error": {"message": "Model output contains an unrecoverable tool call.",
+                                 "type": "server_error", "code": "invalid_tool_call"}}
+                return self._send(err, 200 if k == 2 else 500)
             done = sum(1 for m in body["messages"] if m["role"] == "tool")
             script = [("list_files", {"path": "."}),
                       ("write_file", {"path": "answer.txt", "content": "42\n"}),

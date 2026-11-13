@@ -4,8 +4,7 @@ the bundle and the manifest have genuinely drifted apart.
 
 Measured per file: bytes, est tokens (bytes/5.5), blocks, tokens/block, and the
 file's share of the weighted bundle compared with the share its manifest weight
-declares. Estimates, not tokenizer actuals: `scripts/count_tokens.sh` replaces
-them when the GGUF is local, and this script's tolerances are wide enough that
+declares. Estimates, not tokenizer actuals: the tolerances are wide enough that
 the real tokenizer will not surprise it.
 
 Hard failures (exit 1)

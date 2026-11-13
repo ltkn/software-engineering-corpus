@@ -26,6 +26,47 @@ import time
 import uuid
 from pathlib import Path
 
+
+class ServerError(ValueError):
+    """The server answered with an error instead of a completion.
+
+    oMLX reports some failures in a 200 body (``{"error": {...}}``, no
+    ``choices``), for example ``invalid_tool_call`` when the model wrote a tool
+    call it cannot parse; others come as an HTTP error status. ``code`` is the
+    server's error code when it gives one. A ValueError, so callers that
+    already retry on bad responses keep doing so.
+    """
+
+    def __init__(self, message: str, code: str | None = None, status: int | None = None):
+        super().__init__(message)
+        self.code = code
+        self.status = status
+
+    @classmethod
+    def from_response(cls, payload, status: int | None = None) -> "ServerError":
+        if isinstance(payload, (bytes, str)):
+            text = payload.decode("utf-8", "replace") if isinstance(payload, bytes) else payload
+            try:
+                payload = json.loads(text)
+            except ValueError:
+                return cls(f"server error {status}: {text.strip()[:300] or '(empty body)'}", None, status)
+        err = payload.get("error") if isinstance(payload, dict) else None
+        if isinstance(err, dict):
+            code = err.get("code") or err.get("type")
+            message = err.get("message") or json.dumps(err)[:300]
+        else:
+            code = None
+            message = str(err if err is not None else (payload.get("detail") if isinstance(payload, dict) else None)
+                          or json.dumps(payload)[:300])
+        where = f" {status}" if status else ""
+        what = f" ({code})" if code else ""
+        return cls(f"server error{where}{what}: {message}", code, status)
+
+
+# A malformed tool call is a sampling accident: ask again this many times
+# before ending the session (keeping the turns it already has).
+INVALID_TOOL_CALL_RETRIES = 2
+
 TOOLS = [
     {"type": "function", "function": {
         "name": "list_files", "description": "List files under a directory of the repository (depth 3).",
@@ -219,7 +260,7 @@ def run_session(task: dict, chat_fn, payload_base: dict, *, work_root: Path, san
     shutil.copytree(Path(task["dir"]) / "repo", work)
     sandbox = SANDBOXES[sandbox_kind](work, task.get("image"))
     messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": task["prompt"]}]
-    steps = tokens = 0
+    steps = tokens = invalid_tool_calls = 0
     stop_reason = "max steps"
     calls_seen: list[str] = []
     t0 = time.time()
@@ -231,7 +272,19 @@ def run_session(task: dict, chat_fn, payload_base: dict, *, work_root: Path, san
         tools = Tools(work, sandbox, int(task.get("command_timeout", 120)))
         while steps < max_steps:
             steps += 1
-            body = chat_fn({**payload_base, "messages": messages, "tools": TOOLS})
+            body = None
+            for _ in range(INVALID_TOOL_CALL_RETRIES + 1):
+                try:
+                    body = chat_fn({**payload_base, "messages": messages, "tools": TOOLS})
+                    break
+                except ServerError as e:
+                    if e.code != "invalid_tool_call":
+                        raise
+                    invalid_tool_calls += 1
+            if body is None:
+                steps -= 1
+                stop_reason = "invalid tool call"
+                break
             choice = body["choices"][0]
             msg = choice.get("message") or {}
             tokens += int((body.get("usage") or {}).get("completion_tokens") or 0)
@@ -281,5 +334,6 @@ def run_session(task: dict, chat_fn, payload_base: dict, *, work_root: Path, san
     elif n_calls == 0:
         keep, why = False, "no tool calls"
     return {"task": task["id"], "domain": task.get("domain"), "messages": messages, "tools": TOOLS,
-            "steps": steps, "tool_calls": n_calls, "stop_reason": stop_reason, "check_passed": passed,
+            "steps": steps, "tool_calls": n_calls, "invalid_tool_calls": invalid_tool_calls,
+            "stop_reason": stop_reason, "check_passed": passed,
             "tokens": tokens, "seconds": round(time.time() - t0, 1), "keep": keep, "why": why}

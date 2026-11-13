@@ -10,7 +10,7 @@ Run with the oMLX venv python (needs omlx feat/oqt).
              top-1 agreement, routing flips per MoE layer, per slice.
   compare    Print several score files side by side.
 
-  python score_vs_bf16.py reference --src <bf16 dir> --files eval/heldout-se.txt ... --out ref.npz
+  python score_vs_bf16.py reference --src <bf16 dir> --files eval/heldout-written-se.txt <run>/heldout/heldout-oqt-*.txt --out ref.npz
   python score_vs_bf16.py score --model <quant dir> --reference ref.npz --json out.json
   python score_vs_bf16.py compare out1.json out2.json ...
 """

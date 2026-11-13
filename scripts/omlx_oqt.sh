@@ -93,11 +93,8 @@ if [ -z "${SRC:-}" ]; then
     SRC="$(find_bf16_source "$HUB" "${SOURCE_REPO:-}")" || die "no BF16 source found (see above)"
 fi
 [ -f "$SRC/config.json" ] || die "no config.json in SRC=$SRC"
-if grep -q 'deepseek_v41' "$SRC/config.json"; then
-    die "oQ-T does not support DeepSeek V4.1 yet; use scripts/omlx_deepseek_v41_oq3e.sh"
-fi
 grep -q 'qwen4_exp' "$SRC/config.json" \
-    || echo "WARNING: source is not qwen4_exp; oQ-T streams only oMLX's streamable layouts" >&2
+    || die "SRC=$SRC is not a Qwen3.8-Flash-Next (qwen4_exp) checkpoint, the only architecture oQ-T supports"
 
 case "$SRC" in
     *models--*) _t="${SRC%%/snapshots/*}"; _t="${_t##*models--}"; MODEL_TAG="${_t#*--}" ;;
@@ -138,7 +135,7 @@ echo "machine    : ${ram_gb} GB RAM, ${free_gb:-?} GB free"
 m3_score() { # <quant-dir> <label>: KL / top-1 / routing flips vs the original BF16 model
     [ "${OQT_M3:-1}" = "1" ] || { echo "M3 scoring skipped (OQT_M3=0)"; return 0; }
     local files=() p
-    for p in ${M3_FILES:-heldout-se2.txt heldout-se.txt heldout-general.txt heldout-reasoning.txt}; do
+    for p in ${M3_FILES:-heldout-written-se.txt}; do
         [[ "$p" == /* ]] || p="$CORPUS_REPO/eval/$p"; [ -f "$p" ] && files+=("$p")
     done
     local key; key="$( { printf 'seq %s max %s\n' "${M3_SEQ:-2048}" "${M3_MAX_WINDOWS:-64}"
@@ -164,15 +161,14 @@ score() { # <quant-dir> <label>
     m3_score "$1" "$2"
     if [ "${OQ_SKIP_PPL:-0}" = "1" ]; then echo "heldout scoring skipped (OQ_SKIP_PPL=1)"; return 0; fi
     local files=() p
-    for p in ${PPL_FILES:-heldout-se2.txt heldout-se.txt heldout-general.txt}; do
+    for p in ${PPL_FILES:-heldout-written-se.txt}; do
         [[ "$p" == /* ]] || p="$CORPUS_REPO/eval/$p"; files+=("$p")
     done
     local plog="$OQUP/ppl-$MODEL_TAG-oQ${LEVEL}-$VERSION-$2.log"
     local cmd=("$VENV_PY" "$CORPUS_REPO/scripts/ppl_heldout.py" --model "$1" --files "${files[@]}"
                --chunk "${PPL_CHUNK:-2048}" --json "${plog%.log}.json")
-    # Reuse teacher anchors if the oQe scripts already built them for these files.
-    local anchor; anchor="$(ls -t "$OQUP"/teacher-anchors-*.npz 2>/dev/null | head -1 || true)"
-    [ -n "${PPL_TEACHER:-$anchor}" ] && cmd+=(--teacher "${PPL_TEACHER:-$anchor}")
+    # Optional teacher anchors (ppl_heldout.py --teacher-save on the source); M3 covers this by default.
+    [ -n "${PPL_TEACHER:-}" ] && cmd+=(--teacher "$PPL_TEACHER")
     say "heldout scores: $2 (keep the oMLX server stopped)"
     if "${cmd[@]}" > "$plog" 2>&1; then cat "$plog"; else
         echo "WARNING: scoring failed, see $plog (the quant itself is fine)" >&2; fi
