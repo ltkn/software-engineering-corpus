@@ -22,8 +22,18 @@ cd ~/dev/software-engineering-corpus && git pull
 ```bash
 mkdir -p ~/oqup
 # stop your own oMLX server (menu bar app or the terminal it runs in): the pipeline runs its own
-colima start                                       # Docker for the agent sessions
+colima start                                       # Docker, only while agent sessions must run
 ```
+
+Docker is only needed when agent sessions have to run. When all of them are already cached (same generator, same tasks, e.g. another level or an oQ-T+ build from the same answers), the log says `docker: not needed` and colima can stay stopped.
+
+**Optional, once per generator: find its fastest decoding setting** (about 20 minutes, see Faster answers):
+
+```bash
+GENERATOR=~/models-out/Qwen3.8-Flash-Next-oQ6e-coder-q8-ngram-mtp scripts/oqt_pipeline.sh bench
+```
+
+It ends with one line saying which `OQT_MTP=...` to add to the run command, or that the current setting is already the fastest.
 
 **3. Start the run.** Choose the level (`4` here) and a run name (`v2` here; a new name for each new quant).
 
@@ -56,6 +66,7 @@ colima stop
 
 ```bash
 scripts/oqt_pipeline.sh results                    # every quant side by side
+scripts/oqt_pipeline.sh compare v1 v2              # two runs, metric by metric, with a verdict
 
 colima start                                       # optional, ~1 h: does the quant still solve the agent tasks?
 OQT_AGENT_EVAL=1 scripts/oqt_pipeline.sh 4 v2
@@ -72,12 +83,47 @@ GENERATOR=~/models-out/Qwen3.8-Flash-Next-oQ6e-coder-q8-ngram-mtp \
 caffeinate -dimsu nohup scripts/oqt_pipeline.sh 5 v2-q5 > ~/oqup/oqt-v2-q5.out 2>&1 &
 ```
 
+**An oQ-T+ quant from the same answers** (more bits where the expert routing drifts; see oQ-T+ below). New run name, same generator; nothing is regenerated and Docker isn't needed, so it is the build and score (~6–7 h):
+
+```bash
+OQT_PLUS=1 GENERATOR=~/models-out/Qwen3.8-Flash-Next-oQ6e-coder-q8-ngram-mtp \
+caffeinate -dimsu nohup scripts/oqt_pipeline.sh 4 v2-plus > ~/oqup/oqt-v2-plus.out 2>&1 &
+# when it's done:
+scripts/oqt_pipeline.sh compare v2 v2-plus
+```
+
 **A run started with older scripts** (v1 was): let it finish on the scripts it started with, then update (step 1). If you want to run something more on that finished run, add `OQT_KEEP_BUILD=1` so the updated scripts keep its quant instead of rebuilding it (it checks the quant was built from the same calibration text):
 
 ```bash
 colima start
 OQT_KEEP_BUILD=1 OQT_AGENT_EVAL=1 scripts/oqt_pipeline.sh 4 v1
+colima stop
 ```
+
+**Your next steps after v1, in order:**
+
+```bash
+# 1. update (step 1), then score v1 with the new scripts and run its agent eval (~1-2 h)
+colima start
+OQT_KEEP_BUILD=1 OQT_AGENT_EVAL=1 scripts/oqt_pipeline.sh 4 v1
+colima stop
+
+# 2. oQ-T+ from v1's answers (~6-7 h, Docker not needed), then compare
+OQT_PLUS=1 GENERATOR=~/models-out/Qwen3.8-Flash-Next-oQ6e-coder-q8-ngram-mtp \
+caffeinate -dimsu nohup scripts/oqt_pipeline.sh 4 v1-plus > ~/oqup/oqt-v1-plus.out 2>&1 &
+scripts/oqt_pipeline.sh compare v1 v1-plus
+
+# 3. optional: its agent eval too, so compare also shows the solve rates
+colima start
+OQT_AGENT_EVAL=1 scripts/oqt_pipeline.sh 4 v1-plus
+colima stop
+scripts/oqt_pipeline.sh compare v1 v1-plus
+
+# 4. once, whenever convenient: the generator's fastest decoding setting for future runs
+GENERATOR=~/models-out/Qwen3.8-Flash-Next-oQ6e-coder-q8-ngram-mtp scripts/oqt_pipeline.sh bench
+```
+
+Keep the quant whose `compare` verdict says it is closer to the original, if the size difference is worth it to you; delete the other one's folder in `~/models-out` and its `~/oqup/oqt-cache-*`.
 
 ## One-time setup on the 128 GB Mac
 
@@ -258,7 +304,61 @@ With 56 sessions, differences under about 10 points are noise; a task lost in bo
 scripts/oqt_pipeline.sh results
 ```
 
-prints one line per quant: size, KL and top-1 on `heldout-written-se` (the same text in every run, so comparable across runs), KL and top-1 on the run's own held-out conversations (different per run: compare those only between quants of one run), routing drift, and the agent eval if it ran. Quants you scored by hand (`~/oqup/m3-*.json`, like your oQ6e) are listed too. Each finished run writes `~/oqup/runs/<name>/result.json`, and the end of its log compares it with the previous run of the same model, variant and level, with a warning if it is worse (KL up more than 10%, top-1 down more than a point, or agent solve rate down more than 10 points).
+prints one line per quant: size, KL and top-1 on `heldout-written-se` (the same text in every run, so comparable across runs), KL and top-1 on the run's own held-out conversations (different per run: compare those only between quants of one run), routing drift, and the agent eval if it ran. Quants you scored by hand (`~/oqup/m3-*.json`, like your oQ6e) are listed too. The `protected` column is explained in oQ-T+ above.
+
+For two runs, `scripts/oqt_pipeline.sh compare <run> <other run>` prints each metric before and after, marks what got better or worse, and ends with a one-line verdict. Runs made from the same answers (v1 and v1-plus) also compare on their held-out conversations; other pairs on the written SE text only. Each finished run writes `~/oqup/runs/<name>/result.json`, and the end of its log compares it with the previous run of the same model, variant and level, with a warning if it is worse (KL up more than 10%, top-1 down more than a point, or agent solve rate down more than 10 points).
+
+## oQ-T+: more bits where the expert routing drifts
+
+In a mixture-of-experts layer a small router picks which experts handle each token. Quantization shifts the router's input a little, and some tokens then go to other experts than in the original model: that is the `route` and `flips` in the M3 table, and it costs quality fast.
+
+oQ-T already protects against it while it builds: after quantizing a layer it measures how much the routing moved, and if it moved more than a threshold (2% of the router's probability), it gives the tensors that feed the router up to 2 more bits until the drift is back under it. A normal oQ-T build does this for at most 25% of the layers, the first ones that need it, so later layers that drift more (layers 29–35 in the pilot) can get nothing. The `protected` column of `results` shows it, e.g. `12/40 (9 missed)`: 12 layers protected, 9 more drifted past the threshold but the cap was reached.
+
+**oQ-T+** (`OQT_PLUS=1`) removes the cap and halves the threshold (1%): every layer whose routing drifts gets the extra bits. Only the attention-side tensors in front of the router get them, not the experts (most of the model), so the quant grows a little, typically a few percent. Whether that is worth it is what `compare` tells you:
+
+```
+v1-plus (oQ-T+) compared with v1
+
+  size                           58.3 -> 59.6 GB (+1.3 GB, +2.2%)
+  KL, written SE text            0.0535 -> 0.0481 (-10%)  better
+  top-1, written SE text         88.2% -> 88.9% (+0.7 pts)  better
+  KL, held-out conversations     ...
+  routing drift                  0.0340 -> 0.0250 (-26%)  better
+  layers protected               12/40 (9 missed) -> 31/40
+  agent tasks solved             49/56 (88%) -> 50/56 (89%)
+
+Verdict: v1-plus is closer to the original model for +1.3 GB (+2.2% size).
+```
+
+(Illustration of the format, not a measurement.) A difference under 3% (KL) or 0.3 points (top-1) counts as no difference; agent solve rates need 10 points to count.
+
+Build it from an existing run's answers under a new run name (see the step by step). `OQT_PLUS=1` works at any level (`3`, `5`, ...), and `OQT_ROUTING_THRESHOLD` / `OQT_ROUTING_MAX_LAYERS` still override its two values.
+
+## Faster answers: MTP
+
+Generating the answers is the longest stage, and it sends one request at a time (more would need more memory). What can still speed it up is **MTP**: Qwen3.8-Flash-Next has a small multi-token-prediction head (kept in your quant: the `-mtp` in its name) that drafts the next few tokens, which the model then checks in one step. The answers are the same as without it; only the number of steps changes. oMLX turns it on by default for a model with an MTP head, with an adaptive draft depth; whether a fixed depth is faster depends on the model and the Mac.
+
+The pipeline logs how the generator is served (`decoding  : MTP auto` near the top of `pipeline.log`) and, at the end of the generate stage, the speed it reached (`generate: speed 31.2 tokens/s ...`). To measure the settings side by side:
+
+```bash
+GENERATOR=~/models-out/Qwen3.8-Flash-Next-oQ6e-coder-q8-ngram-mtp scripts/oqt_pipeline.sh bench
+```
+
+It starts the pipeline's server, times the same three coding requests (thinking on, up to 1,024 tokens each) with MTP off, auto, and fixed depths 2, 3 and 4, and prints:
+
+```
+MTP     tokens/s  vs off
+off         21.4   1.00x
+auto        33.0   1.54x
+2           31.8   1.49x
+3           34.6   1.62x   <- fastest
+4           32.1   1.50x
+
+Fastest: MTP 3. Use it for a run with OQT_MTP=3 (about 1.62x the speed without MTP).
+(restored the model's own setting: MTP auto)
+```
+
+(Illustration of the format.) Each setting reloads the model, so it takes about 20 minutes; stop your own oMLX server first. The model's own oMLX setting is put back afterwards. Then add `OQT_MTP=3` (or whatever it says) in front of the run command; it applies to the pipeline's server only, is not saved with the run (speed only), and changes no answers or caches. Run the bench once per generator.
 
 ## Does the corpus help? Build the comparison arm
 
@@ -331,6 +431,8 @@ Put them in front of the command, for example `BUDGET_TOKENS=500000 scripts/oqt_
 | `OQT_M3=0` | on | Skip scoring against the original model |
 | `M3_SEQ`, `M3_MAX_WINDOWS` | `2048`, `64` | M3 window length and windows per heldout file |
 | `OQT_AGENT_EVAL=1` | off | After the score, run the agent tasks with the quant and compare with the generator (needs Docker; not saved with the run) |
+| `OQT_PLUS=1` | off | oQ-T+: routing protection on every drifting layer (threshold 1%, no layer cap); a little larger, closer to the original (see oQ-T+) |
+| `OQT_MTP` | the model's oMLX setting | `off`, `auto` or a draft depth `1`–`8` for the pipeline's server while generating; speed only, not saved. `bench` says which is fastest |
 | `OQT_KEEP_BUILD=1` | off | Keep the existing quant when it was built from this exact bundle, instead of rebuilding after a script update (not saved) |
 | `OQT_COMPARE=1` | off | Also build a plain oQe quant from the same text and score both |
 | `OQT_REFINE_EXPERTS=1` | off | Also polish the routed experts' rounding (always on for the other tensors). Better, but about 8 extra hours on Qwen3.8-Flash-Next |
@@ -356,6 +458,7 @@ The pipeline log says which stage failed and shows the last lines of that stage'
 | "the source's chat template does not fit profile ..." | The lines above it say what failed to render. Fix the profile's `render` settings (see Models and variants). |
 | "N model profiles in models/" | Several profiles: choose one with `OQT_MODEL=<id>`. |
 | "the agent eval needs Docker" | `colima start`, then rerun the same command. |
+| "could not set MTP ..." or "the oMLX admin API refused the request" | `OQT_MTP` and `bench` change the model's decoding setting through oMLX's admin API: set `OMLX_API_KEY` to the server's main API key, or leave `OQT_MTP` out. |
 | "this oMLX checkout has no oQ-T" | Redo setup step 1 (`git checkout feat/oqt`). |
 | "run 'v1' was started with other settings" | A resume gave a setting with another value than the run was started with (it lists both). Leave it out to resume as it was, add `OQT_CHANGE_SETTINGS=1` to change it, or use a new run name. |
 | The Mac rebooted during the build (a `watchdog timeout` panic in `/Library/Logs/DiagnosticReports`) | Memory ran out. Stop colima and other apps, check `sysctl iogpu.wired_limit_mb` (0 or at least 16 GB below RAM), then resume: finished layers are reused. If it happens again, `OQT_CHANGE_SETTINGS=1 OQ_SAMPLES=128` halves the build's working memory (the sweep restarts). |
@@ -370,7 +473,8 @@ The pipeline log says which stage failed and shows the last lines of that stage'
 | Pipeline log, state, per-stage logs | `~/oqup/runs/<name>/` |
 | Prompts, answers (cached per request) | `~/oqup/runs/<name>/prep/` |
 | Calibration text used for the build | `~/oqup/runs/<name>/bundle.txt` |
-| Scores of the run (M3, PPL, agent eval, settings) | `~/oqup/runs/<name>/result.json` |
+| Scores of the run (M3, PPL, agent eval, routing protection, generation speed, settings) | `~/oqup/runs/<name>/result.json` |
+| The last bench | `~/oqup/runs/bench/bench.json` |
 | The quant's agent sessions | `~/oqup/runs/<name>/agent-eval/` |
 | oQ-T layer cache (delete once the quant is good) | `~/oqup/oqt-cache-<Model>-oQ<level>-<name>/` |
 

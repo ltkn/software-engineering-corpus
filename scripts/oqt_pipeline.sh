@@ -4,6 +4,8 @@
 #   scripts/oqt_pipeline.sh <level> <name>     run it (rerun the same command to resume)
 #   scripts/oqt_pipeline.sh status <name>      where a run is
 #   scripts/oqt_pipeline.sh results            every run's scores side by side
+#   scripts/oqt_pipeline.sh compare v1 v1-plus two runs metric by metric, with a verdict
+#   scripts/oqt_pipeline.sh bench              how fast the generator writes, per MTP setting
 #
 #   scripts/oqt_pipeline.sh 4 v1               -> ~/models-out/<Model>-oQ4t-v1
 #
@@ -43,6 +45,12 @@
 #   SOURCE_REPO=<org/name> quantize a fine-tune from this HF repo instead, e.g.
 #                          orcarouter/Qwen3.8-Flash-Next-Uncensored (then GENERATOR
 #                          must be a quant of that fine-tune)
+#   OQT_PLUS=1             oQ-T+: every layer whose expert routing drifts gets more
+#                          bits on the tensors that feed its router (no 25% cap,
+#                          lower threshold); a little larger, closer to the original
+#   OQT_MTP=off|auto|<1-8> how oMLX drafts tokens with the model's MTP head while
+#                          generating (speed only, same answers; not saved; default:
+#                          the model's own oMLX setting). Measure with: bench
 #   OQT_KEEP_BUILD=1       keep the existing quant if it was built from this exact
 #                          bundle (after an update of these scripts; not saved)
 #   OQT_AGENT_EVAL=1       after the score, run the agent tasks with the quant
@@ -86,7 +94,7 @@ MP="$CORPUS_REPO/scripts/model_profile.py"
 SETTINGS=(OQT_MODEL OQT_VARIANT GENERATOR SRC SOURCE_REPO BUDGET_TOKENS EFFORT_MIX MAX_TOKENS OQT_PROFILE OQT_MIX
           PROMPTS_PER_SEED OQT_AGENT AGENT_SAMPLES OQT_AGENT_TASKS OQT_LONG_SHARE OQT_LONG_LEN OQT_HOLDOUT_SHARE
           OQ_SAMPLES OQ_SEQLEN NGRAM_BITS PRESERVE_MTP OQT_REFINE_EXPERTS OQT_ROUTING
-          OQT_ROUTING_THRESHOLD OQT_ROUTING_MAX_LAYERS)
+          OQT_ROUTING_THRESHOLD OQT_ROUTING_MAX_LAYERS OQT_PLUS)
 setting_norm() { # <name> <value>: paths compare by their real location
     case "$1" in
         GENERATOR|SRC|OQT_AGENT_TASKS) [ -n "$2" ] && (cd "$2" 2>/dev/null && pwd -P) || printf '%s\n' "$2" ;;
@@ -94,7 +102,7 @@ setting_norm() { # <name> <value>: paths compare by their real location
     esac
 }
 SETTINGS_FILE=""; SETTINGS_CHANGED=""
-if [ "${1:-}" != status ] && [ -n "${2:-}" ]; then
+if [ "${1:-}" != status ] && [ "${1:-}" != bench ] && [ -n "${2:-}" ]; then
     SETTINGS_FILE="$OQUP/runs/$2/settings.env"
     if [ -f "$SETTINGS_FILE" ]; then
         while IFS='=' read -r k v; do
@@ -109,7 +117,16 @@ if [ "${1:-}" != status ] && [ -n "${2:-}" ]; then
         done < "$SETTINGS_FILE"
     fi
 fi
+# oQ-T+ is a routing-protection preset: no cap on the layers that get more bits and
+# a lower threshold. Explicit OQT_ROUTING_* values still win.
+OQT_PLUS="${OQT_PLUS:-0}"
+if [ "$OQT_PLUS" = 1 ]; then
+    OQT_ROUTING_THRESHOLD="${OQT_ROUTING_THRESHOLD:-0.01}"
+    OQT_ROUTING_MAX_LAYERS="${OQT_ROUTING_MAX_LAYERS:-1.0}"
+    export OQT_ROUTING_THRESHOLD OQT_ROUTING_MAX_LAYERS
+fi
 save_settings() {
+    [ -n "$SETTINGS_FILE" ] || return 0
     local k tmp="$SETTINGS_FILE.tmp"
     for k in "${SETTINGS[@]}"; do
         case "$k" in   # the defaults the stages use, so a resume compares like with like
@@ -154,7 +171,7 @@ print(1 if any(w.get(g, 0) > 0 for g in ("generic", "broad") if g in groups) els
 ' "$OQT_MIX" "$OQT_PROFILE")"
 export OMLX_REPO VENV_PY OQUP MODELS_OUT
 
-usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 hash_of() { shasum -a 256 | awk '{print substr($1, 1, 16)}'; }
 
@@ -162,6 +179,10 @@ hash_of() { shasum -a 256 | awk '{print substr($1, 1, 16)}'; }
 CACHE_ROOT="$OQUP/prep-cache"
 if [ "${1:-}" = "results" ]; then
     exec python3 "$CORPUS_REPO/scripts/results.py" table --oqup "$OQUP"
+fi
+if [ "${1:-}" = "compare" ]; then
+    [ -n "${2:-}" ] && [ -n "${3:-}" ] || { echo "usage: $0 compare <run> <other run>" >&2; exit 2; }
+    exec python3 "$CORPUS_REPO/scripts/results.py" compare "$2" "$3" --oqup "$OQUP"
 fi
 if [ "${1:-}" = "status" ]; then
     NAME="${2:-}"; [ -n "$NAME" ] || usage
@@ -199,8 +220,10 @@ if [ "${1:-}" = "status" ]; then
 fi
 
 LEVEL="${1:-}"; NAME="${2:-}"
+BENCH=0
+if [ "$LEVEL" = bench ]; then BENCH=1; NAME=bench; fi
 [ -n "$LEVEL" ] && [ -n "$NAME" ] || usage
-case "$LEVEL" in 2|3|4|5|6|8) ;; *) echo "level must be one of 2 3 4 5 6 8" >&2; exit 2 ;; esac
+case "$LEVEL" in 2|3|4|5|6|8|bench) ;; *) echo "level must be one of 2 3 4 5 6 8" >&2; exit 2 ;; esac
 case "$NAME" in */*|.*|"") echo "name must be a plain word like v1" >&2; exit 2 ;; esac
 
 RUN="$OQUP/runs/$NAME"
@@ -351,7 +374,8 @@ run_stage() {
     log "$stage: done in $((secs / 60))m$(printf '%02d' $((secs % 60)))s"
 }
 
-log "=== oQ-T pipeline: oQ${LEVEL}t '$NAME' ==="
+if [ "$BENCH" = 1 ]; then log "=== oQ-T pipeline: generation speed bench ==="
+else log "=== oQ-T pipeline: oQ${LEVEL}t$([ "$OQT_PLUS" = 1 ] && echo +) '$NAME' ==="; fi
 
 # --------------------------------------------------------------- preflight
 [ -x "$VENV_PY" ] || die "oMLX venv python not found: $VENV_PY (set OMLX_REPO)"
@@ -413,7 +437,7 @@ free_gb=$(df -g "$OQUP" 2>/dev/null | awk 'NR==2 {print $4}')
 log "model     : $MODEL_NAME${OQT_VARIANT:+, variant $OQT_VARIANT} (profile $MODEL_PROFILE)"
 log "source    : $SRC"
 log "answers by: $GENERATOR"
-log "level     : oQ${LEVEL}t -> $MODELS_OUT/*-oQ${LEVEL}t-$NAME"
+[ "$BENCH" = 1 ] || log "level     : oQ${LEVEL}t$([ "$OQT_PLUS" = 1 ] && echo "+ (routing protection on every drifting layer)") -> $MODELS_OUT/*-oQ${LEVEL}t-$NAME"
 log "budget    : $BUDGET_TOKENS tokens, effort $EFFORT_MIX, concurrency $CONCURRENCY"
 log "prompts   : profile $OQT_PROFILE, mix $OQT_MIX, $PROMPTS_PER_SEED prompts per seed"
 [ "$OQT_PROFILE" = generic ] && OQT_AGENT=0
@@ -451,7 +475,25 @@ D_RENDER="$(printf '%s|%s|%s|%s' "$D_GENERATE" "$( cat "$SRC"/tokenizer*.json "$
 # Docker is needed only while agent sessions still have to run: once the agent
 # stage is done (or cached), the run can resume with Docker stopped, which frees
 # its VM's memory for the build.
-if [ "$OQT_AGENT" = 1 ] && [ "$AGENT_SANDBOX" = docker ] && ! is_done agent "$D_AGENT"; then
+# agent_args <out dir> <cache root> <served model>: the agent stage's arguments.
+agent_args() {
+    printf '%s\0' agent --out "$1" --cache-root "$2" --model "$3" "${PM[@]}" --server "$SERVER" \
+        --sandbox "$AGENT_SANDBOX" --agent-samples "$AGENT_SAMPLES" --effort-mix "$EFFORT_MIX" \
+        --agent-concurrency "$AGENT_CONCURRENCY" ${AGENT_TASKS:+--agent-tasks "$AGENT_TASKS"}
+}
+# agent_cached <out> <cache root> <model>: every session already in the cache (no Docker needed).
+agent_cached() {
+    local a=(); while IFS= read -r -d '' x; do a+=("$x"); done < <(agent_args "$@")
+    python3 "$PREP" "${a[@]}" --check-cache >/dev/null 2>&1
+}
+AGENT_ALL_CACHED=0
+if [ "$BENCH" = 1 ]; then
+    :
+elif [ "$OQT_AGENT" = 1 ] && [ "$AGENT_SANDBOX" = docker ] && ! is_done agent "$D_AGENT" \
+        && agent_cached "$PREP_OUT" "$CACHE_ROOT" "$GEN_ID"; then
+    AGENT_ALL_CACHED=1
+    log "docker    : not needed (every agent session is already cached)"
+elif [ "$OQT_AGENT" = 1 ] && [ "$AGENT_SANDBOX" = docker ] && ! is_done agent "$D_AGENT"; then
     docker info >/dev/null 2>&1 || die "agent sessions need Docker (start colima or OrbStack), or set OQT_AGENT=0"
     docker_check
 elif [ "$OQT_AGENT" = 1 ] && [ "$AGENT_SANDBOX" = docker ]; then
@@ -459,6 +501,16 @@ elif [ "$OQT_AGENT" = 1 ] && [ "$AGENT_SANDBOX" = docker ]; then
 fi
 
 # ------------------------------------------------------------------ server
+BENCH_PY="$CORPUS_REPO/scripts/bench_generate.py"
+# mtp_setup <model id>: apply OQT_MTP (before the model loads, so no reload), then log
+# the setting the model is served with. Speed only: answers are the same.
+mtp_setup() {
+    if [ -n "${OQT_MTP:-}" ]; then
+        python3 "$BENCH_PY" apply "$OQT_MTP" --server "$SERVER" --model "$1" >/dev/null 2>"$RUN/logs/mtp.err" \
+            || die "could not set MTP $OQT_MTP: $(cat "$RUN/logs/mtp.err")"
+    fi
+    log "decoding  : $(python3 "$BENCH_PY" show --server "$SERVER" --model "$1" 2>&1 | tail -1)"
+}
 start_server() { # [model dir]: serves GENERATOR unless another model is given
     local model="${1:-$GENERATOR}" id
     id="$(basename "$model")"
@@ -479,12 +531,20 @@ start_server() { # [model dir]: serves GENERATOR unless another model is given
     fi
     SERVER_PID=$!
     for i in $(seq 1 "${SERVER_WAIT:-900}"); do
-        curl -fsS -m 3 "$SERVER/health" >/dev/null 2>&1 && { log "server ready after ${i}s"; return 0; }
+        curl -fsS -m 3 "$SERVER/health" >/dev/null 2>&1 && { log "server ready after ${i}s"; mtp_setup "$id"; return 0; }
         kill -0 "$SERVER_PID" 2>/dev/null || die "the oMLX server exited; see $RUN/logs/server.log"
         sleep 1
     done
     die "the oMLX server did not become ready; see $RUN/logs/server.log"
 }
+
+# ------------------------------------------------------------------- bench
+if [ "$BENCH" = 1 ]; then
+    start_server
+    python3 "$BENCH_PY" bench --server "$SERVER" --model "$GEN_ID" "${PM[@]}" --json "$RUN/bench.json" \
+        2>&1 | tee -a "$PLOG"
+    exit "${PIPESTATUS[0]}"
+fi
 
 # ------------------------------------------------------------------ stages
 run_stage extract "$D_EXTRACT" python3 "$PREP" extract --out "$PREP_OUT"
@@ -503,13 +563,11 @@ else
 fi
 # agent_sessions <out dir> <cache root> <served model>: every agent task, AGENT_SAMPLES times.
 agent_sessions() {
-    if [ "$AGENT_SANDBOX" = docker ] && [ -z "$AGENT_TASKS" ]; then
+    if [ "$AGENT_SANDBOX" = docker ] && [ -z "$AGENT_TASKS" ] && ! agent_cached "$@"; then
         "$CORPUS_REPO/agent_tasks/build_images.sh"
     fi
-    python3 "$PREP" agent --out "$1" --cache-root "$2" \
-        --model "$3" "${PM[@]}" --server "$SERVER" --sandbox "$AGENT_SANDBOX" \
-        --agent-samples "$AGENT_SAMPLES" --effort-mix "$EFFORT_MIX" --agent-concurrency "$AGENT_CONCURRENCY" \
-        ${AGENT_TASKS:+--agent-tasks "$AGENT_TASKS"}
+    local a=(); while IFS= read -r -d '' x; do a+=("$x"); done < <(agent_args "$@")
+    python3 "$PREP" "${a[@]}"
 }
 if [ "$OQT_AGENT" = 1 ]; then
     run_stage agent "$D_AGENT" agent_sessions "$PREP_OUT" "$CACHE_ROOT" "$GEN_ID"

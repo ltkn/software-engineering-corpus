@@ -1,9 +1,14 @@
-"""Stand-in oMLX server: /health, derive (thinking off) and generate (thinking on)."""
+"""Stand-in oMLX server: /health, derive (thinking off), generate (thinking on), and the
+admin model-settings API for MTP (decoding is twice as fast with MTP on)."""
 import json, sys, threading, time, os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 PORT = int(sys.argv[1]); DELAY = float(os.environ.get("STUB_DELAY", "0"))
 COUNTER = sys.argv[2]
 lock = threading.Lock()
+SETTINGS = {"mtp_enabled": False, "mtp_fixed_depth": None, "mtp_adaptive_max_depth": None}
+def served_ids():
+    d = os.environ.get("SERVE_DIR")
+    return sorted(os.listdir(d)) if d and os.path.isdir(d) else ["stub"]
 def bump(kind):
     with lock:
         d = json.load(open(COUNTER)) if os.path.exists(COUNTER) else {}
@@ -17,7 +22,17 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(data)))
         self.end_headers(); self.wfile.write(data)
     def do_GET(self):
+        if self.path == "/admin/api/models":
+            return self._send({"models": [{"id": i, "mtp_compatible": True, "mtp_compatibility_reason": None,
+                                           "settings": dict(SETTINGS)} for i in served_ids()]})
         self._send({"status": "ok"} if self.path == "/health" else {"data": []})
+    def do_PUT(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if self.path.startswith("/admin/api/models/") and self.path.endswith("/settings"):
+            with lock:
+                SETTINGS.update({k: v for k, v in body.items() if k in SETTINGS})
+            return self._send({"status": "ok"})
+        self._send({"error": "not found"}, 404)
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         kw = body.get("chat_template_kwargs") or {}
@@ -44,6 +59,8 @@ class H(BaseHTTPRequestHandler):
             msg = {"role": "assistant", "content": f"how should i approach {topic} in my project, and how do i check it works?"}
             return self._send({"choices": [{"message": msg, "finish_reason": "stop"}], "usage": {"completion_tokens": 20}})
         n = bump("generate"); time.sleep(DELAY)
+        if os.environ.get("STUB_DECODE_DELAY"):
+            time.sleep(float(os.environ["STUB_DECODE_DELAY"]) * (0.5 if SETTINGS["mtp_enabled"] else 1.0))
         effort = kw.get("reasoning_effort")
         tool_names = [t["function"]["name"] for t in body.get("tools") or []]
         if "finish" in tool_names and "run" in tool_names:

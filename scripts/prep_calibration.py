@@ -1091,11 +1091,26 @@ def do_generate(out: Path, args) -> int:
                "kept_by_effort": effort_counts,
                "with_tool_calls": sum(1 for r in kept if r.get("tool_calls")),
                "by_file": {k: {"kept": a, "dropped": b, "tokens": t} for k, (a, b, t) in sorted(by_file.items())},
-               "minutes": round((time.time() - clock["t0"]) / 60, 1)}
+               "minutes": round((time.time() - clock["t0"]) / 60, 1),
+               "speed": generation_speed(results)}
     (adir / f"generate-{args.profile}.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
     print(f"generate: done — {len(kept)}/{len(results)} answers kept, {clock['tokens']:,} tokens "
           f"{group_tokens}, verdicts {why_counts} -> {adir}", flush=True)
+    sp = summary["speed"]
+    if sp["answers"]:
+        print(f"generate: speed {sp['tokens_per_second']:.1f} tokens/s over {sp['answers']} answers "
+              f"({sp['new_answers']} new this time)", flush=True)
     return 0
+
+
+def generation_speed(results: list[dict]) -> dict:
+    """Decode speed as the client saw it: tokens / request time (prompt
+    processing included), over every answer that recorded its time."""
+    timed = [r for r in results if r.get("seconds") and r.get("tokens")]
+    new = [r for r in timed if not r.get("cached")]
+    rate = lambda rs: round(sum(r["tokens"] for r in rs) / max(sum(r["seconds"] for r in rs), 1e-6), 2) if rs else None
+    return {"answers": len(timed), "tokens_per_second": rate(timed),
+            "new_answers": len(new), "new_tokens_per_second": rate(new)}
 
 
 # ---------------------------------------------------------------------------
@@ -1134,6 +1149,10 @@ def do_agent(out: Path, args) -> int:
                     "chat_template_kwargs": {**f["thinking_on"], "reasoning_effort": f["effort"][effort]}}
             key = sha(json.dumps([AGENT_VERSION, t["hash"], k, base, args.agent_max_steps], sort_keys=True))
             jobs.append((t, k, effort, base, key))
+    if args.check_cache:
+        missing = sum(1 for j in jobs if not (cache_dir / f"{j[4]}.json").exists())
+        print(f"agent: {len(jobs) - missing}/{len(jobs)} sessions cached")
+        return 0 if missing == 0 else 1
     print(f"agent: {len(jobs)} sessions over {len(tasks)} tasks ({args.agent_samples} per task), "
           f"sandbox {args.sandbox}, concurrency {args.agent_concurrency}", flush=True)
 
@@ -1573,6 +1592,8 @@ def main(argv=None) -> int:
     ag.add_argument("--agent-max-steps", type=int, default=30)
     ag.add_argument("--agent-turn-tokens", type=int, default=8192, help="max tokens per model turn")
     ag.add_argument("--agent-concurrency", type=int, default=2)
+    ag.add_argument("--check-cache", action="store_true",
+                    help="agent: exit 0 when every session is already cached (sends nothing)")
     ag.add_argument("--sandbox", choices=["docker", "local"], default="docker",
                     help="local runs commands on the host: tests only")
     g.add_argument("--no-agent", action="store_true", help="render: leave agent sessions out")

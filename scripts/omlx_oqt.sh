@@ -46,6 +46,8 @@
 #   OQT_ROUTING=0      turn off routing protection (M4)
 #   OQT_ROUTING_THRESHOLD=0.02   routing mass shift that triggers more bits
 #   OQT_ROUTING_MAX_LAYERS=0.25  at most this share of layers gets upgraded
+#   OQT_PLUS=1         oQ-T+: threshold 0.01 and no layer cap (every drifting layer
+#                      may get up to 2 more bits on the tensors feeding its router)
 #   OQT_LONG_FILE=<jsonl>  whole documents for long-context windows (one {"text"} per line)
 #   OQT_LONG_SHARE=0.25    share of calibration tokens in long windows
 #   OQT_LONG_LEN=32768     long window length
@@ -68,6 +70,10 @@ MODELS_OUT="${MODELS_OUT:-$HOME/models-out}"
 OQ_SAMPLES="${OQ_SAMPLES:-256}"
 OQT_REFINE_EXPERTS="${OQT_REFINE_EXPERTS:-0}"
 OQT_ROUTING="${OQT_ROUTING:-1}"
+if [ "${OQT_PLUS:-0}" = 1 ]; then   # oQ-T+: every drifting layer may get the extra bits
+    OQT_ROUTING_THRESHOLD="${OQT_ROUTING_THRESHOLD:-0.01}"
+    OQT_ROUTING_MAX_LAYERS="${OQT_ROUTING_MAX_LAYERS:-1.0}"
+fi
 OQT_ROUTING_THRESHOLD="${OQT_ROUTING_THRESHOLD:-0.02}"
 OQT_ROUTING_MAX_LAYERS="${OQT_ROUTING_MAX_LAYERS:-0.25}"
 if [ "$OQT_ROUTING" = "1" ]; then ROUTING_PY=True; else ROUTING_PY=False; fi

@@ -146,6 +146,33 @@ reset; OQT_AGENT_EVAL=1 "$P" 4 t >/dev/null 2>&1 || fail "agent eval rerun faile
 [ "$(count agent)" = 0 ] || fail "agent eval rerun sent requests"
 pass "agent eval: the quant works the agent tasks, compared with the generator; results table; rerun cached"
 
+# oQ-T+ from the same answers: a new run name, nothing regenerated, no layer cap,
+# and a comparison with a verdict.
+reset; OQT_PLUS=1 BUDGET_TOKENS=60000 "$P" 4 tp >/dev/null 2>&1 || fail "oQ-T+ run failed (see $T/oqup/runs/tp)"
+# (CONCURRENCY=4 here: requests in flight at the budget's edge may be new; under 5% of ~240)
+[ "$(count generate)" -le 12 ] && [ "$(count agent)" = 0 ] && [ "$(count derive)" = 0 ] || fail "oQ-T+ run regenerated answers: $(cat "$T/counter.json")"
+grep -qx "OQT_ROUTING_MAX_LAYERS=1.0" "$T/oqup/runs/tp/settings.env" && grep -qx "OQT_ROUTING_THRESHOLD=0.01" "$T/oqup/runs/tp/settings.env" \
+    || fail "oQ-T+ preset not applied"
+python3 - "$T/oqup/runs/tp/result.json" <<'PYCHECK' || fail "oQ-T+ result incomplete"
+import json, sys
+r = json.load(open(sys.argv[1]))
+assert r["plus"] is True and r["routing"]["layers"] > 0 and r["routing"]["missed"] == 0, r.get("routing")
+PYCHECK
+"$P" compare t tp >"$T/compare.out" 2>&1 || fail "compare failed: $(cat "$T/compare.out")"
+grep -q "tp (oQ-T+) compared with t" "$T/compare.out" && grep -q "^Verdict: " "$T/compare.out" \
+    && grep -q "KL, held-out conversations" "$T/compare.out" || fail "compare output unclear: $(cat "$T/compare.out")"
+"$P" results | grep -q "(oQ-T+)" || fail "results table does not mark the oQ-T+ run"
+pass "oQ-T+: built from the same answers (nothing regenerated), every drifting layer protected; compare gives a verdict"
+
+# Generation speed: the bench compares MTP settings and puts the model's own back;
+# OQT_MTP sets it for a run.
+reset; OQT_MTP=3 STUB_DECODE_DELAY=0.2 "$P" bench >"$T/bench.out" 2>&1 || fail "bench failed: $(tail -5 "$T/bench.out")"
+grep -q "decoding  : MTP 3" "$T/oqup/runs/bench/pipeline.log" || fail "OQT_MTP not applied at server start"
+grep -q "its setting now: MTP 3" "$T/bench.out" && grep -q "restored the model's own setting: MTP 3" "$T/bench.out" \
+    || fail "bench did not restore the setting: $(cat "$T/bench.out")"
+grep -q "<- fastest" "$T/bench.out" || fail "bench printed no result"
+pass "bench: MTP settings timed side by side, the model's setting restored; OQT_MTP applied at server start"
+
 # The template check: a profile that does not fit the source's template stops the run in preflight.
 python3 - "$REPO/models/qwen3.8-flash-next.json" "$T/string-args.json" <<'PYCHECK'
 import json, sys

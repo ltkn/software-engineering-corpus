@@ -57,7 +57,7 @@ Weights (default): ~65–70% stack, ~20% thinking (01–05), ~10% finance+anchor
 
 ## oQ-T quants — one command
 
-`scripts/oqt_pipeline.sh 4 v1` runs everything on the 128 GB Mac: your local model answers the corpus prompts, the answers become the calibration text, and an oQ-T quant of Qwen3.8-Flash-Next (or a fine-tune of it) is built from them (streamed, idempotent, resumable). Step-by-step instructions for the 128 GB Mac, setup, options and troubleshooting: **[OQT.md](OQT.md)**. Models are described by profiles in `models/`; a fine-tune is a variant (`OQT_VARIANT=uncensored`). `scripts/oqt_pipeline.sh results` compares every quant.
+`scripts/oqt_pipeline.sh 4 v1` runs everything on the 128 GB Mac: your local model answers the corpus prompts, the answers become the calibration text, and an oQ-T quant of Qwen3.8-Flash-Next (or a fine-tune of it) is built from them (streamed, idempotent, resumable). Step-by-step instructions for the 128 GB Mac, setup, options and troubleshooting: **[OQT.md](OQT.md)**. Models are described by profiles in `models/`; a fine-tune is a variant (`OQT_VARIANT=uncensored`). `scripts/oqt_pipeline.sh results` lists every quant, `compare v1 v1-plus` gives a verdict, and `OQT_PLUS=1` builds oQ-T+ (more bits where expert routing drifts).
 
 ## Layout
 

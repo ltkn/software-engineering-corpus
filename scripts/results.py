@@ -6,6 +6,8 @@
                stage durations
   table        all runs side by side (scripts/oqt_pipeline.sh results), plus
                quants scored by hand (any ~/oqup/m3-*.json without a run)
+  compare      two runs, metric by metric, with a one-line verdict
+               (scripts/oqt_pipeline.sh compare v1 v1-plus)
   vs-previous  this run against the previous run of the same model, variant
                and level; flags a regression
   agent-eval   the quant's agent sessions against the generator's, task by task
@@ -141,6 +143,19 @@ def ppl_row(ppl: dict) -> dict:
     return out
 
 
+def routing_row(report: dict) -> dict | None:
+    """Routing protection in a build: MoE layers, how many got more bits, and how
+    many drifted past the threshold without getting them (the layer cap was hit)."""
+    routes = [v["routing"] for v in (report.get("layers") or {}).values() if v.get("routing")]
+    if not routes:
+        return None
+    up = [r for r in routes if r.get("upgraded")]
+    missed = [r for r in routes if not r.get("upgraded") and r.get("mass_shift", 0) > r.get("threshold", 1)]
+    return {"layers": len(routes), "upgraded": len(up), "missed": len(missed),
+            "tensors_upgraded": sum(len(r["upgraded"]) for r in up),
+            "threshold": routes[0].get("threshold")}
+
+
 def read_settings(run: Path) -> dict:
     s = {}
     try:
@@ -165,9 +180,17 @@ def cmd_collect(a) -> int:
     except OSError:
         pass
     build = read_json(quant / "build.json") or {}
+    settings = read_settings(run)
     res = {"run": run.name, "model": a.model, "variant": a.variant or "", "level": int(a.level),
            "quant": str(quant), "gb": dir_gb(quant), "created": build.get("created") or time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-           "settings": read_settings(run), "stage_seconds": stages}
+           "plus": settings.get("OQT_PLUS") == "1", "settings": settings, "stage_seconds": stages}
+    rt = routing_row(read_json(quant / "oqt_report.json") or {})
+    if rt:
+        res["routing"] = rt
+    gen = Path(settings.get("GENERATOR", "")).name
+    g = read_json(run / "prep" / "answers" / gen / f"generate-{settings.get('OQT_PROFILE') or 'profile'}.json") if gen else None
+    if g and g.get("speed"):
+        res["generate_speed"] = g["speed"]
     m3 = read_json(oqup / f"m3-{stem}-oqt.json")
     if m3:
         res["m3"] = m3_row(m3)
@@ -215,6 +238,13 @@ def fmt(v, spec: str) -> str:
     return "-".rjust(width) if v is None else format(v, spec)
 
 
+def protected_cell(r: dict) -> str:
+    rt = r.get("routing")
+    if not rt:
+        return "-"
+    return f"{rt['upgraded']}/{rt['layers']}" + (f" ({rt['missed']} missed)" if rt["missed"] else "")
+
+
 def agent_cell(r: dict) -> str:
     ae = r.get("agent_eval") or {}
     q, g = ae.get("quant"), ae.get("generator")
@@ -230,17 +260,21 @@ def cmd_table(a) -> int:
         return 0
     rows.sort(key=lambda r: (Path(r["quant"]).name.rsplit("-oQ", 1)[0], r.get("level", 0), r.get("created", "")))
     head = (f"{'quant':44s} {'GB':>5s} {'KL wse':>7s} {'top1 wse':>8s} {'KL own':>7s} {'top1 own':>8s} "
-            f"{'route':>6s} {'flips':>6s} {'agent (quant vs gen)':>20s}")
+            f"{'route':>6s} {'flips':>6s} {'protected':>13s} {'agent (quant vs gen)':>20s}")
     print(head)
     print("-" * len(head))
     for r in rows:
         m = r.get("m3") or {}
-        print(f"{Path(r['quant']).name[:44]:44s} {fmt(r.get('gb'), '5.1f')} {fmt(m.get('written_kl'), '7.4f')} "
+        name = Path(r["quant"]).name + (" (oQ-T+)" if r.get("plus") else "")
+        print(f"{name[:44]:44s} {fmt(r.get('gb'), '5.1f')} {fmt(m.get('written_kl'), '7.4f')} "
               f"{fmt(m.get('written_top1'), '8.1%')} {fmt(m.get('own_kl'), '7.4f')} {fmt(m.get('own_top1'), '8.1%')} "
-              f"{fmt(m.get('route'), '6.3f')} {fmt(m.get('flips'), '6.1%')} {agent_cell(r):>20s}")
+              f"{fmt(m.get('route'), '6.3f')} {fmt(m.get('flips'), '6.1%')} {protected_cell(r):>13s} {agent_cell(r):>20s}")
     print("\nwse: heldout-written-se, the same text for every run (compare freely across runs).\n"
-          "own: the run's own held-out conversations (differ per run; compare quants of one run).\n"
-          "KL lower is better; top1 higher is better; route/flips: routing drift vs the BF16 model.")
+          "own: the run's own held-out conversations (the same for runs made from the same answers,\n"
+          "     e.g. v1 and v1-plus; otherwise compare only quants of one run).\n"
+          "KL lower is better; top1 higher is better; route/flips: routing drift vs the BF16 model.\n"
+          "protected: MoE layers that got extra bits for their routing / all MoE layers, and how many\n"
+          "     drifted past the threshold but got none because the layer cap was reached (oQ-T+ has no cap).")
     return 0
 
 
@@ -276,6 +310,74 @@ def cmd_vs_previous(a) -> int:
     return 0
 
 
+def change(a, b, lower_better=True, pct=True) -> tuple[str, int]:
+    """'0.0535 -> 0.0480 (-10%)' and +1 better / -1 worse / 0 same (within 3%)."""
+    if a is None or b is None:
+        return "-", 0
+    if pct:
+        rel = (b - a) / a if a else 0.0
+        verdict = 0 if abs(rel) < 0.03 else (1 if (rel < 0) == lower_better else -1)
+        return f"{a:.4f} -> {b:.4f} ({rel:+.0%})", verdict
+    diff = b - a
+    verdict = 0 if abs(diff) < 0.003 else (1 if (diff < 0) == lower_better else -1)
+    return f"{a:.1%} -> {b:.1%} ({diff * 100:+.1f} pts)", verdict
+
+
+def cmd_compare(a) -> int:
+    rows = {r["run"]: r for r in all_results(Path(a.oqup)) if r.get("run")}
+    for name in (a.a, a.b):
+        if name not in rows:
+            print(f"no finished run named {name} (runs with results: {', '.join(sorted(rows)) or 'none'})")
+            return 1
+    A, B = rows[a.a], rows[a.b]
+    ma, mb = A.get("m3") or {}, B.get("m3") or {}
+    same_eval = (ma.get("slices") or {}).keys() == (mb.get("slices") or {}).keys() and all(
+        (ma["slices"][k].get("tokens") == mb["slices"][k].get("tokens")) for k in (ma.get("slices") or {}))
+    label = lambda r: r["run"] + (" (oQ-T+)" if r.get("plus") else "")
+    print(f"{label(B)} compared with {label(A)}\n")
+    lines = []
+    size = ""
+    if A.get("gb") and B.get("gb"):
+        d = B["gb"] - A["gb"]
+        size = f" for {d:+.1f} GB ({d / A['gb']:+.1%} size)"
+        lines.append(("size", f"{A['gb']:.1f} -> {B['gb']:.1f} GB ({d:+.1f} GB, {d / A['gb']:+.1%})", 0))
+    for key, name, lb, rel in (("written_kl", "KL, written SE text", True, True),
+                               ("written_top1", "top-1, written SE text", False, False),
+                               ("own_kl", "KL, held-out conversations", True, True),
+                               ("own_top1", "top-1, held-out conversations", False, False),
+                               ("route", "routing drift", True, True),
+                               ("flips", "expert-set flips", True, False)):
+        if key.startswith("own") and not same_eval:
+            continue
+        txt, v = change(ma.get(key), mb.get(key), lb, rel)
+        if txt != "-":
+            lines.append((name, txt, v))
+    if A.get("routing") and B.get("routing"):
+        lines.append(("layers protected", f"{protected_cell(A)} -> {protected_cell(B)}", 0))
+    qa, qb = (A.get("agent_eval") or {}).get("quant"), (B.get("agent_eval") or {}).get("quant")
+    if qa and qb:
+        ra, rb = qa["solved"] / qa["sessions"], qb["solved"] / qb["sessions"]
+        v = 0 if abs(rb - ra) < AGENT_WORSE else (1 if rb > ra else -1)
+        lines.append(("agent tasks solved", f"{pct(qa['solved'], qa['sessions'])} -> {pct(qb['solved'], qb['sessions'])}", v))
+    w = max(len(n) for n, _, _ in lines)
+    for n, txt, v in lines:
+        print(f"  {n:{w}s}  {txt}  {({1: 'better', -1: 'worse', 0: ''})[v]}")
+    better = [n for n, _, v in lines if v == 1]
+    worse = [n for n, _, v in lines if v == -1]
+    print()
+    if not same_eval:
+        print("(held-out conversations differ between these runs, so only the written SE text is compared)")
+    if better and not worse:
+        print(f"Verdict: {B['run']} is closer to the original model{size}.")
+    elif worse and not better:
+        print(f"Verdict: {B['run']} is further from the original model{size}; keep {A['run']}.")
+    elif not better and not worse:
+        print(f"Verdict: no measurable difference (all within 3%){size}; keep the smaller one.")
+    else:
+        print(f"Verdict: mixed: better on {', '.join(better)}; worse on {', '.join(worse)}.")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -293,12 +395,16 @@ def main(argv=None) -> int:
     c.add_argument("--oqup", required=True)
     t = sub.add_parser("table")
     t.add_argument("--oqup", default=str(Path.home() / "oqup"))
+    cp = sub.add_parser("compare")
+    cp.add_argument("a", help="run name (the reference)")
+    cp.add_argument("b", help="run name (the candidate)")
+    cp.add_argument("--oqup", default=str(Path.home() / "oqup"))
     v = sub.add_parser("vs-previous")
     v.add_argument("--oqup", required=True)
     v.add_argument("--run", required=True)
     a = ap.parse_args(argv)
     return {"agent-eval": cmd_agent_eval, "collect": cmd_collect, "table": cmd_table,
-            "vs-previous": cmd_vs_previous}[a.cmd](a)
+            "compare": cmd_compare, "vs-previous": cmd_vs_previous}[a.cmd](a)
 
 
 if __name__ == "__main__":
