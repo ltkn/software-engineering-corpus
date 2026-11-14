@@ -96,7 +96,7 @@ MP="$CORPUS_REPO/scripts/model_profile.py"
 SETTINGS=(OQT_MODEL OQT_VARIANT GENERATOR SRC SOURCE_REPO BUDGET_TOKENS EFFORT_MIX MAX_TOKENS OQT_PROFILE OQT_MIX
           PROMPTS_PER_SEED OQT_AGENT AGENT_SAMPLES OQT_AGENT_TASKS OQT_LONG_SHARE OQT_LONG_LEN OQT_HOLDOUT_SHARE
           OQ_SAMPLES OQ_SEQLEN NGRAM_BITS PRESERVE_MTP OQT_REFINE_EXPERTS OQT_ROUTING
-          OQT_ROUTING_THRESHOLD OQT_ROUTING_MAX_LAYERS OQT_PLUS)
+          OQT_ROUTING_THRESHOLD OQT_ROUTING_MAX_LAYERS OQT_PLUS OQT_EXPERT_ALLOC)
 setting_norm() { # <name> <value>: paths compare by their real location
     case "$1" in
         GENERATOR|SRC|OQT_AGENT_TASKS) [ -n "$2" ] && (cd "$2" 2>/dev/null && pwd -P) || printf '%s\n' "$2" ;;
@@ -139,6 +139,7 @@ save_settings() {
             PRESERVE_MTP) printf '%s=%s\n' "$k" "${PRESERVE_MTP:-1}" ;;
             OQT_REFINE_EXPERTS) printf '%s=%s\n' "$k" "${OQT_REFINE_EXPERTS:-0}" ;;
             OQT_ROUTING) printf '%s=%s\n' "$k" "${OQT_ROUTING:-1}" ;;
+            OQT_EXPERT_ALLOC) printf '%s=%s\n' "$k" "${OQT_EXPERT_ALLOC:-1}" ;;
             OQT_ROUTING_THRESHOLD) printf '%s=%s\n' "$k" "${OQT_ROUTING_THRESHOLD:-0.02}" ;;
             OQT_ROUTING_MAX_LAYERS) printf '%s=%s\n' "$k" "${OQT_ROUTING_MAX_LAYERS:-0.25}" ;;
             *) printf '%s=%s\n' "$k" "${!k:-}" ;;

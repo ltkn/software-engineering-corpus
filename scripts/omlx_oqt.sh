@@ -43,6 +43,9 @@
 #   M3_FILES, M3_SEQ=2048, M3_MAX_WINDOWS=64   M3 evaluation text and windows
 #   OQT_REFINE_EXPERTS=1  also run the rounding refinement (M6) on routed experts
 #                      (better, but roughly 8 extra hours on Qwen3.8-Flash-Next)
+#   OQT_EXPERT_ALLOC=0 keep the plan's uniform routed-expert width instead of giving each
+#                      layer's experts the width its measured damage calls for (base-1..base+1,
+#                      never below 4 bits, same expert bytes; on by default)
 #   OQT_ROUTING=0      turn off routing protection (M4)
 #   OQT_ROUTING_THRESHOLD=0.02   routing mass shift that triggers more bits
 #   OQT_ROUTING_MAX_LAYERS=0.25  at most this share of layers gets upgraded
@@ -77,6 +80,8 @@ fi
 OQT_ROUTING_THRESHOLD="${OQT_ROUTING_THRESHOLD:-0.02}"
 OQT_ROUTING_MAX_LAYERS="${OQT_ROUTING_MAX_LAYERS:-0.25}"
 if [ "$OQT_ROUTING" = "1" ]; then ROUTING_PY=True; else ROUTING_PY=False; fi
+OQT_EXPERT_ALLOC="${OQT_EXPERT_ALLOC:-1}"
+if [ "$OQT_EXPERT_ALLOC" = "1" ]; then EXPERT_ALLOC_PY=True; else EXPERT_ALLOC_PY=False; fi
 OQT_LONG_SHARE="${OQT_LONG_SHARE:-0.25}"
 OQT_LONG_LEN="${OQT_LONG_LEN:-32768}"
 LONG_PY=None
@@ -226,6 +231,7 @@ quantize_oq_streaming(
     imatrix_num_samples=$OQ_SAMPLES,
     imatrix_seq_length=$OQ_SEQLEN,
     resume_writer=True,
+    expert_allocation=$EXPERT_ALLOC_PY,
     oqt_options=dict(
         refine_sweeps=1,
         refine_expert_sweeps=$OQT_REFINE_EXPERTS,

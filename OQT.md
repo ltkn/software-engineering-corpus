@@ -436,6 +436,7 @@ Put them in front of the command, for example `BUDGET_TOKENS=500000 scripts/oqt_
 | `OQT_KEEP_BUILD=1` | off | Keep the existing quant when it was built from this exact bundle, instead of rebuilding after a script update (not saved) |
 | `OQT_COMPARE=1` | off | Also build a plain oQe quant from the same text and score both |
 | `OQT_REFINE_EXPERTS=1` | off | Also polish the routed experts' rounding (always on for the other tensors). Better, but about 8 extra hours on Qwen3.8-Flash-Next |
+| `OQT_EXPERT_ALLOC=0` | on | Keep one routed-expert width for every layer. By default each layer's experts get their own width (base-1 to base+1, never below 4 bits: 4/5/6 for oQ5) from their measured output damage, at the same expert bytes; the build log shows the choice (`expert widths by measured damage: …`). At oQ4 there is nothing to trade (4 is the floor), so the plan stays uniform |
 | `OQT_ROUTING=0` | on | Turn off routing protection |
 | `OQT_ROUTING_THRESHOLD` | `0.02` | Routing shift (share of router probability) that triggers more bits |
 | `OQT_ROUTING_MAX_LAYERS` | `0.25` | At most this share of layers gets the extra bits, which caps the size cost |
