@@ -240,7 +240,9 @@ def main(argv=None) -> int:
     ap.add_argument("--hub", default=os.environ.get("HF_HUB_CACHE", str(Path.home() / ".cache/huggingface/hub")))
     ap.add_argument("--search", nargs="*", default=[], help="folders holding local checkpoints and quants")
     ap.add_argument("--candidates", nargs="*", default=[], help="generator: the models oMLX serves")
-    a = ap.parse_args(argv)
+    # Intermixed: "check-source --model ID DIR" must work on Python 3.9 too (macOS python3),
+    # whose argparse otherwise fills the optional DIR before reaching --model.
+    a = ap.parse_intermixed_args(argv)
     if a.cmd == "list":
         for p in profile_paths():
             prof = load(str(p))
