@@ -65,7 +65,9 @@
 #                          corpus (the comparison arm). Answers are cached in
 #                          ~/oqup/prep-cache, so a second run with the other profile
 #                          only generates what is missing.
-#   OQT_MIX=corpus=50,generic=25,broad=25   token shares per prompt group
+#   OQT_MIX=corpus=55,agent=25,generic=15,broad=5   token shares: corpus, generic and broad
+#                          answers split the budget; agent is the share of agent sessions
+#                          in the calibration bundle (repeated or subsampled to reach it)
 #   PROMPTS_PER_SEED=8     prompts the model writes per seed
 #   OQT_AGENT=1            agent sessions (needs Docker; skipped for OQT_PROFILE=generic)
 #   AGENT_SAMPLES=2        sessions per agent task
@@ -158,7 +160,7 @@ OQT_HOLDOUT_SHARE="${OQT_HOLDOUT_SHARE:-0.05}"
 AGENT_TASKS="${OQT_AGENT_TASKS:-}"
 AGENT_SANDBOX="${OQT_AGENT_SANDBOX:-docker}"
 OQT_PROFILE="${OQT_PROFILE:-profile}"
-OQT_MIX="${OQT_MIX:-corpus=50,generic=25,broad=25}"
+OQT_MIX="${OQT_MIX:-corpus=55,agent=25,generic=15,broad=5}"
 PROMPTS_PER_SEED="${PROMPTS_PER_SEED:-8}"
 case "$OQT_PROFILE" in profile|generic) ;; *) echo "OQT_PROFILE must be profile or generic" >&2; exit 2 ;; esac
 # Seed prompts are needed only when the mix gives weight to generic or broad
@@ -470,7 +472,7 @@ D_AGENT="$(printf '%s|%s|%s|%s|%s' "$( { find "${AGENT_TASKS:-$CORPUS_REPO/agent
     "$PREP_SHA" "$GEN_ID" "$EFFORT_MIX" "$AGENT_SAMPLES" | hash_of)"
 D_GENERATE="$(printf '%s|%s|%s|%s|%s|%s|%s|%s' "$D_DERIVE" "$D_SEED" "$BUDGET_TOKENS" "$EFFORT_MIX" \
     "${MAX_TOKENS:-16384}" "$OQT_PROFILE" "$OQT_MIX" "$([ "$OQT_AGENT" = 1 ] && echo "$D_AGENT" || echo none)" | hash_of)"
-D_RENDER="$(printf '%s|%s|%s|%s' "$D_GENERATE" "$( cat "$SRC"/tokenizer*.json "$SRC"/*.jinja 2>/dev/null | hash_of)" "$OQT_LONG_LEN" "$OQT_HOLDOUT_SHARE" | hash_of)"
+D_RENDER="$(printf '%s|%s|%s|%s|%s' "$D_GENERATE" "$( cat "$SRC"/tokenizer*.json "$SRC"/*.jinja 2>/dev/null | hash_of)" "$OQT_LONG_LEN" "$OQT_HOLDOUT_SHARE" "$OQT_MIX" | hash_of)"
 
 # Docker is needed only while agent sessions still have to run: once the agent
 # stage is done (or cached), the run can resume with Docker stopped, which frees
@@ -584,7 +586,7 @@ run_stage generate "$D_GENERATE" python3 "$PREP" generate --out "$PREP_OUT" --ca
     log "generate: $(summary generate "$PREP_OUT/answers/$GEN_ID/generate-$OQT_PROFILE.json")"
 stop_server
 
-run_stage render "$D_RENDER" "$VENV_PY" "$PREP" render --out "$PREP_OUT" --profile "$OQT_PROFILE" \
+run_stage render "$D_RENDER" "$VENV_PY" "$PREP" render --out "$PREP_OUT" --profile "$OQT_PROFILE" --mix "$OQT_MIX" \
     --model "$GEN_ID" "${PM[@]}" --source "$SRC" --bundle "$BUNDLE" \
     --long-len "$OQT_LONG_LEN" --long-bundle "$RUN/bundle-long.jsonl" \
     --holdout-share "$OQT_HOLDOUT_SHARE" --heldout-dir "$RUN/heldout" \

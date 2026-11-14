@@ -1,0 +1,10 @@
+{
+ "id": "spring-after-commit-events",
+ "domain": "spring",
+ "image": "oqt-agent-spring",
+ "prompt": "Issuing an invoice publishes an InvoiceIssued event that two listeners handle: AuditTrail writes an audit_log row, and InvoiceMail emails the customer. Two production problems: the audit log has no rows for issued invoices, although no error is ever logged, and customers receive emails for invoices that were rolled back because they went over the credit limit. Fix both so that the audit row and the email happen only for invoices that were really committed, and the audit row is really stored. Keep the event-driven design. Run the tests with `sh test.sh`; PostgreSQL 18 runs locally (database and user `app`; `pg-up` starts it if needed), and Maven works offline: every dependency is already in ~/.m2.",
+ "check": "sh test.sh",
+ "setup": [
+  "pg-up"
+ ]
+}

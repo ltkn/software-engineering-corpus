@@ -1,0 +1,7 @@
+{
+ "id": "spring-outbound-path-segments",
+ "domain": "spring",
+ "image": "oqt-agent-spring",
+ "prompt": "This backend-for-frontend takes an account id from the browser (GET /api/statements?account=...) and calls the internal ledger service at /accounts/{id}/statements with its service token, which the ledger trusts fully. A security review showed that a crafted link can make the BFF send that token to a different ledger endpoint, for example with an account id of `../admin/users`. Fix LedgerClient so the account id always lands inside exactly one path segment of the outbound URL, whatever characters it contains (slashes, `?`, `#`, `%`, spaces), and so that ids which would form a dot segment or an empty segment (`.`, `..`, empty) are rejected before any request is sent. A rejected id must give the browser 400, not 500. Run the tests with `sh test.sh` (Maven works offline: every dependency is already in ~/.m2).",
+ "check": "sh test.sh"
+}

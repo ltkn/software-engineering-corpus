@@ -1,0 +1,7 @@
+{
+ "id": "java-bounded-decoder",
+ "domain": "java",
+ "image": "oqt-agent-java",
+ "prompt": "Decoder parses category feeds that suppliers upload, and the importer has crashed twice: once with OutOfMemoryError on a feed of a few bytes, and once with StackOverflowError on a feed of a few hundred bytes. Harden it against hostile feeds: enforce every bound in Limits (bytes, categories, and parent hops from a root) while reading, before memory is spent, and never trust the #count header for sizing; a feed that exceeds a limit, announces a nonsensical count, or has a parent cycle must fail with DecodeException, quickly and with bounded memory, even when the input stream never ends. Valid feeds within the limits must decode as before, and Catalog.path must stay correct. Run the tests with `sh test.sh`.",
+ "check": "sh test.sh"
+}

@@ -421,7 +421,7 @@ Put them in front of the command, for example `BUDGET_TOKENS=500000 scripts/oqt_
 | `CONCURRENCY` | `1` | Parallel requests while generating. 1 uses the least memory; batching can raise total speed, so try 2 if memory allows and compare the pilot's estimate. Changing it never regenerates answers. |
 | `AGENT_CONCURRENCY` | `CONCURRENCY` | Agent sessions run at the same time |
 | `OQT_PROFILE` | `profile` | `profile`: your corpus plus generic and broad prompts. `generic`: no corpus (the comparison arm) |
-| `OQT_MIX` | `corpus=50,generic=25,broad=25` | Share of the generated text per prompt group. `OQT_MIX=corpus=100` uses only your corpus and skips the seed stage |
+| `OQT_MIX` | `corpus=55,agent=25,generic=15,broad=5` | Calibration mix, tuned for coding. `corpus`, `generic` and `broad` split the generated answers (normalized among themselves); `agent` is the share of agent sessions in the calibration bundle, which render reaches by subsampling sessions or repeating them (at most 3 copies each; the render log shows the share reached). Leave `agent` out to put every session in once, as before 2026-11-14. `OQT_MIX=corpus=100` uses only your corpus and skips the seed stage |
 | `PROMPTS_PER_SEED` | `8` | Prompts the model writes per seed in `seeds/generic.txt` and `seeds/broad.txt` |
 | `OQT_AGENT=0` | on | Skip agent sessions (always skipped for the generic arm) |
 | `AGENT_SAMPLES` | `2` | Agent sessions per task in `agent_tasks/tasks` |

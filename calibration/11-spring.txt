@@ -669,3 +669,50 @@ Verification: slice test posts a foreign order id and asserts the problem body
   "status": 403
 }
 plus a concurrent double-submit test asserting one row, and a rollback test asserting no refund row survives a failed audit write.
+
+---
+
+Goal: One canonical form for emails, hosts and origins, applied where the value is stored and compared there.
+Wiring:
+-- V7__canonical_forms.sql
+CREATE FUNCTION canonical_origin(o text) RETURNS text LANGUAGE sql IMMUTABLE STRICT
+    RETURN regexp_replace(lower(rtrim(o, '/')), '^(https://[^/:]+):443$', '\1');
+CREATE UNIQUE INDEX allowed_origins_canonical ON allowed_origins (canonical_origin(origin));
+boolean allowed(String origin) {
+    return jdbc.sql("SELECT EXISTS (SELECT 1 FROM allowed_origins WHERE canonical_origin(origin) = canonical_origin(?))")
+            .param(origin).query(Boolean.class).single();
+}
+Why: the incident started as "CORS allows an origin we never registered". The first hypothesis was a stale cache of the allow-list; flushing it changed nothing. Logging both sides of the comparison did: the database stored `https://app.example` and the Java check normalized `https://app.example:443/` with its own copy of the rule, which stripped the trailing slash but not the default port, while the registration path used the database rule. Two copies of one rule drift, and the gap between them is the bypass. The fix keeps one rule, in the database, and makes the comparison there; the Java mirror that the UI needs for display is tested against the database function rather than reviewed against it.
+Misconfiguration: normalizing in application code before an `=` comparison, or a unique index on the raw column, so `Admin@Example.test` and `admin@example.test` both register.
+Verification: a parameterized repository test feeding the same inputs (`:443`, trailing slash, mixed case, trailing dot) to `SELECT canonical_origin(?)` and to the Java helper, asserting equal output, plus a unique-violation test for two spellings of one origin.
+
+---
+
+Goal: A derived status ("in progress") defined once, with both of its edges, and selected by every query that exposes it.
+Wiring:
+private static final String STATUS = """
+        (started_at IS NOT NULL AND started_at <= now()
+         AND (finished_at IS NULL OR finished_at > now())) AS in_progress
+        """;
+List<JobView> active() { return jdbc.sql("SELECT id, name, " + STATUS + " FROM jobs WHERE finished_at IS NULL").query(JobView.class).list(); }
+List<JobView> day(LocalDate d) { return jdbc.sql("SELECT id, name, " + STATUS + " FROM jobs WHERE started_at::date = ?").param(d).query(JobView.class).list(); }
+Why: the active list had always been right, so the new day view looked like the bug — a caching layer was suspected first and ruled out by querying the database directly. The real defect was older: the flag had one edge, `started_at <= now()`, and the active list hid it because its WHERE clause already removed finished jobs. The day view returns the whole day, so the missing edge showed. A derived state is only as correct as its weakest reader; defining it once, with both bounds, removes the dependence on what each caller happens to filter.
+Misconfiguration: computing the flag in Java from `Instant.now()` in one service and in SQL in another, or testing the flag only through the query that happens to filter it.
+Verification: a test per exposing query with a finished job, a running job and a not-yet-started job, asserting the flag in each — the finished job is the row that catches a one-edge definition.
+
+---
+
+Goal: Throttle password checks by counting only what an attacker controls: failures, per account and per caller, reserved before the check. Mechanism and threat model are 06; this is the Security 7 wiring.
+Wiring:
+http.addFilterBefore(new LoginThrottleFilter(throttle), BasicAuthenticationFilter.class);
+// in the filter
+var reservation = throttle.reserve(username, request.getRemoteAddr());   // charges both keys, atomically
+if (reservation.isEmpty()) { response.sendError(429); return; }           // no password check while exhausted
+try { chain.doFilter(request, response); }
+finally {
+    var auth = SecurityContextHolder.getContext().getAuthentication();
+    if (auth != null && auth.isAuthenticated() && username.equals(auth.getName())) throttle.refund(reservation.get());
+}
+Why: the first version counted every Basic-authenticated request per IP, five a minute. Integrations that authenticate on every call hit 429 with correct passwords, and an office behind one NAT address shared one allowance — while a guesser rotating addresses was never slowed. Counting attempts measured legitimate traffic; counting failures measures guessing. Reserving before the check, rather than recording after it, is what stops twenty concurrent guesses from all passing a "fewer than five so far" test at once; the refund on success keeps a user's own logins from consuming their allowance.
+Misconfiguration: a per-IP key alone; incrementing after the password check; checking the password even when the allowance is exhausted, which keeps the endpoint useful as an oracle.
+Verification: MockMvc tests with distinct `remoteAddr` values: thirty successes from one address all pass, five failures for one account from five addresses lock it, and twenty-four concurrent wrong guesses yield exactly five 401s.

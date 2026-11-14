@@ -65,14 +65,14 @@
     },
     {
       "id": "10-java",
-      "blocks": 80,
-      "tokens": "est ~12.2k (pre-check 65.6 KB, ~153/block, 2026-10-08)",
+      "blocks": 82,
+      "tokens": "est ~12.9k (pre-check 69.3 KB, ~157/block, 2026-11-14)",
       "share": 7.5
     },
     {
       "id": "11-spring",
-      "blocks": 66,
-      "tokens": "est ~8.7k (pre-check 46.9 KB, ~132/block, 2026-10-08)",
+      "blocks": 69,
+      "tokens": "est ~9.6k (pre-check 51.8 KB, ~139/block, 2026-11-14)",
       "share": 7.0
     },
     {

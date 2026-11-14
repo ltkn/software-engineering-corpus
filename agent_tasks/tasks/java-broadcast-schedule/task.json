@@ -1,0 +1,7 @@
+{
+ "id": "java-broadcast-schedule",
+ "domain": "java",
+ "image": "oqt-agent-java",
+ "prompt": "Viewers report wrong start times in the programme guide. Someone in London watching a Norwegian channel sees the Oslo times unchanged, and around the switches to and from summer time some programmes are listed an hour off even for viewers in the channel's own country. Read the format description in Schedule's Javadoc carefully; the parser itself is correct. Fix Guide.start so it returns the instant each programme airs, and Guide.listings so each viewer sees that instant on their own local clock. Run the tests with `sh test.sh`.",
+ "check": "sh test.sh"
+}

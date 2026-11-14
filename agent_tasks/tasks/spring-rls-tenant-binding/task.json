@@ -1,0 +1,10 @@
+{
+ "id": "spring-rls-tenant-binding",
+ "domain": "spring",
+ "image": "oqt-agent-spring",
+ "prompt": "Tenant isolation in this notes service is meant to be enforced by PostgreSQL row-level security (see V1), with the request's tenant bound to each pooled connection by TenantBindingDataSource. A penetration test still found that tenant globex can list acme's notes, and that a request without an X-Tenant-Id header sometimes sees the notes of whichever tenant used the connection before. Find out why and fix it at the database and connection level: the application must keep relying on row-level security rather than adding tenant filters to its queries, and a request without a tenant must see no notes. V1 is already applied in production, so it must not change. PostgreSQL 18 runs locally (database and user `app`; `pg-up` starts it if needed). Run the tests with `sh test.sh` (Maven works offline: every dependency is already in ~/.m2).",
+ "check": "sh test.sh",
+ "setup": [
+  "pg-up"
+ ]
+}

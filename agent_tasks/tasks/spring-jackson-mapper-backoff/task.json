@@ -1,0 +1,7 @@
+{
+ "id": "spring-jackson-mapper-backoff",
+ "domain": "spring",
+ "image": "oqt-agent-spring",
+ "prompt": "Since the Money serializer was added to this Spring Boot 4 catalog API, three parts of the JSON contract broke: responses contain \"description\": null instead of omitting it, requests with unknown fields are accepted although application.properties says they must be rejected, and error responses nest our \"code\" under \"properties\" (and add \"type\": null) instead of making it a top-level member of the problem document. Restore the whole contract while keeping prices in the \"12.50 EUR\" format. Configuration belongs in application.properties, not in hand-written mapper settings. Run the tests with `sh test.sh` (Maven works offline: every dependency is already in ~/.m2).",
+ "check": "sh test.sh"
+}

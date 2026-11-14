@@ -9,7 +9,8 @@ Used by prep_calibration.py's ``agent`` stage (PREP_PLAN.md §5). A session:
   3. loops: the model (thinking on, native tool calls) reads, searches,
      edits and runs commands through a small tool set until it calls
      ``finish``, answers without a tool call, or hits the step/context cap
-  4. runs the task's ``check`` command to record whether it really worked
+  4. copies the task's hidden/ tests in (if any) and runs its ``check``
+     command to record whether it really worked
   5. returns the whole transcript (thinking, tool calls, tool output)
 
 Standard library only. The model never touches the host: file tools are
@@ -175,7 +176,9 @@ SANDBOXES = {"docker": DockerSandbox, "local": LocalSandbox}
 def load_task(task_dir: Path) -> dict:
     task = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
     task["dir"] = str(task_dir)
-    files = sorted(p for p in (task_dir / "repo").rglob("*") if p.is_file())
+    # hidden/ holds the check's own tests: copied over the work dir only when the
+    # check runs, so the agent never sees (or edits) them.
+    files = sorted(p for d in ("repo", "hidden") for p in (task_dir / d).rglob("*") if p.is_file())
     h = __import__("hashlib").sha256(json.dumps(
         {k: v for k, v in task.items() if k != "dir"}, sort_keys=True).encode())
     for p in files:
@@ -322,6 +325,9 @@ def run_session(task: dict, chat_fn, payload_base: dict, *, work_root: Path, san
         check = task.get("check")
         passed = None
         if check:
+            hidden = Path(task["dir"]) / "hidden"
+            if hidden.is_dir():
+                shutil.copytree(hidden, work, dirs_exist_ok=True)
             code, _ = sandbox.run(check, timeout=300)
             passed = code == 0
     finally:

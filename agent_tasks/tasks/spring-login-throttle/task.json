@@ -1,0 +1,7 @@
+{
+ "id": "spring-login-throttle",
+ "domain": "spring",
+ "image": "oqt-agent-spring",
+ "prompt": "API clients of this portal authenticate with HTTP Basic on every request, and LoginThrottle limits password checks to 5 per minute per client address. Two complaints: an integration that makes more than five calls a minute gets 429 although its password is right, and everyone in an office behind one NAT address gets locked out together, while an attacker spreading guesses for one account over many addresses is never slowed down. Rework the throttle so that only failed password checks count: at most 5 failures per account per minute (whatever the address) and at most 20 failures per client address per minute (whatever the account). Reserve the allowance before the password is checked and give it back when the check succeeds, so concurrent guesses cannot overshoot the limit. When either allowance is used up, answer 429 without checking the password, until the minute has passed. Use the existing Clock bean for time. Run the tests with `sh test.sh` (Maven works offline: every dependency is already in ~/.m2).",
+ "check": "sh test.sh"
+}

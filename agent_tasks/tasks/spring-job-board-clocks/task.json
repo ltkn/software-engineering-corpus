@@ -1,0 +1,10 @@
+{
+ "id": "spring-job-board-clocks",
+ "domain": "spring",
+ "image": "oqt-agent-spring",
+ "prompt": "The operations status board shows background jobs: whether each is in progress, and how long ago its worker last reported (ageSeconds, stale after 60 s). Three bug reports. The new day view (GET /jobs/day) labels jobs that finished hours ago as in progress, although the active list looks right. On one app server every job shows as stale, because that server's clock runs ahead; app-server clocks cannot be trusted, and the database's clock is the reference. And a worker whose clock is ahead and that then froze stays fresh forever. A worker's heartbeat_at is its own claim; received_at is when the database stored it. Fix all three so that 'in progress' means started and not yet finished in every view, ages are measured on the database clock, and a worker's heartbeat never counts as more recent than the moment the database received it. Keep the response shape. PostgreSQL 18 runs locally (database and user `app`; `pg-up` starts it if needed). Run the tests with `sh test.sh` (Maven works offline: every dependency is already in ~/.m2).",
+ "check": "sh test.sh",
+ "setup": [
+  "pg-up"
+ ]
+}

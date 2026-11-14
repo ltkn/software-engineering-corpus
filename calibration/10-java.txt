@@ -889,3 +889,33 @@ final class OrderMatcher {
 Why: grouping is O(n), the sort is O(n log n), each sweep is O(n) in the acquisitions, so the whole match is O(n log n) time and O(n) memory — the sort dominates and nothing is quadratic. The first hypothesis was a single pass with no sort; it was killed by a fixture where two same-day lots matched in arrival order instead of price order and the gain differed by 3 cents. The executor interface keeps the ordering rules testable without I/O, and the LinkedHashMap preserves day-insertion order so the sweep is deterministic for equal keys. A sanity check before trusting: the sum of matched quantities plus the pool remainder equals the input quantities exactly.
 Counter-pattern: nested loops per disposal rescanning all acquisitions with a contains check inside (O(n squared) per disposal, minutes at 10k trades); or recomputing the day groups inside the disposal loop instead of once.
 Check: fixture with a same-day lot, a 30-day lot, and a pool lot asserts the exact matched pairs in statutory order; a 10k-trade timing test asserts the sweep stays under the budget the quadratic form exceeds fortyfold; [INFO] Tests run: 7, Failures: 0, Errors: 0.
+
+---
+
+Concept: A time inside a published format is read in the zone, and from the anchor, that the format defines — not in the reader's zone and not as a wall-clock reading unless the format says so. API guarantee for the conversions; the anchor is a property of the format, never of java.time.
+Modern form:
+// Format: "HH:MM" is elapsed time since local midnight of the broadcast day in the publisher's zone; may exceed 24:00.
+Instant start(LocalDate day, ZoneId publisher, int minutes) {
+    return day.atStartOfDay(publisher).toInstant().plus(Duration.ofMinutes(minutes));
+}
+LocalDateTime shownTo(Instant start, ZoneId viewer) {
+    return LocalDateTime.ofInstant(start, viewer);
+}
+Why: the first report was "London viewers see Oslo times", and the first hypothesis was the JVM default zone on the guide servers. Pinning `-Duser.timezone=UTC` changed nothing, which killed it: the code never consulted the default; it built `day.atStartOfDay().plusMinutes(m)` and showed that local date-time to every viewer, so it was read in no zone at all. The second report did not fit the fix for the first: Oslo viewers saw one programme an hour late, only on 2026-10-25. Elapsed-from-midnight and wall-clock readings agree on every day except the two switch days, and a test pinned to that date separated them in one run — "03:30" on a 25-hour day is 02:30 on the wall clock. The rule that survives both: convert to an instant using the publisher's zone and the format's anchor, then derive every local clock from that instant.
+Counter-pattern: `LocalDateTime.of(day, LocalTime.parse(hhmm))` (rejects "25:15", and treats elapsed time as wall-clock time), and reading each row in the zone of whoever consumes it. Both look plausible because the error is exactly one hour, or exactly the zone offset, and never a crash.
+Check: table tests on a normal day, the spring-forward day and the fall-back day of the publisher's zone, plus a viewer in a zone on the other side of the date line, asserting instants rather than strings.
+
+---
+
+Concept: Staleness is an age, measured on the clock that wrote the stamps, and a producer's own timestamp is a claim. Convention with physical roots: clocks on different hosts disagree, and nothing in the JDK reconciles them.
+Modern form:
+// age computed where both stamps live; the producer's claim never beats our own observation
+SELECT id,
+       floor(extract(epoch FROM now() - least(heartbeat_at, received_at)))::bigint AS age_seconds
+FROM workers
+record WorkerStatus(long id, long ageSeconds) {
+    boolean stale(Duration after) { return ageSeconds > after.toSeconds(); }
+}
+Why: a status page flagged every worker stale on one application server and none on another. The first suspect was the heartbeat interval; doubling it moved nothing, because the age was `Duration.between(heartbeatAt, Instant.now())` — a database stamp subtracted from an application clock that ran ten minutes ahead. Comparing `SELECT now()` with `Instant.now()` on both servers measured the skew directly and explained the split. The second failure was quieter: a worker whose clock ran ahead reported heartbeats from the future, its age stayed negative, and when it froze it kept reading fresh. Bounding the claim by `received_at`, the moment this side stored it, turns a frozen producer stale on schedule. Ages travel as durations, so the browser never subtracts anything.
+Counter-pattern: shipping `heartbeatAt` to the client and computing `Date.now() - heartbeatAt` there; `Clock.systemUTC()` used for comparison with stamps written by another host; trusting a producer-supplied timestamp as an observation.
+Check: a test with an application `Clock` offset by minutes (`Clock.offset`) still reports the database-side age, and a row with `heartbeat_at` in the future and an old `received_at` reports stale.

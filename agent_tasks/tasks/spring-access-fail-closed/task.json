@@ -1,0 +1,7 @@
+{
+ "id": "spring-access-fail-closed",
+ "domain": "spring",
+ "image": "oqt-agent-spring",
+ "prompt": "GET /admin/export (the full ledger export) shipped without an @Access rule, and anyone could download it: an endpoint with no rule is let through. Make access control fail closed. The export is for administrators only. The application must refuse to start when one of its endpoints has no @Access rule (on the handler method or its controller class), and the startup error must name every such endpoint by HTTP method and path, for example `GET /admin/export`. At runtime, a request whose handler has no rule is denied. Spring's own endpoints, such as the error controller, are not part of the application and cannot carry the annotation. Keep the existing rules working. Run the tests with `sh test.sh` (Maven works offline: every dependency is already in ~/.m2).",
+ "check": "sh test.sh"
+}

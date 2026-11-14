@@ -1,0 +1,10 @@
+{
+ "id": "spring-retry-optimistic-lock",
+ "domain": "spring",
+ "image": "oqt-agent-spring",
+ "prompt": "During a flash sale, many concurrent orders for the same item fail with ObjectOptimisticLockingFailureException (HTTP 500), although there was plenty of stock and StockService.reserve is annotated with Spring Framework 7's @Retryable for exactly that exception. Make concurrent orders (OrderService.place) for one item all succeed when stock allows, each recorded and reserved exactly once, with the item's @Version still guarding against lost updates (no pessimistic locks). An order must stay all or nothing: no order row without its reservation. An order for more than is available must still fail with InsufficientStock and must not be retried. Run the tests with `sh test.sh`; PostgreSQL 18 runs locally (database and user `app`; `pg-up` starts it if needed), and Maven works offline: every dependency is already in ~/.m2.",
+ "check": "sh test.sh",
+ "setup": [
+  "pg-up"
+ ]
+}

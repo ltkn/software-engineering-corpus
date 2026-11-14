@@ -19,6 +19,12 @@ for tdir in "$HERE"/tasks/*/; do
     # serve a stale view of the previous task.
     a="$WORK/$id-shipped"; b="$WORK/$id-solved"
     cp -R "$tdir/repo" "$a"; cp -R "$tdir/repo" "$b"; cp -R "$tdir/solution/." "$b/"
+    # hidden/: the check's own tests, copied in after the agent's work (never shown to it).
+    if [ -d "$tdir/hidden" ]; then cp -R "$tdir/hidden/." "$a/"; cp -R "$tdir/hidden/." "$b/"; fi
+    # The shipped repo's own tests must pass as shipped: a hidden test is what fails.
+    if [ -d "$tdir/hidden" ]; then c="$WORK/$id-visible"; cp -R "$tdir/repo" "$c"
+        run_check "$c" || { echo "BAD   $id (visible tests fail as shipped)"; tail -n 15 "$c.log" | sed 's/^/      /'; bad=1; continue; }
+    fi
     if run_check "$a"; then shipped=PASS; else shipped=fail; fi
     if run_check "$b"; then solved=PASS; else solved=fail; fi
     if [ "$shipped" = fail ] && [ "$solved" = PASS ]; then

@@ -207,7 +207,14 @@ assert all(v > 0 for v in g["tokens_by_group"].values()), g["tokens_by_group"]
 assert any(s.get("tools") for s in seeds), "no tool-carrying seed prompts"
 assert g["with_tool_calls"] > 0, "no answers with tool calls"
 PYCHECK
-pass "profile mix: corpus + generic + broad, tool calls kept"
+RJ="$T/oqup/runs/t/prep/answers/Qwen3.8-Flash-Next-oQ5e-gen/render-profile.json"
+python3 - "$RJ" <<'PYCHECK' || fail "agent share not applied by render"
+import json, sys
+a = json.load(open(sys.argv[1]))["agent"]
+assert a["target_share"] == 0.25 and a["sessions"] > 0 and a["copies"] > 0, a
+assert a["share"] > 0, a
+PYCHECK
+pass "profile mix: corpus + generic + broad, tool calls kept; agent sessions placed at their share"
 
 reset; OQT_PROFILE=generic BUDGET_TOKENS=6000 "$P" 4 g >/dev/null 2>&1 || fail "generic profile run failed"
 [ "$(count seed)" = 0 ] && [ "$(count derive)" = 0 ] || fail "generic run re-requested cached seeds or derives"

@@ -104,10 +104,44 @@ def invalid_tool_calls(tmp: Path):
     print("ok   broken tool calls end the session (kept); other server errors show their message")
 
 
+def hidden_tests(tmp: Path):
+    """hidden/ is copied over the work dir only for the check: the agent cannot weaken it,
+    and changing a hidden file changes the task hash (so cached sessions are not reused)."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import agent_harness as ah
+
+    tasks = make_task(tmp / "hidden", "unused")
+    t = tasks / "answer-42"
+    spec = json.loads((t / "task.json").read_text())
+    spec["check"] = "sh check.sh"
+    (t / "task.json").write_text(json.dumps(spec))
+    (t / "repo" / "check.sh").write_text("exit 0\n")            # what the agent sees
+    (t / "hidden").mkdir()
+    (t / "hidden" / "check.sh").write_text("grep -qx 42 answer.txt\n")
+    before = ah.load_task(t)["hash"]
+
+    def cheat(payload):
+        # Writes a wrong answer and keeps the visible check green.
+        if not any(m["role"] == "tool" for m in payload["messages"]):
+            msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c0", "type": "function",
+                   "function": {"name": "write_file", "arguments": json.dumps({"path": "answer.txt", "content": "41\n"})}}]}
+        else:
+            msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function",
+                   "function": {"name": "finish", "arguments": json.dumps({"summary": "done"})}}]}
+        return {"choices": [{"message": msg}], "usage": {"completion_tokens": 5}}
+
+    rec = ah.run_session(ah.load_task(t), cheat, {}, work_root=tmp / "work", sandbox_kind="local")
+    assert rec["check_passed"] is False, rec
+    (t / "hidden" / "check.sh").write_text("grep -qx 41 answer.txt\n")
+    assert ah.load_task(t)["hash"] != before, "hidden files must be part of the task hash"
+    print("ok   hidden tests run at check time and are part of the task hash")
+
+
 def main():
     tmp = Path(tempfile.mkdtemp(dir=Path.home(), prefix=".oqt-agent-test."))  # colima mounts $HOME
     try:
         invalid_tool_calls(tmp)
+        hidden_tests(tmp)
         run("local", "unused", tmp)
         if shutil.which("docker") and subprocess.run(["docker", "info"], capture_output=True).returncode == 0:
             if subprocess.run(["docker", "image", "inspect", "alpine:latest"], capture_output=True).returncode != 0:

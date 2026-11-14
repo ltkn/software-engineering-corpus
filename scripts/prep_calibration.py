@@ -840,16 +840,38 @@ def parse_effort_mix(text: str) -> list[tuple[str, float]]:
     return out
 
 
-def parse_mix(text: str, profile: str) -> dict[str, float]:
-    """'corpus=50,generic=25,broad=25' restricted to the profile's groups, normalized."""
-    groups = PROFILES[profile]
+MIX_GROUPS = ("corpus", "agent", "generic", "broad")
+DEFAULT_MIX = "corpus=55,agent=25,generic=15,broad=5"
+# Render repeats agent sessions to reach the agent share, at most this many copies each.
+MAX_AGENT_COPIES = 3
+
+
+def _mix_weights(text: str) -> dict[str, float]:
     raw = {}
     for item in text.split(","):
         name, _, val = item.partition("=")
         name = name.strip()
-        if name not in ("corpus", "generic", "broad"):
-            raise SystemExit(f"--mix: unknown group {name!r} (use corpus, generic, broad)")
+        if name not in MIX_GROUPS:
+            raise SystemExit(f"--mix: unknown group {name!r} (use {', '.join(MIX_GROUPS)})")
         raw[name] = float(val)
+    return raw
+
+
+def agent_share(text: str, profile: str) -> float | None:
+    """Agent sessions' share of the short-window bundle, or None when the mix does not set one
+    (then every session goes in once, outside the budget). Only the corpus profile has sessions."""
+    raw = _mix_weights(text)
+    if "agent" not in raw or "corpus" not in PROFILES[profile]:
+        return None
+    total = sum(raw.get(g, 0.0) for g in ("agent", *PROFILES[profile]))
+    return raw["agent"] / total if total > 0 else None
+
+
+def parse_mix(text: str, profile: str) -> dict[str, float]:
+    """Prompt groups of 'corpus=55,agent=25,generic=15,broad=5' that the profile has, normalized
+    among themselves: they split the generation budget. The agent weight is applied by render."""
+    groups = PROFILES[profile]
+    raw = _mix_weights(text)
     sel = {g: raw.get(g, 0.0) for g in groups}
     total = sum(sel.values())
     if total <= 0:
@@ -1341,6 +1363,45 @@ def do_check(args) -> int:
     return 0
 
 
+def place_agent_sessions(session_texts: list[tuple[str, str]], other: list[tuple[str, str]],
+                         share: float | None, tok, seed) -> dict:
+    """Agent session texts for the bundle at ``share`` of its tokens.
+
+    Without a share, every session goes in once. Otherwise sessions are taken in a fixed
+    pseudo-random order, whole, until their tokens reach share/(1-share) of the other text:
+    subsampled when there is more than that, repeated (at most MAX_AGENT_COPIES times each)
+    when there is less. Long documents are not affected: they hold every session once.
+    """
+    sized = sorted(((sha(f"{seed}|agent|{k}"), t, len(tok(t, add_special_tokens=False)["input_ids"]))
+                    for k, t in session_texts), key=lambda x: x[0])
+    total = sum(n for _, _, n in sized)
+    if share is None or not sized:
+        chosen = [(key, t) for key, t, _ in sized]
+        tokens, target = total, None
+    else:
+        other_tokens = sum(len(tok(t, add_special_tokens=False)["input_ids"]) for _, t in other)
+        want = share / (1.0 - share) * other_tokens if share < 1 else float("inf")
+        chosen, tokens = [], 0
+        for copy in range(MAX_AGENT_COPIES):
+            for key, t, n in sized:
+                if tokens >= want:
+                    break
+                # Take a session when it brings the total closer to the target.
+                if tokens + n <= want or (tokens + n - want) < (want - tokens):
+                    chosen.append((sha(f"{key}|copy{copy}"), t))
+                    tokens += n
+            if tokens >= want or len(chosen) < (copy + 1) * len(sized):
+                break
+        target = share
+        total = tokens + other_tokens
+    if share is not None:
+        achieved = tokens / total if total else 0.0
+    else:
+        achieved = None
+    return {"texts": chosen, "sessions": len(sized), "copies": len(chosen), "tokens": tokens,
+            "target_share": target, "share": achieved}
+
+
 def do_render(out: Path, args) -> int:
     try:
         import transformers  # noqa: F401
@@ -1403,16 +1464,17 @@ def do_render(out: Path, args) -> int:
     for r in answers:
         texts.append((sha(f"{args.seed}|{r['key']}"), answer_text(r)))
 
-    for r in sessions:
-        # A whole agent session: system, task, assistant turns with thinking
-        # and tool calls, and tool results, rendered with its tool definitions.
-        text = render(r["messages"], r.get("tools"))
-        texts.append((sha(f"{args.seed}|agent|{r['key']}"), text))
+    # A whole agent session: system, task, assistant turns with thinking and
+    # tool calls, and tool results, rendered with its tool definitions.
+    session_texts = [(r["key"], render(r["messages"], r.get("tools"))) for r in sessions]
 
     passages = []
     if "corpus" in PROFILES[args.profile]:
         passages = [b["text"] for b in read_jsonl(out / "blocks.jsonl") if b["mode"] == "passage"]
     texts += [(sha(f"{args.seed}|passage|{t}"), t) for t in passages]
+
+    agent = place_agent_sessions(session_texts, texts, agent_share(args.mix, args.profile), tok, args.seed)
+    texts += agent.pop("texts")
     texts.sort(key=lambda x: x[0])
     bundle = "\n".join(t for _, t in texts) + "\n"
 
@@ -1488,7 +1550,7 @@ def do_render(out: Path, args) -> int:
                "conversations": len(answers), "agent_sessions": len(sessions), "passages": len(passages),
                "with_tools": sum(1 for r in answers if r.get("tools")),
                "tool_calls_missing_after_render": tools_dropped,
-               "tokens": n_tokens, "mode": mode,
+               "tokens": n_tokens, "mode": mode, "agent": agent,
                "long_documents": len(long_docs), "long_bundle": str(long_path),
                "long_tokens_est": int(sum(len(t) for t in long_docs) / 3.5),
                "special_tokens_checked": sorted(sp for sp in specials if sp and sp in bundle),
@@ -1500,6 +1562,13 @@ def do_render(out: Path, args) -> int:
     print(f"render: [{args.profile}] {len(answers)} conversations ({summary['with_tools']} with tools), "
           f"{len(sessions)} agent sessions, {len(long_docs)} long documents "
           f"+ {len(passages)} passages, {n_tokens:,} tokens, mode {mode} -> {path}", flush=True)
+    if agent["target_share"] is not None:
+        print(f"render: agent sessions {agent['share']:.1%} of the bundle (target {agent['target_share']:.1%}; "
+              f"{agent['copies']} copies of {agent['sessions']} sessions)", flush=True)
+        if agent["share"] < agent["target_share"] - 0.02:
+            print(f"render: WARNING agent share short of its target: more agent tasks or AGENT_SAMPLES, "
+                  f"or a lower agent weight in the mix (each session is used at most {MAX_AGENT_COPIES} times)",
+                  file=sys.stderr, flush=True)
     if heldout:
         print("render: held out for M3 (not calibrated on): " + ", ".join(
             f"{g} {h['items']} ({h['tokens']:,} tokens)" for g, h in heldout.items()) + f" -> {hdir}", flush=True)
@@ -1582,8 +1651,9 @@ def main(argv=None) -> int:
     g.add_argument("--log-every", type=int, default=25)
     g.add_argument("--profile", choices=sorted(PROFILES), default="profile",
                    help="generate/render: 'profile' = corpus + generic + broad, 'generic' = no corpus")
-    g.add_argument("--mix", default="corpus=50,generic=25,broad=25",
-                   help="token shares per prompt group (restricted to the profile's groups)")
+    g.add_argument("--mix", default=DEFAULT_MIX,
+                   help="token shares: corpus, generic and broad split the generation budget; agent is the "
+                        "share of agent sessions in the rendered bundle (restricted to the profile's groups)")
     g.add_argument("--prompts-per-seed", type=int, default=8, help="seed: prompts written per seed")
     g.add_argument("--cache-root", help="share request caches across runs (default: the run folder)")
     ag = ap.add_argument_group("agent")
